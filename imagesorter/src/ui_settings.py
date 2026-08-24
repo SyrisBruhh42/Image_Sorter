@@ -1,15 +1,14 @@
 import os
-from typing import Dict, Any, Optional
+from typing import Dict, Any
 from PyQt6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
-    QLineEdit, QFileDialog, QTabWidget, QFormLayout, QCheckBox,
-    QComboBox, QTableWidget, QTableWidgetItem, QHeaderView, QMessageBox,
-    QProgressDialog, QSpinBox
+    QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLineEdit,
+    QLabel, QFileDialog, QTabWidget, QFormLayout, QCheckBox,
+    QComboBox, QSpinBox, QTableWidget, QTableWidgetItem, QHeaderView, QMessageBox, QProgressDialog
 )
 from PyQt6.QtCore import Qt
-from src.ai_tagger import ModelDownloader
-from src.hardware_scan import scan_hardware
 from src.settings_manager import SettingsManager
+from src.hardware_scan import scan_hardware
+from src.ai_tagger import ModelDownloader
 from src.logger import logger
 
 class SettingsWindow(QWidget):
@@ -114,8 +113,8 @@ class SettingsWindow(QWidget):
         """Initializes the Hotkeys configuration tab."""
         layout = QVBoxLayout(self.tab_hotkeys)
 
-        self.hotkey_table = QTableWidget(0, 3)
-        self.hotkey_table.setHorizontalHeaderLabels(["Hotkey", "Action (move/copy)", "Target Folder"])
+        self.hotkey_table = QTableWidget(0, 4)
+        self.hotkey_table.setHorizontalHeaderLabels(["Hotkey", "Action (move/copy)", "Target Folder", "Auto Advance"])
         self.hotkey_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
         self.hotkey_table.setAccessibleName("Hotkeys Configuration Table")
         layout.addWidget(self.hotkey_table)
@@ -152,47 +151,47 @@ class SettingsWindow(QWidget):
 
         ai_layout.addWidget(self.chk_ai_enable)
         ai_layout.addWidget(self.btn_download_model)
+        layout.addRow("AI Tagger:", ai_layout)
 
-        layout.addRow("AI:", ai_layout)
-
-        self.chk_exif = QCheckBox("Write tags to EXIF data")
+        # Metadata Options
+        self.chk_exif = QCheckBox("Write Tags to EXIF (XPKeywords)")
         self.chk_exif.setChecked(self.settings.get('metadata', 'write_exif') or False)
         layout.addRow("Metadata:", self.chk_exif)
 
-        self.chk_sidecar = QCheckBox("Write tags to sidecar .txt file")
+        self.chk_sidecar = QCheckBox("Write Tags to Sidecar (.txt)")
         self.chk_sidecar.setChecked(self.settings.get('metadata', 'write_sidecar') or False)
         layout.addRow("", self.chk_sidecar)
 
     def init_advanced_tab(self) -> None:
-        """Initializes the Advanced/Hardware settings tab."""
+        """Initializes the Advanced settings and Hardware check tab."""
         layout = QFormLayout(self.tab_advanced)
 
-        self.btn_scan = QPushButton("Run Hardware Optimization Scan")
-        self.btn_scan.setAccessibleDescription("Scans the system to recommend optimal performance settings.")
-        self.btn_scan.clicked.connect(self.run_hardware_scan)
-        layout.addRow("", self.btn_scan)
+        self.worker_spin = QSpinBox()
+        self.worker_spin.setRange(1, 32)
+        self.worker_spin.setValue(self.settings.get('advanced', 'worker_threads') or 2)
+        self.worker_spin.setAccessibleName("Number of Worker Threads")
+        layout.addRow("Worker Threads:", self.worker_spin)
 
-        self.lbl_scan_result = QLabel("No scan run yet.")
+        self.btn_scan = QPushButton("Run Hardware Scan for Optimizations")
+        self.btn_scan.clicked.connect(self.run_hardware_scan)
+        self.btn_scan.setAccessibleDescription("Scans the system to recommend optimal thread and AI settings.")
+        layout.addRow("Optimization:", self.btn_scan)
+
+        self.lbl_scan_result = QLabel("")
         self.lbl_scan_result.setWordWrap(True)
         layout.addRow("", self.lbl_scan_result)
 
-        self.worker_spin = QSpinBox()
-        self.worker_spin.setRange(1, 16)
-        self.worker_spin.setValue(self.settings.get('advanced', 'worker_threads') or 2)
-        self.worker_spin.setAccessibleName("Number of background worker threads")
-        layout.addRow("Worker Threads:", self.worker_spin)
-
     def run_hardware_scan(self) -> None:
-        """Executes the hardware scan and updates the UI and settings recommendations."""
+        """Runs the hardware scanner and displays recommendations."""
         try:
              hw = scan_hardware()
              report = (
-                 f"<b>CPU Cores:</b> {hw['cpu_cores']}<br>"
-                 f"<b>RAM:</b> {hw['memory_total_gb']} GB<br>"
-                 f"<b>ONNX Providers:</b> {', '.join(hw['onnx_providers'])}<br><br>"
-                 f"<b>Recommendations:</b><br>"
-                 f"AI Provider: {hw['suggestions']['ai_provider']}<br>"
-                 f"Worker Threads: {hw['suggestions']['queue_threads']}"
+                f"<b>CPU Cores:</b> {hw['cpu_cores']}<br>"
+                f"<b>RAM:</b> {hw['memory_total_gb']} GB<br>"
+                f"<b>ONNX Providers:</b> {', '.join(hw['onnx_providers'])}<br><br>"
+                f"<b>Recommendations:</b><br>"
+                f"AI Provider: {hw['suggestions']['ai_provider']}<br>"
+                f"Worker Threads: {hw['suggestions']['queue_threads']}"
              )
              self.lbl_scan_result.setText(report)
              self.worker_spin.setValue(hw['suggestions']['queue_threads'])
@@ -207,7 +206,7 @@ class SettingsWindow(QWidget):
         if folder:
             line_edit.setText(os.path.normpath(folder))
 
-    def add_hotkey_row(self, key: str = "", action: str = "move", folder: str = "") -> None:
+    def add_hotkey_row(self, key: str = "", action: str = "move", folder: str = "", auto_advance: bool = True) -> None:
         """Adds a new row to the hotkey configuration table."""
         row = self.hotkey_table.rowCount()
         self.hotkey_table.insertRow(row)
@@ -237,6 +236,17 @@ class SettingsWindow(QWidget):
 
         self.hotkey_table.setCellWidget(row, 2, folder_widget)
 
+        advance_chk = QCheckBox()
+        advance_chk.setChecked(auto_advance)
+        advance_chk.setAccessibleName(f"Auto Advance for hotkey {key}")
+        # Center the checkbox
+        chk_widget = QWidget()
+        chk_layout = QHBoxLayout(chk_widget)
+        chk_layout.addWidget(advance_chk)
+        chk_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        chk_layout.setContentsMargins(0, 0, 0, 0)
+        self.hotkey_table.setCellWidget(row, 3, chk_widget)
+
     def remove_hotkey_row(self) -> None:
         """Removes the currently selected hotkey row."""
         curr = self.hotkey_table.currentRow()
@@ -250,7 +260,7 @@ class SettingsWindow(QWidget):
             return
 
         for key, config in hotkeys.items():
-            self.add_hotkey_row(key, config.get("action", "move"), config.get("folder", ""))
+            self.add_hotkey_row(key, config.get("action", "move"), config.get("folder", ""), config.get("auto_advance", True))
 
     def download_ai_model(self) -> None:
         """Initiates the background download of the AI model."""
@@ -326,7 +336,11 @@ class SettingsWindow(QWidget):
                  QMessageBox.warning(self, "Validation Error", f"Target folder for hotkey '{key}' does not exist: {folder}")
                  return
 
-            hotkeys[key] = {"action": action, "folder": os.path.normpath(folder) if folder else ""}
+            chk_widget = self.hotkey_table.cellWidget(row, 3)
+            advance_chk = chk_widget.layout().itemAt(0).widget()
+            auto_advance = advance_chk.isChecked()
+
+            hotkeys[key] = {"action": action, "folder": os.path.normpath(folder) if folder else "", "auto_advance": auto_advance}
 
         self.settings.update_section('hotkeys', hotkeys)
 
