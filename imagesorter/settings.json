@@ -1,0 +1,23 @@
+{
+    "directories": {
+        "source": "",
+        "trash": ""
+    },
+    "hotkeys": {},
+    "ui": {
+        "fullscreen": false,
+        "show_tags": true
+    },
+    "metadata": {
+        "write_exif": true,
+        "write_sidecar": false
+    },
+    "ai_tagger": {
+        "enabled": false,
+        "model_path": "models/model.onnx",
+        "threshold": 0.5
+    },
+    "advanced": {
+        "hardware_acceleration": true
+    }
+}
