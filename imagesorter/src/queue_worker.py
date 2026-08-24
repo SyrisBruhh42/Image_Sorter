@@ -96,6 +96,27 @@ class FileTaskRunnable(QRunnable):
             except TrashPermissionError as e:
                  raise PermissionError(f"Trash permission denied: {e}")
 
+        elif self.task_type == 'undo_move':
+            if not self.dest_folder:
+                 raise ValueError("Original path (dest_folder) required to undo move.")
+            try:
+                 shutil.move(filepath, self.dest_folder)
+                 self.signals.progress.emit(f"Undid move: {filename}")
+                 self.signals.finished.emit(self.dest_folder)
+            except OSError as e:
+                 logger.error(f"Error undoing move for {filename}: {e}")
+                 self.signals.error.emit(filepath, f"Failed to undo move: {e}")
+            return
+
+        elif self.task_type == 'undo_copy':
+            try:
+                 os.remove(filepath)
+                 self.signals.progress.emit(f"Undid copy: {filename}")
+            except OSError as e:
+                 logger.error(f"Error undoing copy for {filename}: {e}")
+                 self.signals.error.emit(filepath, f"Failed to undo copy: {e}")
+            return
+
         # Handle AI Tagging & Metadata
         if self.settings.get('ai_tagger', 'enabled') and self.ai_tagger:
             tags = self.ai_tagger.get_tags(final_path)
