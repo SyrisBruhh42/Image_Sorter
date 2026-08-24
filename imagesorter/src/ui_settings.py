@@ -1,31 +1,42 @@
 import os
+from typing import Dict, Any, Optional
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QLineEdit, QFileDialog, QTabWidget, QFormLayout, QCheckBox,
     QComboBox, QTableWidget, QTableWidgetItem, QHeaderView, QMessageBox,
-    QProgressDialog
+    QProgressDialog, QSpinBox
 )
 from PyQt6.QtCore import Qt
 from src.ai_tagger import ModelDownloader
 from src.hardware_scan import scan_hardware
+from src.settings_manager import SettingsManager
+from src.logger import logger
 
 class SettingsWindow(QWidget):
-    def __init__(self, settings_manager):
+    """
+    Settings interface with exhaustive accessibility options and input validation.
+    """
+    def __init__(self, settings_manager: SettingsManager) -> None:
         super().__init__()
         self.settings = settings_manager
         self.setWindowTitle("Image Sorter Settings")
         self.resize(800, 600)
+
+        # Ensure window is focusable for screen readers
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.init_ui()
 
-    def init_ui(self):
+    def init_ui(self) -> None:
+        """Builds the tabbed UI for settings."""
         layout = QVBoxLayout(self)
 
         self.tabs = QTabWidget()
+        self.tabs.setAccessibleName("Settings Categories")
 
         # General Tab
         self.tab_general = QWidget()
         self.init_general_tab()
-        self.tabs.addTab(self.tab_general, "General")
+        self.tabs.addTab(self.tab_general, "General & UI")
 
         # Hotkeys Tab
         self.tab_hotkeys = QWidget()
@@ -47,19 +58,24 @@ class SettingsWindow(QWidget):
         # Bottom Buttons
         btn_layout = QHBoxLayout()
         self.btn_save = QPushButton("Save Settings")
+        self.btn_save.setDefault(True)
+        self.btn_save.setAccessibleDescription("Saves all configured settings and closes the window.")
         self.btn_save.clicked.connect(self.save_settings)
         btn_layout.addStretch()
         btn_layout.addWidget(self.btn_save)
 
         layout.addLayout(btn_layout)
 
-    def init_general_tab(self):
+    def init_general_tab(self) -> None:
+        """Initializes the General & UI options tab."""
         layout = QFormLayout(self.tab_general)
 
         # Source Directory
         src_layout = QHBoxLayout()
         self.src_edit = QLineEdit(self.settings.get('directories', 'source') or "")
+        self.src_edit.setAccessibleName("Source Directory Path")
         self.src_btn = QPushButton("Browse...")
+        self.src_btn.setAccessibleName("Browse Source Directory")
         self.src_btn.clicked.connect(lambda: self.browse_folder(self.src_edit))
         src_layout.addWidget(self.src_edit)
         src_layout.addWidget(self.src_btn)
@@ -68,28 +84,45 @@ class SettingsWindow(QWidget):
         # Trash Directory
         trash_layout = QHBoxLayout()
         self.trash_edit = QLineEdit(self.settings.get('directories', 'trash') or "")
+        self.trash_edit.setAccessibleName("Trash Directory Path")
         self.trash_btn = QPushButton("Browse...")
+        self.trash_btn.setAccessibleName("Browse Trash Directory")
         self.trash_btn.clicked.connect(lambda: self.browse_folder(self.trash_edit))
         trash_layout.addWidget(self.trash_edit)
         trash_layout.addWidget(self.trash_btn)
         layout.addRow("Trash Directory:", trash_layout)
 
-        # UI Options
+        # UI Options (QOL & Accessibility)
         self.chk_fullscreen = QCheckBox("Start in Fullscreen Mode")
-        self.chk_fullscreen.setChecked(self.settings.get('ui', 'fullscreen'))
+        self.chk_fullscreen.setChecked(self.settings.get('ui', 'fullscreen') or False)
         layout.addRow("UI Mode:", self.chk_fullscreen)
 
-    def init_hotkeys_tab(self):
+        self.theme_combo = QComboBox()
+        self.theme_combo.addItems(["Light", "Dark", "High Contrast"])
+        current_theme = self.settings.get('ui', 'theme') or "Dark"
+        self.theme_combo.setCurrentText(current_theme)
+        self.theme_combo.setAccessibleName("Application Theme")
+        layout.addRow("Theme:", self.theme_combo)
+
+        self.font_spin = QSpinBox()
+        self.font_spin.setRange(12, 72)
+        self.font_spin.setValue(self.settings.get('ui', 'font_size') or 24)
+        self.font_spin.setAccessibleName("Image Label Font Size")
+        layout.addRow("Image Label Font Size:", self.font_spin)
+
+    def init_hotkeys_tab(self) -> None:
+        """Initializes the Hotkeys configuration tab."""
         layout = QVBoxLayout(self.tab_hotkeys)
 
         self.hotkey_table = QTableWidget(0, 3)
         self.hotkey_table.setHorizontalHeaderLabels(["Hotkey", "Action (move/copy)", "Target Folder"])
         self.hotkey_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
+        self.hotkey_table.setAccessibleName("Hotkeys Configuration Table")
         layout.addWidget(self.hotkey_table)
 
         btn_layout = QHBoxLayout()
         self.btn_add_hotkey = QPushButton("Add Hotkey")
-        self.btn_add_hotkey.clicked.connect(self.add_hotkey_row)
+        self.btn_add_hotkey.clicked.connect(lambda: self.add_hotkey_row())
         self.btn_del_hotkey = QPushButton("Remove Selected")
         self.btn_del_hotkey.clicked.connect(self.remove_hotkey_row)
         btn_layout.addWidget(self.btn_add_hotkey)
@@ -98,12 +131,13 @@ class SettingsWindow(QWidget):
 
         self.load_hotkeys_to_table()
 
-    def init_ai_tab(self):
+    def init_ai_tab(self) -> None:
+        """Initializes the AI and Metadata configuration tab."""
         layout = QFormLayout(self.tab_ai)
 
         ai_layout = QHBoxLayout()
         self.chk_ai_enable = QCheckBox("Enable AI Auto-Tagging")
-        self.chk_ai_enable.setChecked(self.settings.get('ai_tagger', 'enabled'))
+        self.chk_ai_enable.setChecked(self.settings.get('ai_tagger', 'enabled') or False)
 
         self.btn_download_model = QPushButton("Download Model")
         self.btn_download_model.clicked.connect(self.download_ai_model)
@@ -122,17 +156,19 @@ class SettingsWindow(QWidget):
         layout.addRow("AI:", ai_layout)
 
         self.chk_exif = QCheckBox("Write tags to EXIF data")
-        self.chk_exif.setChecked(self.settings.get('metadata', 'write_exif'))
+        self.chk_exif.setChecked(self.settings.get('metadata', 'write_exif') or False)
         layout.addRow("Metadata:", self.chk_exif)
 
         self.chk_sidecar = QCheckBox("Write tags to sidecar .txt file")
-        self.chk_sidecar.setChecked(self.settings.get('metadata', 'write_sidecar'))
+        self.chk_sidecar.setChecked(self.settings.get('metadata', 'write_sidecar') or False)
         layout.addRow("", self.chk_sidecar)
 
-    def init_advanced_tab(self):
+    def init_advanced_tab(self) -> None:
+        """Initializes the Advanced/Hardware settings tab."""
         layout = QFormLayout(self.tab_advanced)
 
         self.btn_scan = QPushButton("Run Hardware Optimization Scan")
+        self.btn_scan.setAccessibleDescription("Scans the system to recommend optimal performance settings.")
         self.btn_scan.clicked.connect(self.run_hardware_scan)
         layout.addRow("", self.btn_scan)
 
@@ -140,33 +176,49 @@ class SettingsWindow(QWidget):
         self.lbl_scan_result.setWordWrap(True)
         layout.addRow("", self.lbl_scan_result)
 
-    def run_hardware_scan(self):
-        hw = scan_hardware()
-        report = (
-            f"<b>CPU Cores:</b> {hw['cpu_cores']}<br>"
-            f"<b>RAM:</b> {hw['memory_total_gb']} GB<br>"
-            f"<b>ONNX Providers:</b> {', '.join(hw['onnx_providers'])}<br><br>"
-            f"<b>Recommendations:</b><br>"
-            f"AI Provider: {hw['suggestions']['ai_provider']}<br>"
-            f"Worker Threads: {hw['suggestions']['queue_threads']}"
-        )
-        self.lbl_scan_result.setText(report)
-        QMessageBox.information(self, "Hardware Scan", "Hardware scanned successfully. Recommendations updated.")
+        self.worker_spin = QSpinBox()
+        self.worker_spin.setRange(1, 16)
+        self.worker_spin.setValue(self.settings.get('advanced', 'worker_threads') or 2)
+        self.worker_spin.setAccessibleName("Number of background worker threads")
+        layout.addRow("Worker Threads:", self.worker_spin)
 
-    def browse_folder(self, line_edit):
-        folder = QFileDialog.getExistingDirectory(self, "Select Directory")
+    def run_hardware_scan(self) -> None:
+        """Executes the hardware scan and updates the UI and settings recommendations."""
+        try:
+             hw = scan_hardware()
+             report = (
+                 f"<b>CPU Cores:</b> {hw['cpu_cores']}<br>"
+                 f"<b>RAM:</b> {hw['memory_total_gb']} GB<br>"
+                 f"<b>ONNX Providers:</b> {', '.join(hw['onnx_providers'])}<br><br>"
+                 f"<b>Recommendations:</b><br>"
+                 f"AI Provider: {hw['suggestions']['ai_provider']}<br>"
+                 f"Worker Threads: {hw['suggestions']['queue_threads']}"
+             )
+             self.lbl_scan_result.setText(report)
+             self.worker_spin.setValue(hw['suggestions']['queue_threads'])
+             QMessageBox.information(self, "Hardware Scan", "Hardware scanned successfully. Recommendations applied to settings.")
+        except Exception as e:
+             logger.error(f"Hardware scan failed: {e}")
+             QMessageBox.warning(self, "Error", f"Failed to run hardware scan: {e}")
+
+    def browse_folder(self, line_edit: QLineEdit) -> None:
+        """Opens a directory selection dialog and populates the given QLineEdit."""
+        folder = QFileDialog.getExistingDirectory(self, "Select Directory", line_edit.text())
         if folder:
-            line_edit.setText(folder)
+            line_edit.setText(os.path.normpath(folder))
 
-    def add_hotkey_row(self, key="", action="move", folder=""):
+    def add_hotkey_row(self, key: str = "", action: str = "move", folder: str = "") -> None:
+        """Adds a new row to the hotkey configuration table."""
         row = self.hotkey_table.rowCount()
         self.hotkey_table.insertRow(row)
 
-        self.hotkey_table.setItem(row, 0, QTableWidgetItem(key))
+        key_item = QTableWidgetItem(key)
+        self.hotkey_table.setItem(row, 0, key_item)
 
         action_combo = QComboBox()
         action_combo.addItems(["move", "copy"])
         action_combo.setCurrentText(action)
+        action_combo.setAccessibleName(f"Action for hotkey {key}")
         self.hotkey_table.setCellWidget(row, 1, action_combo)
 
         folder_widget = QWidget()
@@ -174,8 +226,10 @@ class SettingsWindow(QWidget):
         folder_layout.setContentsMargins(0, 0, 0, 0)
 
         folder_edit = QLineEdit(folder)
+        folder_edit.setAccessibleName(f"Target folder for hotkey {key}")
         folder_btn = QPushButton("...")
         folder_btn.setFixedWidth(30)
+        folder_btn.setAccessibleName(f"Browse target folder for hotkey {key}")
         folder_btn.clicked.connect(lambda: self.browse_folder(folder_edit))
 
         folder_layout.addWidget(folder_edit)
@@ -183,12 +237,14 @@ class SettingsWindow(QWidget):
 
         self.hotkey_table.setCellWidget(row, 2, folder_widget)
 
-    def remove_hotkey_row(self):
+    def remove_hotkey_row(self) -> None:
+        """Removes the currently selected hotkey row."""
         curr = self.hotkey_table.currentRow()
         if curr >= 0:
             self.hotkey_table.removeRow(curr)
 
-    def load_hotkeys_to_table(self):
+    def load_hotkeys_to_table(self) -> None:
+        """Populates the hotkey table from settings."""
         hotkeys = self.settings.get('hotkeys')
         if not hotkeys:
             return
@@ -196,7 +252,8 @@ class SettingsWindow(QWidget):
         for key, config in hotkeys.items():
             self.add_hotkey_row(key, config.get("action", "move"), config.get("folder", ""))
 
-    def download_ai_model(self):
+    def download_ai_model(self) -> None:
+        """Initiates the background download of the AI model."""
         reply = QMessageBox.question(self, 'Download Model', 'This will download approx 15MB. Continue?',
                                      QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
         if reply == QMessageBox.StandardButton.Yes:
@@ -208,29 +265,50 @@ class SettingsWindow(QWidget):
             self.downloader.finished.connect(self.on_download_finished)
             self.downloader.start()
 
-    def on_download_finished(self, success, msg):
+    def on_download_finished(self, success: bool, msg: str) -> None:
+        """Handles the completion of the AI model download."""
         self.progress.close()
         if success:
-            QMessageBox.information(self, "Success", "Model downloaded successfully! You can now enable AI tagging.")
+            QMessageBox.information(self, "Success", "Model downloaded and verified successfully! You can now enable AI tagging.")
             self.btn_download_model.setText("Model Downloaded")
             self.btn_download_model.setEnabled(False)
             self.chk_ai_enable.setEnabled(True)
         else:
             QMessageBox.critical(self, "Error", f"Failed to download model: {msg}")
 
-    def save_settings(self):
-        # General
-        self.settings.set('directories', 'source', self.src_edit.text())
-        self.settings.set('directories', 'trash', self.trash_edit.text())
-        self.settings.set('ui', 'fullscreen', self.chk_fullscreen.isChecked())
+    def save_settings(self) -> None:
+        """Validates and saves all settings configured in the UI."""
+        # Validation
+        src_dir = self.src_edit.text()
+        if src_dir and not os.path.exists(src_dir):
+             QMessageBox.warning(self, "Validation Error", f"Source directory does not exist: {src_dir}")
+             return
+
+        # General / UI
+        self.settings.set('directories', 'source', os.path.normpath(src_dir) if src_dir else "")
+
+        trash_dir = self.trash_edit.text()
+        self.settings.set('directories', 'trash', os.path.normpath(trash_dir) if trash_dir else "")
+
+        # We need to update multiple UI settings, so use update_section carefully to preserve existing
+        ui_settings = self.settings.get('ui') or {}
+        ui_settings['fullscreen'] = self.chk_fullscreen.isChecked()
+        ui_settings['theme'] = self.theme_combo.currentText()
+        ui_settings['font_size'] = self.font_spin.value()
+        self.settings.update_section('ui', ui_settings)
 
         # AI
         self.settings.set('ai_tagger', 'enabled', self.chk_ai_enable.isChecked())
         self.settings.set('metadata', 'write_exif', self.chk_exif.isChecked())
         self.settings.set('metadata', 'write_sidecar', self.chk_sidecar.isChecked())
 
+        # Advanced
+        adv_settings = self.settings.get('advanced') or {}
+        adv_settings['worker_threads'] = self.worker_spin.value()
+        self.settings.update_section('advanced', adv_settings)
+
         # Hotkeys
-        hotkeys = {}
+        hotkeys: Dict[str, Dict[str, str]] = {}
         for row in range(self.hotkey_table.rowCount()):
             key_item = self.hotkey_table.item(row, 0)
             if not key_item or not key_item.text().strip():
@@ -244,7 +322,11 @@ class SettingsWindow(QWidget):
             folder_edit = folder_widget.layout().itemAt(0).widget()
             folder = folder_edit.text()
 
-            hotkeys[key] = {"action": action, "folder": folder}
+            if folder and not os.path.exists(folder):
+                 QMessageBox.warning(self, "Validation Error", f"Target folder for hotkey '{key}' does not exist: {folder}")
+                 return
+
+            hotkeys[key] = {"action": action, "folder": os.path.normpath(folder) if folder else ""}
 
         self.settings.update_section('hotkeys', hotkeys)
 
