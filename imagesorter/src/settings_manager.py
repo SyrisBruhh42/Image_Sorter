@@ -49,11 +49,15 @@ class SettingsManager:
                 print(f"Error loading settings: {e}")
 
     def save(self):
+        import tempfile
         try:
-            with open(self.filepath, 'w', encoding='utf-8') as f:
+            fd, temp_path = tempfile.mkstemp(dir=os.path.dirname(os.path.abspath(self.filepath)), text=True)
+            with os.fdopen(fd, 'w', encoding='utf-8') as f:
                 json.dump(self.settings, f, indent=4)
+            os.replace(temp_path, self.filepath)
         except Exception as e:
-            print(f"Error saving settings: {e}")
+            import logging
+            logging.error(f"Error saving settings atomically: {e}")
 
     def get(self, section, key=None):
         if key:

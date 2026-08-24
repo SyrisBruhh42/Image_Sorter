@@ -82,8 +82,8 @@ class SettingsWindow(QWidget):
     def init_hotkeys_tab(self):
         layout = QVBoxLayout(self.tab_hotkeys)
 
-        self.hotkey_table = QTableWidget(0, 3)
-        self.hotkey_table.setHorizontalHeaderLabels(["Hotkey", "Action (move/copy)", "Target Folder"])
+        self.hotkey_table = QTableWidget(0, 4)
+        self.hotkey_table.setHorizontalHeaderLabels(["Hotkey", "Action (move/copy)", "Target Folder", "Auto-Advance"])
         self.hotkey_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
         layout.addWidget(self.hotkey_table)
 
@@ -158,7 +158,7 @@ class SettingsWindow(QWidget):
         if folder:
             line_edit.setText(folder)
 
-    def add_hotkey_row(self, key="", action="move", folder=""):
+    def add_hotkey_row(self, key="", action="move", folder="", auto_advance=True):
         row = self.hotkey_table.rowCount()
         self.hotkey_table.insertRow(row)
 
@@ -183,6 +183,16 @@ class SettingsWindow(QWidget):
 
         self.hotkey_table.setCellWidget(row, 2, folder_widget)
 
+        advance_chk = QCheckBox()
+        advance_chk.setChecked(auto_advance)
+        # Center the checkbox
+        chk_widget = QWidget()
+        chk_layout = QHBoxLayout(chk_widget)
+        chk_layout.addWidget(advance_chk)
+        chk_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        chk_layout.setContentsMargins(0, 0, 0, 0)
+        self.hotkey_table.setCellWidget(row, 3, chk_widget)
+
     def remove_hotkey_row(self):
         curr = self.hotkey_table.currentRow()
         if curr >= 0:
@@ -194,7 +204,7 @@ class SettingsWindow(QWidget):
             return
 
         for key, config in hotkeys.items():
-            self.add_hotkey_row(key, config.get("action", "move"), config.get("folder", ""))
+            self.add_hotkey_row(key, config.get("action", "move"), config.get("folder", ""), config.get("auto_advance", True))
 
     def download_ai_model(self):
         reply = QMessageBox.question(self, 'Download Model', 'This will download approx 15MB. Continue?',
@@ -244,7 +254,11 @@ class SettingsWindow(QWidget):
             folder_edit = folder_widget.layout().itemAt(0).widget()
             folder = folder_edit.text()
 
-            hotkeys[key] = {"action": action, "folder": folder}
+            chk_widget = self.hotkey_table.cellWidget(row, 3)
+            advance_chk = chk_widget.layout().itemAt(0).widget()
+            auto_advance = advance_chk.isChecked()
+
+            hotkeys[key] = {"action": action, "folder": folder, "auto_advance": auto_advance}
 
         self.settings.update_section('hotkeys', hotkeys)
 

@@ -9,6 +9,7 @@ class WorkerSignals(QObject):
     finished = pyqtSignal(str)
     error = pyqtSignal(str, str)
     progress = pyqtSignal(str)
+    undo_record = pyqtSignal(dict)
 
 class QueueWorker(QThread):
     def __init__(self, settings_manager):
@@ -70,14 +71,41 @@ class QueueWorker(QThread):
                 if task_type == 'move':
                     shutil.move(filepath, dest_path)
                     self.signals.progress.emit(f"Moved {filename} to {dest_folder}")
+                    self.signals.undo_record.emit({
+                        'type': 'move',
+                        'original': filepath,
+                        'new': dest_path
+                    })
                 elif task_type == 'copy':
                     shutil.copy2(filepath, dest_path)
                     self.signals.progress.emit(f"Copied {filename} to {dest_folder}")
+                    self.signals.undo_record.emit({
+                        'type': 'copy',
+                        'original': filepath,
+                        'new': dest_path
+                    })
 
             elif task_type == 'trash':
+                # Actually we can't easily undo send2trash programmatically in a cross-platform way
+                # without shell hooks. For now we will just use it, but no undo record for trash.
                 send2trash(filepath)
                 self.signals.progress.emit(f"Trashed {filename}")
                 self.signals.finished.emit(filepath)
+                return
+
+            elif task_type == 'undo_move':
+                # Move back
+                dest_path = task['dest_folder'] # Here dest_folder is the original path
+                shutil.move(filepath, dest_path)
+                self.signals.progress.emit(f"Undid move: {filename}")
+                self.signals.finished.emit(dest_path)
+                return
+
+            elif task_type == 'undo_copy':
+                # Delete the copy
+                os.remove(filepath)
+                self.signals.progress.emit(f"Undid copy: {filename}")
+                # Don't emit finished here, it's just cleanup
                 return
 
             # Handle AI Tagging & Metadata

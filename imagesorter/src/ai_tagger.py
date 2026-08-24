@@ -6,6 +6,11 @@ import numpy as np
 from PIL import Image
 import piexif
 from PyQt6.QtCore import QThread, pyqtSignal
+import hashlib
+import tempfile
+import logging
+
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 # Using a lightweight MobileNetV2 model for general classification
 # Note: For a real release, you'd host this yourself or use a dedicated booru model.
@@ -38,6 +43,13 @@ class ModelDownloader(QThread):
                         self.progress.emit(min(percent, 100))
 
                 urllib.request.urlretrieve(MODEL_URL, self.model_path, reporthook=report)
+
+                # Checksum validation (dummy check here for demo purposes, you'd put real hash)
+                sha256_hash = hashlib.sha256()
+                with open(self.model_path, "rb") as f:
+                    for byte_block in iter(lambda: f.read(4096), b""):
+                        sha256_hash.update(byte_block)
+                logging.info(f"Model downloaded. SHA256: {sha256_hash.hexdigest()}")
 
             self.finished.emit(True, "Model ready.")
         except Exception as e:
@@ -107,10 +119,12 @@ def write_metadata(filepath, tags, write_exif=True, write_sidecar=False):
     if write_sidecar:
         sidecar_path = filepath + ".txt"
         try:
-            with open(sidecar_path, 'w', encoding='utf-8') as f:
+            fd, temp_path = tempfile.mkstemp(dir=os.path.dirname(os.path.abspath(sidecar_path)), text=True)
+            with os.fdopen(fd, 'w', encoding='utf-8') as f:
                 f.write(", ".join(tags))
+            os.replace(temp_path, sidecar_path)
         except Exception as e:
-            print(f"Error writing sidecar: {e}")
+            logging.error(f"Error writing sidecar atomically: {e}")
 
     # Write EXIF (XPKeywords for Windows compatibility)
     if write_exif and filepath.lower().endswith(('.jpg', '.jpeg')):
@@ -129,4 +143,4 @@ def write_metadata(filepath, tags, write_exif=True, write_sidecar=False):
             exif_bytes = piexif.dump(exif_dict)
             piexif.insert(exif_bytes, filepath)
         except Exception as e:
-            print(f"Error writing EXIF: {e}")
+            logging.error(f"Error writing EXIF: {e}")
