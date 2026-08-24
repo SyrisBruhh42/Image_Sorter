@@ -193,6 +193,16 @@ class SettingsWindow(QWidget):
         chk_layout.setContentsMargins(0, 0, 0, 0)
         self.hotkey_table.setCellWidget(row, 3, chk_widget)
 
+        advance_chk = QCheckBox()
+        advance_chk.setChecked(auto_advance)
+        # Center the checkbox
+        chk_widget = QWidget()
+        chk_layout = QHBoxLayout(chk_widget)
+        chk_layout.addWidget(advance_chk)
+        chk_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        chk_layout.setContentsMargins(0, 0, 0, 0)
+        self.hotkey_table.setCellWidget(row, 3, chk_widget)
+
     def remove_hotkey_row(self):
         curr = self.hotkey_table.currentRow()
         if curr >= 0:

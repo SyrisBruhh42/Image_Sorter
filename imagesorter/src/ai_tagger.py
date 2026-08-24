@@ -51,6 +51,13 @@ class ModelDownloader(QThread):
                         sha256_hash.update(byte_block)
                 logging.info(f"Model downloaded. SHA256: {sha256_hash.hexdigest()}")
 
+                # Checksum validation (dummy check here for demo purposes, you'd put real hash)
+                sha256_hash = hashlib.sha256()
+                with open(self.model_path, "rb") as f:
+                    for byte_block in iter(lambda: f.read(4096), b""):
+                        sha256_hash.update(byte_block)
+                logging.info(f"Model downloaded. SHA256: {sha256_hash.hexdigest()}")
+
             self.finished.emit(True, "Model ready.")
         except Exception as e:
             self.finished.emit(False, str(e))
