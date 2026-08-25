@@ -17,7 +17,8 @@ DEFAULT_SETTINGS = {
     },
     "ui": {
         "fullscreen": False,
-        "show_tags": True
+        "show_tags": True,
+        "tooltips_enabled": True
     },
     "metadata": {
         "write_exif": True,

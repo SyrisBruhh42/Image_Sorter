@@ -2,10 +2,10 @@ import os
 import shutil
 from typing import List, Dict, Optional
 from PyQt6.QtWidgets import (
-    QMainWindow, QLabel, QVBoxLayout, QWidget, QMessageBox, QMenu, QApplication, QGraphicsView, QGraphicsScene, QGraphicsPixmapItem
+    QMainWindow, QLabel, QVBoxLayout, QHBoxLayout, QWidget, QMessageBox, QMenu, QApplication, QGraphicsView, QGraphicsScene, QGraphicsPixmapItem, QProgressBar
 )
 from PyQt6.QtGui import QPixmap, QImageReader, QKeySequence, QAction, QPalette, QColor, QPainter, QTransform, QCursor, QImage, qRgb, QWheelEvent, QMouseEvent
-from PyQt6.QtCore import Qt, QSize, QEvent
+from PyQt6.QtCore import Qt, QSize, QEvent, QObject
 from src.ui_settings import SettingsWindow
 from src.queue_worker import QueueWorker
 from src.settings_manager import SettingsManager
@@ -158,6 +158,9 @@ class MainViewer(QMainWindow):
         super().__init__()
         self.settings = settings_manager
 
+        # Install application-wide event filter for tooltips
+        QApplication.instance().installEventFilter(self)
+
         # Initialize worker and connect signals
         self.worker = QueueWorker(self.settings)
         self.worker.signals.progress.connect(self.on_worker_progress)
@@ -177,6 +180,18 @@ class MainViewer(QMainWindow):
         self.apply_theme()
         self.init_ui()
         self.load_images()
+
+
+    def eventFilter(self, obj: 'QObject', event: QEvent) -> bool:
+        if event.type() == QEvent.Type.ToolTip:
+            tooltips_enabled = self.settings.get('ui', 'tooltips_enabled')
+            if tooltips_enabled is None:
+                tooltips_enabled = True
+            if not tooltips_enabled:
+                modifiers = QApplication.keyboardModifiers()
+                if not (modifiers & Qt.KeyboardModifier.AltModifier):
+                    return True  # Consume the event to prevent tooltip
+        return super().eventFilter(obj, event)
 
     def on_image_preloaded(self, filepath: str, img: QImage) -> None:
         if filepath not in self.pixmap_cache:
@@ -208,6 +223,37 @@ class MainViewer(QMainWindow):
         self.layout = QVBoxLayout(self.central_widget)
         self.layout.setContentsMargins(0, 0, 0, 0)
 
+        # Enterprise HUD overlay
+        self.hud_widget = QWidget(self.central_widget)
+        self.hud_widget.setStyleSheet("background-color: rgba(0, 0, 0, 180); color: white; border-radius: 5px; padding: 5px;")
+        hud_layout = QVBoxLayout(self.hud_widget)
+        hud_layout.setContentsMargins(10, 5, 10, 5)
+
+        self.hud_filename = QLabel("No File")
+        self.hud_filename.setStyleSheet("font-weight: bold; font-size: 14px;")
+        self.hud_filename.setToolTip("Current file name and index in the directory.")
+
+        self.hud_filepath = QLabel("")
+        self.hud_filepath.setStyleSheet("font-size: 10px; color: #aaaaaa;")
+        self.hud_filepath.setToolTip("Full absolute path to the current image.")
+
+        self.hud_status = QLabel("Ready")
+        self.hud_status.setStyleSheet("font-size: 12px; color: #55ff55;")
+        self.hud_status.setToolTip("Current background operation status (e.g., Tagging, Moving).")
+
+        self.hud_progress = QProgressBar()
+        self.hud_progress.setTextVisible(False)
+        self.hud_progress.setFixedHeight(4)
+        self.hud_progress.hide()
+        self.hud_progress.setToolTip("Progress of the current background operation.")
+
+        hud_layout.addWidget(self.hud_filename)
+        hud_layout.addWidget(self.hud_filepath)
+        hud_layout.addWidget(self.hud_status)
+        hud_layout.addWidget(self.hud_progress)
+
+        self.hud_widget.hide() # Hidden initially until image loads
+
         # Image Display Viewer
         self.viewer = ImageViewer(self)
         self.viewer.hide()
@@ -216,6 +262,7 @@ class MainViewer(QMainWindow):
         self.empty_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.empty_label.setAccessibleName("Image Display Area")
         self.empty_label.setAccessibleDescription("Displays the current image to be sorted.")
+        self.empty_label.setToolTip("The source directory has no supported images. Open settings to configure a valid source path.")
         font_size = self.settings.get('ui', 'font_size') or 24
         self.empty_label.setStyleSheet(f"font-size: {font_size}px; padding: 20px;")
 
@@ -273,16 +320,19 @@ class MainViewer(QMainWindow):
 
         settings_action = QAction("&Settings", self)
         settings_action.setShortcut(QKeySequence("S"))
+        settings_action.setToolTip("Open the configuration menu to adjust directories, AI settings, and hotkeys. (Shortcut: S)")
         settings_action.triggered.connect(self.open_settings)
         file_menu.addAction(settings_action)
 
         reload_action = QAction("&Reload Images", self)
         reload_action.setShortcut(QKeySequence("R"))
+        reload_action.setToolTip("Refresh the current directory to discover new images or update the queue. (Shortcut: R)")
         reload_action.triggered.connect(self.load_images)
         file_menu.addAction(reload_action)
 
         undo_action = QAction("&Undo Last Action", self)
         undo_action.setShortcut(QKeySequence("Ctrl+Z"))
+        undo_action.setToolTip("Revert the last file move or copy operation. (Shortcut: Ctrl+Z)")
         undo_action.triggered.connect(self.undo_last_action)
         file_menu.addAction(undo_action)
 
@@ -290,6 +340,7 @@ class MainViewer(QMainWindow):
 
         exit_action = QAction("E&xit", self)
         exit_action.setShortcut(QKeySequence("Esc"))
+        exit_action.setToolTip("Safely close the application and stop background workers. (Shortcut: Esc)")
         exit_action.triggered.connect(self.close)
         file_menu.addAction(exit_action)
 
@@ -297,13 +348,16 @@ class MainViewer(QMainWindow):
 
         self.locked_zoom_action = QAction("&Lock Pan/Zoom", self, checkable=True)
         self.locked_zoom_action.setShortcut(QKeySequence("L"))
+        self.locked_zoom_action.setToolTip("Keep the current zoom level and pan position when navigating between images. (Shortcut: L)")
         self.locked_zoom_action.triggered.connect(self.toggle_locked_zoom)
         view_menu.addAction(self.locked_zoom_action)
 
         zen_action = QAction("&Zen Mode", self)
         zen_action.setShortcut(QKeySequence("Z"))
+        zen_action.setToolTip("Hide all UI elements (menus, status bar) for an immersive viewing experience. (Shortcut: Z)")
         zen_action.triggered.connect(self.toggle_zen_mode)
         view_menu.addAction(zen_action)
+
 
     def toggle_zen_mode(self) -> None:
         self.zen_mode = not self.zen_mode
@@ -362,6 +416,7 @@ class MainViewer(QMainWindow):
         """Displays the image at the current index, using efficient scaling and QGraphicsView caching."""
         if not self.images or self.current_index < 0 or self.current_index >= len(self.images):
             self.viewer.hide()
+            self.hud_widget.hide()
             self.empty_label.show()
             self.empty_label.setText("All done!")
             self.setWindowTitle("Image Sorter - Enterprise")
