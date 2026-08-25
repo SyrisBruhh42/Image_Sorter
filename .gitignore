@@ -1,5 +1,31 @@
+# Build artifacts
 dist/
 build/
+imagesorter/dist/
+imagesorter/build/
+
+# PyInstaller
 *.spec
+!imagesorter/ImageSorter.spec
+
+# Python caches
 __pycache__/
+*.pyc
+.pytest_cache/
+
+# Environments
 venv/
+env/
+.env
+
+# Logs and temporary files
+*.log
+*.tmp
+.DS_Store
+
+# Models directory contents except .gitkeep
+imagesorter/models/*
+!imagesorter/models/.gitkeep
+.coverage
+coverage.xml
+htmlcov/
