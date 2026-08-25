@@ -73,8 +73,10 @@ class SettingsWindow(QWidget):
         src_layout = QHBoxLayout()
         self.src_edit = QLineEdit(self.settings.get('directories', 'source') or "")
         self.src_edit.setAccessibleName("Source Directory Path")
+        self.src_edit.setToolTip("The directory where the application will scan for supported images. (Enterprise standard: Local storage recommended for speed)")
         self.src_btn = QPushButton("Browse...")
         self.src_btn.setAccessibleName("Browse Source Directory")
+        self.src_btn.setToolTip("Open a file dialog to select the source directory.")
         self.src_btn.clicked.connect(lambda: self.browse_folder(self.src_edit))
         src_layout.addWidget(self.src_edit)
         src_layout.addWidget(self.src_btn)
@@ -84,8 +86,10 @@ class SettingsWindow(QWidget):
         trash_layout = QHBoxLayout()
         self.trash_edit = QLineEdit(self.settings.get('directories', 'trash') or "")
         self.trash_edit.setAccessibleName("Trash Directory Path")
+        self.trash_edit.setToolTip("The directory where images deleted via the interface will be moved. Ensures a non-destructive workflow.")
         self.trash_btn = QPushButton("Browse...")
         self.trash_btn.setAccessibleName("Browse Trash Directory")
+        self.trash_btn.setToolTip("Open a file dialog to select the trash directory.")
         self.trash_btn.clicked.connect(lambda: self.browse_folder(self.trash_edit))
         trash_layout.addWidget(self.trash_edit)
         trash_layout.addWidget(self.trash_btn)
@@ -93,20 +97,31 @@ class SettingsWindow(QWidget):
 
         # UI Options (QOL & Accessibility)
         self.chk_fullscreen = QCheckBox("Start in Fullscreen Mode")
+        self.chk_fullscreen.setToolTip("Launch the application in full screen by default to maximize screen real estate.")
         self.chk_fullscreen.setChecked(self.settings.get('ui', 'fullscreen') or False)
         layout.addRow("UI Mode:", self.chk_fullscreen)
+
+        self.chk_tooltips = QCheckBox("Enable Helpful Tooltips")
+        self.chk_tooltips.setToolTip("Toggle helpful tooltips throughout the application. Hold Alt key to bypass.")
+        tooltips_enabled = self.settings.get('ui', 'tooltips_enabled')
+        if tooltips_enabled is None:
+             tooltips_enabled = True
+        self.chk_tooltips.setChecked(tooltips_enabled)
+        layout.addRow("Tooltips:", self.chk_tooltips)
 
         self.theme_combo = QComboBox()
         self.theme_combo.addItems(["Light", "Dark", "High Contrast"])
         current_theme = self.settings.get('ui', 'theme') or "Dark"
         self.theme_combo.setCurrentText(current_theme)
         self.theme_combo.setAccessibleName("Application Theme")
+        self.theme_combo.setToolTip("Select the visual theme. High Contrast is recommended for accessibility.")
         layout.addRow("Theme:", self.theme_combo)
 
         self.font_spin = QSpinBox()
         self.font_spin.setRange(12, 72)
         self.font_spin.setValue(self.settings.get('ui', 'font_size') or 24)
         self.font_spin.setAccessibleName("Image Label Font Size")
+        self.font_spin.setToolTip("Adjust the text size for labels and empty states for better readability.")
         layout.addRow("Image Label Font Size:", self.font_spin)
 
     def init_hotkeys_tab(self) -> None:
@@ -117,12 +132,15 @@ class SettingsWindow(QWidget):
         self.hotkey_table.setHorizontalHeaderLabels(["Hotkey", "Action (move/copy)", "Target Folder", "Auto Advance"])
         self.hotkey_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
         self.hotkey_table.setAccessibleName("Hotkeys Configuration Table")
+        self.hotkey_table.setToolTip("Configure keyboard shortcuts to rapidly move or copy images to designated folders.")
         layout.addWidget(self.hotkey_table)
 
         btn_layout = QHBoxLayout()
         self.btn_add_hotkey = QPushButton("Add Hotkey")
+        self.btn_add_hotkey.setToolTip("Create a new keyboard shortcut binding.")
         self.btn_add_hotkey.clicked.connect(lambda: self.add_hotkey_row())
         self.btn_del_hotkey = QPushButton("Remove Selected")
+        self.btn_del_hotkey.setToolTip("Remove the currently selected hotkey binding from the list.")
         self.btn_del_hotkey.clicked.connect(self.remove_hotkey_row)
         btn_layout.addWidget(self.btn_add_hotkey)
         btn_layout.addWidget(self.btn_del_hotkey)
@@ -136,9 +154,11 @@ class SettingsWindow(QWidget):
 
         ai_layout = QHBoxLayout()
         self.chk_ai_enable = QCheckBox("Enable AI Auto-Tagging")
+        self.chk_ai_enable.setToolTip("Automatically analyze images to generate relevant descriptive tags using an ONNX ML model.")
         self.chk_ai_enable.setChecked(self.settings.get('ai_tagger', 'enabled') or False)
 
         self.btn_download_model = QPushButton("Download Model")
+        self.btn_download_model.setToolTip("Download the required ONNX model for the AI Auto-Tagger to function.")
         self.btn_download_model.clicked.connect(self.download_ai_model)
 
         # Check if model exists
@@ -155,10 +175,12 @@ class SettingsWindow(QWidget):
 
         # Metadata Options
         self.chk_exif = QCheckBox("Write Tags to EXIF (XPKeywords)")
+        self.chk_exif.setToolTip("Embed generated tags directly into the image file's EXIF metadata. Note: Modifies the original file.")
         self.chk_exif.setChecked(self.settings.get('metadata', 'write_exif') or False)
         layout.addRow("Metadata:", self.chk_exif)
 
         self.chk_sidecar = QCheckBox("Write Tags to Sidecar (.txt)")
+        self.chk_sidecar.setToolTip("Save generated tags in a separate text file alongside the image. A non-destructive way to keep metadata.")
         self.chk_sidecar.setChecked(self.settings.get('metadata', 'write_sidecar') or False)
         layout.addRow("", self.chk_sidecar)
 
@@ -170,6 +192,7 @@ class SettingsWindow(QWidget):
         self.worker_spin.setRange(1, 32)
         self.worker_spin.setValue(self.settings.get('advanced', 'worker_threads') or 2)
         self.worker_spin.setAccessibleName("Number of Worker Threads")
+        self.worker_spin.setToolTip("Adjust the number of background threads for processing files and AI tasks. Higher is faster but uses more CPU.")
         layout.addRow("Worker Threads:", self.worker_spin)
 
         self.btn_scan = QPushButton("Run Hardware Scan for Optimizations")
