@@ -31,24 +31,33 @@ class SettingsWindow(QWidget):
 
         self.tabs = QTabWidget()
         self.tabs.setAccessibleName("Settings Categories")
+        self.tabs.setAccessibleDescription("Use arrow keys to navigate between different categories of application settings.")
 
         # General Tab
         self.tab_general = QWidget()
+        self.tab_general.setAccessibleName("General & UI Tab")
+        self.tab_general.setAccessibleDescription("Configure basic directory paths and user interface appearance settings.")
         self.init_general_tab()
         self.tabs.addTab(self.tab_general, "General & UI")
 
         # Hotkeys Tab
         self.tab_hotkeys = QWidget()
+        self.tab_hotkeys.setAccessibleName("Hotkeys Tab")
+        self.tab_hotkeys.setAccessibleDescription("Manage keyboard shortcuts for sorting and manipulating images.")
         self.init_hotkeys_tab()
         self.tabs.addTab(self.tab_hotkeys, "Hotkeys")
 
         # AI Tab
         self.tab_ai = QWidget()
+        self.tab_ai.setAccessibleName("AI & Metadata Tab")
+        self.tab_ai.setAccessibleDescription("Enable and configure Artificial Intelligence auto-tagging and metadata generation.")
         self.init_ai_tab()
         self.tabs.addTab(self.tab_ai, "AI & Metadata")
 
         # Advanced/Hardware Tab
         self.tab_advanced = QWidget()
+        self.tab_advanced.setAccessibleName("Advanced Tab")
+        self.tab_advanced.setAccessibleDescription("Adjust performance and hardware-specific optimizations.")
         self.init_advanced_tab()
         self.tabs.addTab(self.tab_advanced, "Advanced")
 
@@ -97,11 +106,15 @@ class SettingsWindow(QWidget):
 
         # UI Options (QOL & Accessibility)
         self.chk_fullscreen = QCheckBox("Start in Fullscreen Mode")
+        self.chk_fullscreen.setAccessibleName("Start in Fullscreen Mode Toggle")
+        self.chk_fullscreen.setAccessibleDescription("When checked, the application launches in full screen mode to maximize workspace.")
         self.chk_fullscreen.setToolTip("Launch the application in full screen by default to maximize screen real estate.")
         self.chk_fullscreen.setChecked(self.settings.get('ui', 'fullscreen') or False)
         layout.addRow("UI Mode:", self.chk_fullscreen)
 
         self.chk_tooltips = QCheckBox("Enable Helpful Tooltips")
+        self.chk_tooltips.setAccessibleName("Enable Helpful Tooltips Toggle")
+        self.chk_tooltips.setAccessibleDescription("When checked, tooltips appear when hovering over UI elements.")
         self.chk_tooltips.setToolTip("Toggle helpful tooltips throughout the application. Hold Alt key to bypass.")
         tooltips_enabled = self.settings.get('ui', 'tooltips_enabled')
         if tooltips_enabled is None:
@@ -113,14 +126,16 @@ class SettingsWindow(QWidget):
         self.theme_combo.addItems(["Light", "Dark", "High Contrast"])
         current_theme = self.settings.get('ui', 'theme') or "Dark"
         self.theme_combo.setCurrentText(current_theme)
-        self.theme_combo.setAccessibleName("Application Theme")
+        self.theme_combo.setAccessibleName("Application Theme Selector")
+        self.theme_combo.setAccessibleDescription("Dropdown menu to choose the visual theme: Light, Dark, or High Contrast.")
         self.theme_combo.setToolTip("Select the visual theme. High Contrast is recommended for accessibility.")
         layout.addRow("Theme:", self.theme_combo)
 
         self.font_spin = QSpinBox()
         self.font_spin.setRange(12, 72)
         self.font_spin.setValue(self.settings.get('ui', 'font_size') or 24)
-        self.font_spin.setAccessibleName("Image Label Font Size")
+        self.font_spin.setAccessibleName("Image Label Font Size Spinner")
+        self.font_spin.setAccessibleDescription("Spin box to adjust the text size of the empty state image label.")
         self.font_spin.setToolTip("Adjust the text size for labels and empty states for better readability.")
         layout.addRow("Image Label Font Size:", self.font_spin)
 
@@ -132,14 +147,20 @@ class SettingsWindow(QWidget):
         self.hotkey_table.setHorizontalHeaderLabels(["Hotkey", "Action (move/copy)", "Target Folder", "Auto Advance"])
         self.hotkey_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
         self.hotkey_table.setAccessibleName("Hotkeys Configuration Table")
+        self.hotkey_table.setAccessibleDescription("Table listing all configured custom hotkeys, actions, and their respective target folders.")
         self.hotkey_table.setToolTip("Configure keyboard shortcuts to rapidly move or copy images to designated folders.")
         layout.addWidget(self.hotkey_table)
 
         btn_layout = QHBoxLayout()
         self.btn_add_hotkey = QPushButton("Add Hotkey")
+        self.btn_add_hotkey.setAccessibleName("Add Hotkey Button")
+        self.btn_add_hotkey.setAccessibleDescription("Adds a new row to the hotkey table for defining a custom shortcut.")
         self.btn_add_hotkey.setToolTip("Create a new keyboard shortcut binding.")
         self.btn_add_hotkey.clicked.connect(lambda: self.add_hotkey_row())
+
         self.btn_del_hotkey = QPushButton("Remove Selected")
+        self.btn_del_hotkey.setAccessibleName("Remove Selected Hotkey Button")
+        self.btn_del_hotkey.setAccessibleDescription("Deletes the currently selected row from the hotkey table.")
         self.btn_del_hotkey.setToolTip("Remove the currently selected hotkey binding from the list.")
         self.btn_del_hotkey.clicked.connect(self.remove_hotkey_row)
         btn_layout.addWidget(self.btn_add_hotkey)
@@ -154,10 +175,14 @@ class SettingsWindow(QWidget):
 
         ai_layout = QHBoxLayout()
         self.chk_ai_enable = QCheckBox("Enable AI Auto-Tagging")
+        self.chk_ai_enable.setAccessibleName("Enable AI Auto-Tagging Toggle")
+        self.chk_ai_enable.setAccessibleDescription("Check to enable automatic machine learning-based image tagging.")
         self.chk_ai_enable.setToolTip("Automatically analyze images to generate relevant descriptive tags using an ONNX ML model.")
         self.chk_ai_enable.setChecked(self.settings.get('ai_tagger', 'enabled') or False)
 
         self.btn_download_model = QPushButton("Download Model")
+        self.btn_download_model.setAccessibleName("Download AI Model Button")
+        self.btn_download_model.setAccessibleDescription("Downloads the ONNX machine learning model required for tagging images.")
         self.btn_download_model.setToolTip("Download the required ONNX model for the AI Auto-Tagger to function.")
         self.btn_download_model.clicked.connect(self.download_ai_model)
 
@@ -175,11 +200,15 @@ class SettingsWindow(QWidget):
 
         # Metadata Options
         self.chk_exif = QCheckBox("Write Tags to EXIF (XPKeywords)")
+        self.chk_exif.setAccessibleName("Write Tags to EXIF Toggle")
+        self.chk_exif.setAccessibleDescription("When checked, AI tags are embedded into the image's EXIF metadata.")
         self.chk_exif.setToolTip("Embed generated tags directly into the image file's EXIF metadata. Note: Modifies the original file.")
         self.chk_exif.setChecked(self.settings.get('metadata', 'write_exif') or False)
         layout.addRow("Metadata:", self.chk_exif)
 
         self.chk_sidecar = QCheckBox("Write Tags to Sidecar (.txt)")
+        self.chk_sidecar.setAccessibleName("Write Tags to Sidecar Text File Toggle")
+        self.chk_sidecar.setAccessibleDescription("When checked, AI tags are saved in an external text file alongside the image.")
         self.chk_sidecar.setToolTip("Save generated tags in a separate text file alongside the image. A non-destructive way to keep metadata.")
         self.chk_sidecar.setChecked(self.settings.get('metadata', 'write_sidecar') or False)
         layout.addRow("", self.chk_sidecar)
@@ -191,16 +220,20 @@ class SettingsWindow(QWidget):
         self.worker_spin = QSpinBox()
         self.worker_spin.setRange(1, 32)
         self.worker_spin.setValue(self.settings.get('advanced', 'worker_threads') or 2)
-        self.worker_spin.setAccessibleName("Number of Worker Threads")
+        self.worker_spin.setAccessibleName("Number of Worker Threads Spinner")
+        self.worker_spin.setAccessibleDescription("Adjusts how many background threads the application can use for I/O operations and AI processing.")
         self.worker_spin.setToolTip("Adjust the number of background threads for processing files and AI tasks. Higher is faster but uses more CPU.")
         layout.addRow("Worker Threads:", self.worker_spin)
 
         self.btn_scan = QPushButton("Run Hardware Scan for Optimizations")
+        self.btn_scan.setAccessibleName("Run Hardware Scan Button")
         self.btn_scan.clicked.connect(self.run_hardware_scan)
-        self.btn_scan.setAccessibleDescription("Scans the system to recommend optimal thread and AI settings.")
+        self.btn_scan.setAccessibleDescription("Scans the system's CPU and RAM to recommend optimal thread counts and AI providers.")
         layout.addRow("Optimization:", self.btn_scan)
 
         self.lbl_scan_result = QLabel("")
+        self.lbl_scan_result.setAccessibleName("Hardware Scan Results")
+        self.lbl_scan_result.setAccessibleDescription("Displays the output of the hardware scan and optimization recommendations.")
         self.lbl_scan_result.setWordWrap(True)
         layout.addRow("", self.lbl_scan_result)
 

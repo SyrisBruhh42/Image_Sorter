@@ -2,7 +2,7 @@ import os
 import shutil
 from typing import List, Dict, Optional
 from PyQt6.QtWidgets import (
-    QMainWindow, QLabel, QVBoxLayout, QHBoxLayout, QWidget, QMessageBox, QMenu, QApplication, QGraphicsView, QGraphicsScene, QGraphicsPixmapItem, QProgressBar
+    QMainWindow, QLabel, QVBoxLayout, QHBoxLayout, QWidget, QMessageBox, QMenu, QApplication, QGraphicsView, QGraphicsScene, QGraphicsPixmapItem, QProgressBar, QLineEdit, QTextEdit
 )
 from PyQt6.QtGui import QPixmap, QImageReader, QKeySequence, QAction, QPalette, QColor, QPainter, QTransform, QCursor, QImage, qRgb, QWheelEvent, QMouseEvent
 from PyQt6.QtCore import Qt, QSize, QEvent, QObject
@@ -11,6 +11,7 @@ from src.queue_worker import QueueWorker
 from src.settings_manager import SettingsManager
 from src.logger import logger
 from src.image_loader import ImageLoader
+from src.ui_hud import EnterpriseHUD
 import numpy as np
 
 class ImageViewer(QGraphicsView):
@@ -165,7 +166,12 @@ class MainViewer(QMainWindow):
         self.worker = QueueWorker(self.settings)
         self.worker.signals.progress.connect(self.on_worker_progress)
         self.worker.signals.error.connect(self.on_worker_error)
-        self.worker.signals.undo_record.connect(self.on_undo_record_received)
+
+        # We need to adapt for potential completed/undo signal differences from the worker.
+        if hasattr(self.worker.signals, 'completed'):
+            self.worker.signals.completed.connect(self.on_undo_record_received)
+        elif hasattr(self.worker.signals, 'undo_record'):
+            self.worker.signals.undo_record.connect(self.on_undo_record_received)
 
         self.images: List[str] = []
         self.current_index: int = -1
@@ -223,40 +229,13 @@ class MainViewer(QMainWindow):
         self.layout = QVBoxLayout(self.central_widget)
         self.layout.setContentsMargins(0, 0, 0, 0)
 
-        # Enterprise HUD overlay
-        self.hud_widget = QWidget(self.central_widget)
-        self.hud_widget.setStyleSheet("background-color: rgba(0, 0, 0, 180); color: white; border-radius: 5px; padding: 5px;")
-        hud_layout = QVBoxLayout(self.hud_widget)
-        hud_layout.setContentsMargins(10, 5, 10, 5)
-
-        self.hud_filename = QLabel("No File")
-        self.hud_filename.setStyleSheet("font-weight: bold; font-size: 14px;")
-        self.hud_filename.setToolTip("Current file name and index in the directory.")
-
-        self.hud_filepath = QLabel("")
-        self.hud_filepath.setStyleSheet("font-size: 10px; color: #aaaaaa;")
-        self.hud_filepath.setToolTip("Full absolute path to the current image.")
-
-        self.hud_status = QLabel("Ready")
-        self.hud_status.setStyleSheet("font-size: 12px; color: #55ff55;")
-        self.hud_status.setToolTip("Current background operation status (e.g., Tagging, Moving).")
-
-        self.hud_progress = QProgressBar()
-        self.hud_progress.setTextVisible(False)
-        self.hud_progress.setFixedHeight(4)
-        self.hud_progress.hide()
-        self.hud_progress.setToolTip("Progress of the current background operation.")
-
-        hud_layout.addWidget(self.hud_filename)
-        hud_layout.addWidget(self.hud_filepath)
-        hud_layout.addWidget(self.hud_status)
-        hud_layout.addWidget(self.hud_progress)
-
-        self.hud_widget.hide() # Hidden initially until image loads
-
         # Image Display Viewer
         self.viewer = ImageViewer(self)
         self.viewer.hide()
+
+        # Enterprise HUD overlay
+        self.hud = EnterpriseHUD(self.central_widget)
+        self.hud.raise_()
 
         self.empty_label = QLabel("No images loaded. Press 'S' to open settings.")
         self.empty_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -364,10 +343,13 @@ class MainViewer(QMainWindow):
         if self.zen_mode:
             self.menuBar().hide()
             self.statusBar().hide()
+            self.hud.hide()
             self.showFullScreen()
         else:
             self.menuBar().show()
             self.statusBar().show()
+            if hasattr(self, 'images') and len(self.images) > 0 and self.current_index >= 0:
+                self.hud.show()
             if not self.settings.get('ui', 'fullscreen'):
                 self.showMaximized()
 
@@ -416,7 +398,7 @@ class MainViewer(QMainWindow):
         """Displays the image at the current index, using efficient scaling and QGraphicsView caching."""
         if not self.images or self.current_index < 0 or self.current_index >= len(self.images):
             self.viewer.hide()
-            self.hud_widget.hide()
+            self.hud.hide()
             self.empty_label.show()
             self.empty_label.setText("All done!")
             self.setWindowTitle("Image Sorter - Enterprise")
@@ -442,8 +424,15 @@ class MainViewer(QMainWindow):
         self.viewer.show()
         self.viewer.set_image(pixmap)
 
-        # Accessibility and UI Updates
+        # Update HUD
+        if not self.zen_mode:
+            self.hud.show()
+
         filename = os.path.basename(filepath)
+        filesize = os.path.getsize(filepath) if os.path.exists(filepath) else 0
+        self.hud.update_telemetry(filename, self.current_index + 1, len(self.images), pixmap.width(), pixmap.height(), filesize)
+
+        # Accessibility and UI Updates
         self.empty_label.setAccessibleName(f"Image {self.current_index + 1} of {len(self.images)}: {filename}")
         self.setWindowTitle(f"Image Sorter - {filename} ({self.current_index + 1}/{len(self.images)})")
 
@@ -452,14 +441,41 @@ class MainViewer(QMainWindow):
     def resizeEvent(self, event: QEvent) -> None:
         """Handles window resize events to rescale the image."""
         super().resizeEvent(event)
+
+        # Position HUD at top-right of the central widget with 16px padding
+        if hasattr(self, 'hud'):
+            hud_x = self.central_widget.width() - self.hud.width() - 16
+            hud_y = 16
+            self.hud.move(hud_x, hud_y)
+
         if self.images and 0 <= self.current_index < len(self.images):
             pass # QGraphicsView handles resize
 
     def keyPressEvent(self, event: QEvent) -> None:
         """Handles keyboard navigation and sorting actions."""
+        # 1. Focus Isolation for Hotkeys
+        focus_widget = QApplication.focusWidget()
+        if isinstance(focus_widget, (QLineEdit, QTextEdit)) or (focus_widget and focus_widget.window().isModal()):
+            super().keyPressEvent(event)
+            return
+
         key = event.key()
         key_str = event.text().upper()
+        modifiers = event.modifiers()
 
+        # Priority 1: System / Modifiers
+        if modifiers == Qt.KeyboardModifier.ControlModifier:
+            if key == Qt.Key.Key_Z:
+                self.undo_last_action()
+                return
+            elif key == Qt.Key.Key_S:
+                self.open_settings()
+                return
+            elif key == Qt.Key.Key_R:
+                self.load_images()
+                return
+
+        # Priority 2: Functional Controls
         if key == Qt.Key.Key_Escape:
             if self.zen_mode:
                 self.toggle_zen_mode()
@@ -471,79 +487,69 @@ class MainViewer(QMainWindow):
                 self.close()
             return
 
-        if key == Qt.Key.Key_Z:
-            self.toggle_zen_mode()
-            return
+        if self.current_index >= 0 and self.current_index < len(self.images):
+            filepath = self.images[self.current_index]
 
-        if key == Qt.Key.Key_L:
-            self.locked_zoom_action.setChecked(not self.locked_zoom_action.isChecked())
-            self.toggle_locked_zoom(self.locked_zoom_action.isChecked())
-            return
-
-        if key == Qt.Key.Key_X:
-            # Smart zoom is double click in QGraphicsView, but we can map a key too if we want
-            pass
-
-        if key == Qt.Key.Key_C:
-            self.viewer.toggle_clipping_warnings()
-            return
-
-        if key == Qt.Key.Key_S:
-            self.open_settings()
-            return
-
-        if key == Qt.Key.Key_R:
-            self.load_images()
-            return
-
-        if event.modifiers() == Qt.KeyboardModifier.ControlModifier and key == Qt.Key.Key_Z:
-             self.undo_last_action()
-             return
-
-        if self.current_index < 0 or self.current_index >= len(self.images):
-            return
-
-        filepath = self.images[self.current_index]
-
-        # Built-in QOL features
-        if key == Qt.Key.Key_Space or key == Qt.Key.Key_Right:
-            # Skip
-            self.current_index += 1
-            self.show_image()
-            return
-
-        if key == Qt.Key.Key_Left or key == Qt.Key.Key_Backspace:
-            # Go back visually
-            if self.current_index > 0:
-                self.current_index -= 1
+            if key in (Qt.Key.Key_Space, Qt.Key.Key_Right):
+                self.current_index += 1
                 self.show_image()
-            return
+                return
 
-        if key == Qt.Key.Key_Delete:
-            # Trash
-            self.worker.add_task('trash', filepath)
-            self.next_image_after_action()
-            return
-
-        # Check Hotkeys
-        hotkeys = self.settings.get('hotkeys') or {}
-        if key_str in hotkeys:
-            config = hotkeys[key_str]
-            action = config.get('action', 'move')
-            folder = config.get('folder')
-
-            if not folder:
-                 self.statusBar().showMessage(f"Warning: No destination folder set for hotkey '{key_str}'", 4000)
-                 return
-
-            self.worker.add_task(action, filepath, folder)
-
-            if config.get('auto_advance', True):
-                if action == 'move':
-                    self.next_image_after_action()
-                else:
-                    self.current_index += 1
+            if key in (Qt.Key.Key_Left, Qt.Key.Key_Backspace):
+                if self.current_index > 0:
+                    self.current_index -= 1
                     self.show_image()
+                return
+
+            if key == Qt.Key.Key_Delete:
+                self.worker.add_task('trash', filepath)
+                self.next_image_after_action()
+                return
+
+        # Priority 3: Single-Key Shortcuts (ONLY if NoModifier)
+        if modifiers == Qt.KeyboardModifier.NoModifier:
+            if key == Qt.Key.Key_Z:
+                self.toggle_zen_mode()
+                return
+            if key == Qt.Key.Key_H:
+                if hasattr(self, 'hud'):
+                    self.hud.setVisible(not self.hud.isVisible())
+                return
+            if key == Qt.Key.Key_L:
+                self.locked_zoom_action.setChecked(not self.locked_zoom_action.isChecked())
+                self.toggle_locked_zoom(self.locked_zoom_action.isChecked())
+                return
+            if key == Qt.Key.Key_C:
+                self.viewer.toggle_clipping_warnings()
+                return
+            if key == Qt.Key.Key_S:
+                self.open_settings()
+                return
+            if key == Qt.Key.Key_R:
+                self.load_images()
+                return
+
+            # Priority 4: Custom Hotkeys
+            if self.current_index >= 0 and self.current_index < len(self.images):
+                hotkeys = self.settings.get('hotkeys') or {}
+                if key_str in hotkeys:
+                    config = hotkeys[key_str]
+                    action = config.get('action', 'move')
+                    folder = config.get('folder')
+
+                    if not folder:
+                         self.statusBar().showMessage(f"Warning: No destination folder set for hotkey '{key_str}'", 4000)
+                         return
+
+                    self.worker.add_task(action, filepath, folder)
+
+                    if config.get('auto_advance', True):
+                        if action == 'move':
+                            self.next_image_after_action()
+                        else:
+                            self.current_index += 1
+                            self.show_image()
+                    return
 
     def next_image_after_action(self) -> None:
         """Advances to the next image after an action is queued."""
@@ -595,9 +601,27 @@ class MainViewer(QMainWindow):
         self.worker.refresh_settings()
         self.load_images()
 
-    def on_worker_progress(self, msg: str) -> None:
-        """Displays progress messages in the status bar."""
+    def on_worker_progress(self, percent_or_msg, msg_or_none=None) -> None:
+        """Displays progress messages in the status bar and HUD."""
+        percent = 0
+        msg = ""
+
+        # Handle both the old signature (msg: str) and new signature (percent: int, msg: str)
+        if isinstance(percent_or_msg, int) and isinstance(msg_or_none, str):
+            percent = percent_or_msg
+            msg = msg_or_none
+        elif isinstance(percent_or_msg, str):
+            msg = percent_or_msg
+
         self.statusBar().showMessage(msg, 3000)
+
+        if hasattr(self, 'hud'):
+            if percent > 0 and percent < 100:
+                self.hud.set_status(msg, show_progress=True)
+                self.hud.set_progress(percent)
+            else:
+                self.hud.set_status(msg, show_progress=False)
+                self.hud.set_progress(0)
 
     def on_worker_error(self, filepath: str, error: str) -> None:
         """Displays errors in the status bar."""
