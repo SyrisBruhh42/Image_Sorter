@@ -471,7 +471,7 @@ class MainViewer(QMainWindow):
                 self.close()
             return
 
-        if key == Qt.Key.Key_Z:
+        if key == Qt.Key.Key_Z and event.modifiers() != Qt.KeyboardModifier.ControlModifier:
             self.toggle_zen_mode()
             return
 
