@@ -1,6 +1,7 @@
 import os
 import shutil
 import time
+import uuid
 from typing import Dict, Any, Optional, List
 from PyQt6.QtCore import QObject, pyqtSignal, QRunnable, QThreadPool, pyqtSlot
 from send2trash import send2trash, TrashPermissionError
@@ -10,10 +11,12 @@ from src.settings_manager import SettingsManager
 
 class WorkerSignals(QObject):
     """Signals to communicate back to the main UI thread."""
+    started = pyqtSignal(str)           # Emits filepath when task starts
     finished = pyqtSignal(str)          # Emits filepath upon successful completion
     error = pyqtSignal(str, str)        # Emits (filepath, error_message)
-    progress = pyqtSignal(str)          # Emits human-readable progress updates
-    undo_record = pyqtSignal(dict)      # Emits data for the undo stack
+    progress = pyqtSignal(int, str)     # Emits (percent, human-readable progress updates)
+    completed = pyqtSignal(dict)        # Emits UndoToken dictionary for the undo stack
+    undo_record = pyqtSignal(dict)      # Kept for backward compatibility if needed, but we'll use `completed`
 
 class FileTaskRunnable(QRunnable):
     """
@@ -61,6 +64,8 @@ class FileTaskRunnable(QRunnable):
         final_path = filepath
         undo_data = None
 
+        self.signals.started.emit(filepath)
+
         if self.task_type in ['move', 'copy']:
             if not self.dest_folder or not os.path.exists(self.dest_folder):
                 raise FileNotFoundError(f"Destination folder missing or invalid: {self.dest_folder}")
@@ -76,32 +81,83 @@ class FileTaskRunnable(QRunnable):
 
             final_path = dest_path
 
+            self.signals.progress.emit(0, f"Preparing to {self.task_type} {filename}...")
+
             if self.task_type == 'move':
                 shutil.move(filepath, dest_path)
-                undo_data = {'action': 'move', 'original': filepath, 'current': dest_path}
-                self.signals.progress.emit(f"Moved {filename} to {dest_folder}")
+                undo_data = {
+                    "token_id": str(uuid.uuid4()),
+                    "action": "move",
+                    "source_path": filepath,
+                    "dest_path": dest_path,
+                    "timestamp": time.time()
+                }
+                self.signals.progress.emit(50, f"Moved {filename} to {dest_folder}")
             elif self.task_type == 'copy':
                 shutil.copy2(filepath, dest_path)
-                undo_data = {'action': 'copy', 'original': filepath, 'current': dest_path}
-                self.signals.progress.emit(f"Copied {filename} to {dest_folder}")
+                undo_data = {
+                    "token_id": str(uuid.uuid4()),
+                    "action": "copy",
+                    "source_path": filepath,
+                    "dest_path": dest_path,
+                    "timestamp": time.time()
+                }
+                self.signals.progress.emit(50, f"Copied {filename} to {dest_folder}")
 
         elif self.task_type == 'trash':
-            try:
-                send2trash(filepath)
-                # Note: Trashed items generally can't be safely 'undone' cross-platform in python easily
-                # without OS specific APIs, so we omit undo data for trash.
-                self.signals.progress.emit(f"Trashed {filename}")
-                self.signals.finished.emit(filepath)
-                return
-            except TrashPermissionError as e:
-                 raise PermissionError(f"Trash permission denied: {e}")
+            self.signals.progress.emit(0, f"Trashing {filename}...")
+
+            # Check for dedicated staging trash directory
+            staging_trash = self.settings.get('directories', 'trash')
+            if staging_trash and os.path.exists(staging_trash):
+                staging_trash = os.path.normpath(staging_trash)
+                dest_path = os.path.join(staging_trash, filename)
+
+                # Prevent overwriting in staging trash
+                if os.path.exists(dest_path):
+                    base, ext = os.path.splitext(filename)
+                    dest_path = os.path.join(staging_trash, f"{base}_{int(time.time())}{ext}")
+                    filename = os.path.basename(dest_path)
+
+                shutil.move(filepath, dest_path)
+                undo_data = {
+                    "token_id": str(uuid.uuid4()),
+                    "action": "trash",
+                    "source_path": filepath,
+                    "dest_path": dest_path,
+                    "timestamp": time.time()
+                }
+                final_path = dest_path
+                self.signals.progress.emit(100, f"Moved {filename} to staging trash")
+            else:
+                try:
+                    send2trash(filepath)
+                    # No complete undo data for send2trash, but we can emit a record
+                    undo_data = {
+                        "token_id": str(uuid.uuid4()),
+                        "action": "trash_system",
+                        "source_path": filepath,
+                        "dest_path": "",
+                        "timestamp": time.time()
+                    }
+                    self.signals.progress.emit(100, f"Trashed {filename}")
+                except TrashPermissionError as e:
+                     raise PermissionError(f"Trash permission denied: {e}")
+
+            # If it's a trash operation, we don't do AI tagging on the trashed file
+            if undo_data:
+                self.signals.completed.emit(undo_data)
+                self.signals.undo_record.emit(undo_data)
+            self.signals.finished.emit(final_path)
+            return
 
         elif self.task_type == 'undo_move':
             if not self.dest_folder:
                  raise ValueError("Original path (dest_folder) required to undo move.")
+            self.signals.progress.emit(0, f"Undoing move for {filename}...")
             try:
                  shutil.move(filepath, self.dest_folder)
-                 self.signals.progress.emit(f"Undid move: {filename}")
+                 self.signals.progress.emit(100, f"Undid move: {filename}")
                  self.signals.finished.emit(self.dest_folder)
             except OSError as e:
                  logger.error(f"Error undoing move for {filename}: {e}")
@@ -109,26 +165,44 @@ class FileTaskRunnable(QRunnable):
             return
 
         elif self.task_type == 'undo_copy':
+            self.signals.progress.emit(0, f"Undoing copy for {filename}...")
             try:
                  os.remove(filepath)
-                 self.signals.progress.emit(f"Undid copy: {filename}")
+                 self.signals.progress.emit(100, f"Undid copy: {filename}")
+                 self.signals.finished.emit(filepath) # Need to emit something so UI knows it's done
             except OSError as e:
                  logger.error(f"Error undoing copy for {filename}: {e}")
                  self.signals.error.emit(filepath, f"Failed to undo copy: {e}")
             return
 
+        elif self.task_type == 'undo_trash':
+            if not self.dest_folder:
+                 raise ValueError("Original path (dest_folder) required to undo trash.")
+            self.signals.progress.emit(0, f"Undoing trash for {filename}...")
+            try:
+                 shutil.move(filepath, self.dest_folder)
+                 self.signals.progress.emit(100, f"Undid trash: {filename}")
+                 self.signals.finished.emit(self.dest_folder)
+            except OSError as e:
+                 logger.error(f"Error undoing trash for {filename}: {e}")
+                 self.signals.error.emit(filepath, f"Failed to undo trash: {e}")
+            return
+
         # Handle AI Tagging & Metadata
         if self.settings.get('ai_tagger', 'enabled') and self.ai_tagger:
+            self.signals.progress.emit(75, f"Tagging {filename}...")
             tags = self.ai_tagger.get_tags(final_path)
             if tags:
                 write_exif = self.settings.get('metadata', 'write_exif')
                 write_sidecar = self.settings.get('metadata', 'write_sidecar')
                 write_metadata(final_path, tags, write_exif, write_sidecar)
-                self.signals.progress.emit(f"Tagged {filename} with: {', '.join(tags)}")
+                self.signals.progress.emit(90, f"Tagged {filename} with: {', '.join(tags)}")
 
         if undo_data:
-             self.signals.undo_record.emit(undo_data)
+             self.signals.completed.emit(undo_data)
+             self.signals.undo_record.emit(undo_data) # Keep for backward compat
 
+        self.signals.progress.emit(100, f"Finished processing {filename}")
         self.signals.finished.emit(final_path)
 
 class QueueWorker(QObject):
@@ -156,7 +230,7 @@ class QueueWorker(QObject):
         is_enabled = self.settings.get('ai_tagger', 'enabled')
         if is_enabled and self.ai_tagger is None:
             logger.info("Initializing AI Tagger in QueueWorker.")
-            self.ai_tagger = AITagger()
+            self.ai_tagger = AITagger(settings=self.settings)
         elif not is_enabled and self.ai_tagger is not None:
              logger.info("Disabling AI Tagger in QueueWorker.")
              self.ai_tagger = None
