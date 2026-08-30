@@ -170,7 +170,9 @@ def build_executable() -> None:
     ensure_icon_assets(root_dir)
 
     cmd = [
-        "pyinstaller",
+        sys.executable,
+        "-m",
+        "PyInstaller",
         "--noconfirm",
         "ImageSorter.spec"
     ]

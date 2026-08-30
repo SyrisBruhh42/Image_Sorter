@@ -1,23 +1,21 @@
 import os
-import shutil
 from collections import OrderedDict
 from typing import List, Dict, Optional, Any
 import psutil
 from PyQt6.QtWidgets import (
-    QMainWindow, QLabel, QVBoxLayout, QHBoxLayout, QWidget, QMessageBox, QMenu,
-    QApplication, QGraphicsView, QGraphicsScene, QGraphicsPixmapItem, QProgressBar,
+    QMainWindow, QLabel, QVBoxLayout, QWidget, QApplication, QGraphicsView, QGraphicsScene, QGraphicsPixmapItem, QProgressBar,
     QLineEdit, QTextEdit, QPlainTextEdit, QAbstractSpinBox, QComboBox, QKeySequenceEdit
 )
 from PyQt6.QtGui import (
     QPixmap, QImageReader, QKeySequence, QAction, QPalette, QColor, QPainter,
-    QTransform, QCursor, QImage, QWheelEvent, QMouseEvent
+    QTransform, QImage, QWheelEvent, QMouseEvent
 )
 try:
     from PyQt6.QtGui import QAccessible, QAccessibleEvent  # type: ignore
     HAS_QACCESSIBLE = True
 except ImportError:
     HAS_QACCESSIBLE = False
-from PyQt6.QtCore import Qt, QSize, QEvent, QObject
+from PyQt6.QtCore import Qt, QEvent, QObject
 from .ui_settings import SettingsWindow
 from .queue_worker import QueueWorker
 from .settings_manager import SettingsManager

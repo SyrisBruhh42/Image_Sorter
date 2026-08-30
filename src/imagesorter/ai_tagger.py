@@ -1,5 +1,4 @@
 import os
-import json
 import ssl
 import shutil
 import urllib.request
@@ -8,7 +7,7 @@ import hashlib
 import tempfile
 import multiprocessing as mp
 from abc import ABC, abstractmethod
-from typing import List, Optional, Any
+from typing import List, Optional
 import psutil
 import onnxruntime as ort
 import numpy as np

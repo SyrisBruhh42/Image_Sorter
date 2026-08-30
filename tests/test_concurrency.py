@@ -1,9 +1,5 @@
-import os
-import shutil
 import errno
-import pytest
 from unittest.mock import patch
-from PyQt6.QtCore import QCoreApplication
 
 from imagesorter.settings_manager import SettingsManager
 from imagesorter.queue_worker import QueueWorker

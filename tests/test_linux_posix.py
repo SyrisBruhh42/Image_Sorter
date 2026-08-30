@@ -1,9 +1,6 @@
-import os
-import sys
-import pytest
 from pathlib import Path
 
-from imagesorter.paths import get_config_dir, get_data_dir, get_cache_dir, get_logs_dir, is_portable_mode, get_app_dir
+from imagesorter.paths import get_config_dir, get_data_dir, is_portable_mode
 import imagesorter.paths as paths_module
 
 
