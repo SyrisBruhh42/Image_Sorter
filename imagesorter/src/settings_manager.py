@@ -1,3 +1,4 @@
+import copy
 import json
 import os
 import tempfile
@@ -7,6 +8,11 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 from src.logger import logger
 from src.paths import get_settings_path
+
+
+class SettingsSaveError(Exception):
+    """Raised when saving application settings fails due to I/O or permissions."""
+    pass
 
 DEFAULT_SETTINGS: Dict[str, Any] = {
     "directories": {
@@ -108,6 +114,7 @@ class SettingsManager:
     def save(self) -> None:
         """
         Saves current settings using an atomic write process (tempfile + flush + fsync + os.replace).
+        Raises SettingsSaveError if disk write fails.
         """
         with self._lock:
             temp_path: Optional[str] = None
@@ -131,6 +138,7 @@ class SettingsManager:
                         os.remove(temp_path)
                     except OSError:
                         pass
+                raise SettingsSaveError(f"Failed to atomically write settings to {self.filepath}: {e}") from e
             except Exception as e:
                 logger.error(f"Unexpected error saving settings: {e}")
                 if temp_path and os.path.exists(temp_path):
@@ -138,14 +146,21 @@ class SettingsManager:
                         os.remove(temp_path)
                     except OSError:
                         pass
+                raise SettingsSaveError(f"Unexpected error saving settings to {self.filepath}: {e}") from e
 
     def get(self, section: str, key: Optional[str] = None) -> Any:
-        """Retrieves a setting value safely under lock."""
+        """Retrieves a setting value safely under lock, returning a deep copy."""
         with self._lock:
             if key:
                 sec = self.settings.get(section, {})
-                return sec.get(key) if isinstance(sec, dict) else None
-            return self.settings.get(section)
+                val = sec.get(key) if isinstance(sec, dict) else None
+                return copy.deepcopy(val)
+            return copy.deepcopy(self.settings.get(section))
+
+    def get_all(self) -> Dict[str, Any]:
+        """Retrieves a deep-copied snapshot of all settings safely under lock."""
+        with self._lock:
+            return copy.deepcopy(self.settings)
 
     def set(self, section: str, key: str, value: Any) -> None:
         """Sets a setting value under lock and saves to disk."""

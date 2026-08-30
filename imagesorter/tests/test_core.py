@@ -4,7 +4,7 @@ import pytest
 from pathlib import Path
 
 from src.paths import get_config_dir, get_data_dir, get_cache_dir, get_logs_dir, get_settings_path, is_portable_mode
-from src.settings_manager import SettingsManager
+from src.settings_manager import SettingsManager, SettingsSaveError
 from src.hardware_scan import scan_hardware, get_prioritized_providers
 from src.ai_tagger import AITagger, BaseVisionEngine, write_metadata
 
@@ -31,6 +31,11 @@ def test_settings_manager_atomic_and_corruption(tmp_path):
     sm.set("directories", "source", str(tmp_path / "source"))
     assert sm.get("directories", "source") == str(tmp_path / "source")
 
+    # Verify deepcopy snapshot isolation
+    snapshot = sm.get("directories")
+    snapshot["source"] = "mutated_value"
+    assert sm.get("directories", "source") == str(tmp_path / "source")
+
     # Simulate corrupt JSON
     with open(settings_file, "w") as f:
         f.write("{invalid_json:")
@@ -40,6 +45,24 @@ def test_settings_manager_atomic_and_corruption(tmp_path):
     assert sm.get("directories", "source") == ""  # reset to default
     corrupt_files = list(tmp_path.glob("*.corrupt.*.bak"))
     assert len(corrupt_files) == 1
+
+
+def test_settings_manager_save_error(tmp_path):
+    # Pass a path in a non-existent file directory that raises PermissionError/OSError on creation
+    read_only_dir = tmp_path / "readonly"
+    read_only_dir.mkdir()
+    os.chmod(read_only_dir, 0o444)
+
+    settings_file = read_only_dir / "settings.json"
+    sm = SettingsManager.__new__(SettingsManager)
+    sm.filepath = str(settings_file)
+    sm._lock = __import__("threading").RLock()
+    sm.settings = {}
+
+    with pytest.raises(SettingsSaveError):
+        sm.save()
+
+    os.chmod(read_only_dir, 0o777)
 
 
 def test_hardware_scan():

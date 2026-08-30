@@ -12,7 +12,7 @@ from PyQt6.QtGui import (
 )
 from PyQt6.QtCore import Qt, QSize, QEvent, QObject
 from src.ui_settings import SettingsWindow
-from src.queue_worker import QueueWorker
+from src.queue_worker import QueueWorker, UndoToken
 from src.settings_manager import SettingsManager
 from src.logger import logger
 from src.image_loader import ImageLoader
@@ -165,11 +165,13 @@ class MainViewer(QMainWindow):
         self.worker = QueueWorker(self.settings)
         self.worker.signals.progress.connect(self.on_worker_progress)
         self.worker.signals.error.connect(self.on_worker_error)
+        self.worker.signals.finished.connect(self.on_worker_finished)
         self.worker.signals.undo_record.connect(self.on_undo_record_received)
 
         self.images: List[str] = []
         self.current_index: int = -1
-        self.history: List[Dict[str, Any]] = []
+        self.history: List[UndoToken] = []
+        self._pending_undo: Optional[UndoToken] = None
         self.zen_mode: bool = False
 
         self.pixmap_cache: Dict[str, QPixmap] = {}
@@ -516,7 +518,7 @@ class MainViewer(QMainWindow):
 
         if key == Qt.Key.Key_Delete:
             self.worker.add_task('trash', filepath)
-            self.next_image_after_action()
+            self.advance_to_next_image()
             return
 
         hotkeys = self.settings.get('hotkeys') or {}
@@ -532,23 +534,46 @@ class MainViewer(QMainWindow):
             self.worker.add_task(action, filepath, folder)
 
             if config.get('auto_advance', True):
-                if action in ('move', 'trash'):
-                    self.next_image_after_action()
-                else:
-                    self.current_index += 1
-                    self.show_image()
+                self.advance_to_next_image()
 
-    def next_image_after_action(self) -> None:
-        """Advances to next image after action."""
-        if 0 <= self.current_index < len(self.images):
-            self.images.pop(self.current_index)
+    def advance_to_next_image(self) -> None:
+        """Advances active image index without prematurely popping from self.images."""
+        if self.current_index + 1 < len(self.images):
+            self.current_index += 1
         self.show_image()
 
-    def on_undo_record_received(self, data: Dict[str, Any]) -> None:
+    def on_undo_record_received(self, data: Any) -> None:
         """Receives UndoToken from background worker."""
-        self.history.append(data)
-        if len(self.history) > 50:
-            self.history.pop(0)
+        if isinstance(data, UndoToken):
+            self.history.append(data)
+            if len(self.history) > 50:
+                self.history.pop(0)
+
+    def on_worker_finished(self, original_path: str, final_path: str) -> None:
+        """Handles task completion from worker and reconciles self.images playlist."""
+        if original_path in self.images:
+            idx = self.images.index(original_path)
+            self.images.remove(original_path)
+            if self.current_index > idx:
+                self.current_index -= 1
+            elif self.current_index >= len(self.images):
+                self.current_index = max(0, len(self.images) - 1)
+            self.show_image()
+
+        src_dir = self.settings.get('directories', 'source')
+        if src_dir and os.path.exists(final_path):
+            if os.path.normpath(os.path.dirname(final_path)) == os.path.normpath(src_dir):
+                if final_path not in self.images:
+                    self.images.append(final_path)
+                    self.images.sort()
+                    if self.current_index < 0:
+                        self.current_index = 0
+                    self.show_image()
+
+        if self._pending_undo:
+            if self._pending_undo.original_path in (original_path, final_path) or \
+               self._pending_undo.current_path in (original_path, final_path):
+                self._pending_undo = None
 
     def undo_last_action(self) -> None:
         """Reverts last move, copy, or trash operation using UndoToken."""
@@ -556,20 +581,15 @@ class MainViewer(QMainWindow):
             self.statusBar().showMessage("Nothing to undo.", 3000)
             return
 
-        last_action = self.history.pop()
-        action_type = last_action.get('action') or last_action.get('type')
-        current_path = last_action.get('current') or last_action.get('new')
-        original_path = last_action.get('original')
+        token = self.history.pop()
+        self._pending_undo = token
 
-        if action_type in ('move', 'trash'):
-            if current_path and original_path:
-                self.worker.add_task('undo_move', current_path, original_path)
-                self.statusBar().showMessage("Undoing move... Press 'R' to reload folder.", 3000)
-
-        elif action_type == 'copy':
-            if current_path:
-                self.worker.add_task('undo_copy', current_path)
-                self.statusBar().showMessage("Undoing copy...", 3000)
+        if token.action in ('move', 'trash'):
+            self.worker.add_task('undo_move', token.current_path, token.original_path)
+            self.statusBar().showMessage(f"Undoing {token.action}...", 3000)
+        elif token.action == 'copy':
+            self.worker.add_task('undo_copy', token.current_path)
+            self.statusBar().showMessage("Undoing copy...", 3000)
 
     def open_settings(self) -> None:
         """Opens settings configuration window."""
@@ -590,8 +610,11 @@ class MainViewer(QMainWindow):
         self.statusBar().showMessage(msg, 3000)
 
     def on_worker_error(self, filepath: str, error: str) -> None:
-        """Displays error messages in status bar."""
-        self.statusBar().showMessage(f"Error: {error}", 5000)
+        """Displays error messages in status bar and handles undo recovery."""
+        self.statusBar().showMessage(f"Error processing {os.path.basename(filepath)}: {error}", 8000)
+        if self._pending_undo:
+            self.history.append(self._pending_undo)
+            self._pending_undo = None
 
     def closeEvent(self, event: QEvent) -> None:
         """Ensures background threads are safely stopped upon window close."""
