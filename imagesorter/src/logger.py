@@ -1,15 +1,24 @@
 import logging
 import sys
 import os
+from logging.handlers import RotatingFileHandler
+from typing import Optional
+from src.paths import get_logs_dir
 
-def setup_logger(name: str = "ImageSorter", log_file: str = "imagesorter.log", level: int = logging.INFO) -> logging.Logger:
+
+def setup_logger(
+    name: str = "ImageSorter",
+    log_file: Optional[str] = None,
+    level: int = logging.INFO
+) -> logging.Logger:
     """
-    Configures and returns a robust logger with both console and file handlers.
+    Configures and returns a robust logger with console and RotatingFileHandler,
+    using RFC-3339 formatted timestamps and file/line telemetry.
 
     Args:
         name (str): The name of the logger.
-        log_file (str): The path to the log file.
-        level (int): The logging level (e.g., logging.INFO, logging.DEBUG).
+        log_file (Optional[str]): Custom log file path or filename. If None, resolves via paths.py.
+        level (int): The logging level.
 
     Returns:
         logging.Logger: The configured logger instance.
@@ -17,10 +26,11 @@ def setup_logger(name: str = "ImageSorter", log_file: str = "imagesorter.log", l
     logger = logging.getLogger(name)
     logger.setLevel(level)
 
-    # Avoid adding handlers multiple times if the logger is already set up
     if not logger.handlers:
+        # ISO-8601 / RFC-3339 timestamp format
         formatter = logging.Formatter(
-            '%(asctime)s - %(name)s - %(levelname)s - [%(filename)s:%(lineno)d] - %(message)s'
+            '%(asctime)s - %(name)s - %(levelname)s - [%(filename)s:%(lineno)d] - %(message)s',
+            datefmt='%Y-%m-%dT%H:%M:%S%z'
         )
 
         # Console Handler
@@ -29,16 +39,26 @@ def setup_logger(name: str = "ImageSorter", log_file: str = "imagesorter.log", l
         ch.setFormatter(formatter)
         logger.addHandler(ch)
 
-        # File Handler
+        # File Handler using RotatingFileHandler (10MB max, 5 backups)
+        if log_file is None:
+            log_path = get_logs_dir() / "imagesorter.log"
+        else:
+            log_path = get_logs_dir() / os.path.basename(log_file)
+
         try:
-            fh = logging.FileHandler(log_file, encoding='utf-8')
-            fh.setLevel(level)
-            fh.setFormatter(formatter)
-            logger.addHandler(fh)
+            rfh = RotatingFileHandler(
+                str(log_path),
+                maxBytes=10 * 1024 * 1024,  # 10 MB
+                backupCount=5,
+                encoding='utf-8'
+            )
+            rfh.setLevel(level)
+            rfh.setFormatter(formatter)
+            logger.addHandler(rfh)
         except OSError as e:
-            logger.warning(f"Failed to create file handler for {log_file}: {e}")
+            logger.warning(f"Failed to create RotatingFileHandler at {log_path}: {e}")
 
     return logger
 
-# Create a default logger instance for easy import
+
 logger = setup_logger()
