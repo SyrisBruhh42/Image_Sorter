@@ -1,9 +1,9 @@
 import os
 import sys
 from PyQt6.QtWidgets import QApplication
-from src.ui_main import MainViewer
-from src.settings_manager import SettingsManager
-from src.logger import logger
+from .ui_main import MainViewer
+from .settings_manager import SettingsManager
+from .logger import logger
 
 
 def main() -> None:

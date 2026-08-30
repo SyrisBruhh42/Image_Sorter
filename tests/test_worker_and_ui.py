@@ -3,9 +3,9 @@ import time
 import pytest
 from PyQt6.QtCore import QCoreApplication
 from PyQt6.QtGui import QImage, QPixmap
-from src.settings_manager import SettingsManager
-from src.queue_worker import QueueWorker
-from src.image_loader import ImageLoader
+from imagesorter.settings_manager import SettingsManager
+from imagesorter.queue_worker import QueueWorker
+from imagesorter.image_loader import ImageLoader
 
 
 def test_image_loader_queue(qtbot, tmp_path):

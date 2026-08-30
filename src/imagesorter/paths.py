@@ -1,7 +1,7 @@
 import os
 import sys
 from pathlib import Path
-from typing import Union
+from typing import Optional
 
 
 def get_app_dir() -> Path:
@@ -20,20 +20,48 @@ def get_app_dir() -> Path:
         return Path(main_script).resolve().parent
 
 
+def get_resource_dir() -> Path:
+    """
+    Determines the directory for bundled static assets/resources.
+
+    Supports PyInstaller single-file bundle directory (_MEIPASS) when available,
+    otherwise falls back to get_app_dir().
+
+    Returns:
+        Path: Path to static assets or package resources.
+    """
+    if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
+        return Path(sys._MEIPASS).resolve()
+    return get_app_dir()
+
+
 def is_portable_mode() -> bool:
     """
     Checks if the application is running in portable mode.
 
-    Portable mode is activated if 'portable.flag' or 'settings.json' exists
+    Portable mode is activated ONLY if 'portable.flag' exists
     adjacent to the executable or main script root directory.
 
     Returns:
         bool: True if portable mode is active, False otherwise.
     """
-    app_dir = get_app_dir()
-    portable_flag = app_dir / "portable.flag"
-    local_settings = app_dir / "settings.json"
-    return portable_flag.exists() or local_settings.exists()
+    return (get_app_dir() / "portable.flag").exists()
+
+
+def _get_valid_env_path(var_name: str) -> Optional[Path]:
+    """
+    Retrieves an environment variable value only if set, non-empty, and an absolute path.
+
+    Args:
+        var_name (str): Name of environment variable.
+
+    Returns:
+        Optional[Path]: Path object if variable is non-empty absolute path, else None.
+    """
+    val = os.environ.get(var_name)
+    if val and os.path.isabs(val):
+        return Path(val)
+    return None
 
 
 def get_config_dir() -> Path:
@@ -48,7 +76,7 @@ def get_config_dir() -> Path:
         config_dir = app_dir / "config"
     elif sys.platform.startswith("win"):
         appdata = os.environ.get("APPDATA")
-        if appdata:
+        if appdata and os.path.isabs(appdata):
             config_dir = Path(appdata) / "ImageSorter"
         else:
             config_dir = Path.home() / "AppData" / "Roaming" / "ImageSorter"
@@ -56,9 +84,9 @@ def get_config_dir() -> Path:
         config_dir = Path.home() / "Library" / "Application Support" / "ImageSorter"
     else:
         # Linux / POSIX XDG Spec
-        xdg_config = os.environ.get("XDG_CONFIG_HOME")
+        xdg_config = _get_valid_env_path("XDG_CONFIG_HOME")
         if xdg_config:
-            config_dir = Path(xdg_config) / "ImageSorter"
+            config_dir = xdg_config / "ImageSorter"
         else:
             config_dir = Path.home() / ".config" / "ImageSorter"
 
@@ -78,7 +106,7 @@ def get_data_dir() -> Path:
         data_dir = app_dir / "data"
     elif sys.platform.startswith("win"):
         local_appdata = os.environ.get("LOCALAPPDATA")
-        if local_appdata:
+        if local_appdata and os.path.isabs(local_appdata):
             data_dir = Path(local_appdata) / "ImageSorter" / "Data"
         else:
             data_dir = Path.home() / "AppData" / "Local" / "ImageSorter" / "Data"
@@ -86,9 +114,9 @@ def get_data_dir() -> Path:
         data_dir = Path.home() / "Library" / "Application Support" / "ImageSorter"
     else:
         # Linux / POSIX XDG Spec
-        xdg_data = os.environ.get("XDG_DATA_HOME")
+        xdg_data = _get_valid_env_path("XDG_DATA_HOME")
         if xdg_data:
-            data_dir = Path(xdg_data) / "ImageSorter"
+            data_dir = xdg_data / "ImageSorter"
         else:
             data_dir = Path.home() / ".local" / "share" / "ImageSorter"
 
@@ -108,7 +136,7 @@ def get_cache_dir() -> Path:
         cache_dir = app_dir / "cache"
     elif sys.platform.startswith("win"):
         local_appdata = os.environ.get("LOCALAPPDATA")
-        if local_appdata:
+        if local_appdata and os.path.isabs(local_appdata):
             cache_dir = Path(local_appdata) / "ImageSorter" / "Cache"
         else:
             cache_dir = Path.home() / "AppData" / "Local" / "ImageSorter" / "Cache"
@@ -116,9 +144,9 @@ def get_cache_dir() -> Path:
         cache_dir = Path.home() / "Library" / "Caches" / "ImageSorter"
     else:
         # Linux / POSIX XDG Spec
-        xdg_cache = os.environ.get("XDG_CACHE_HOME")
+        xdg_cache = _get_valid_env_path("XDG_CACHE_HOME")
         if xdg_cache:
-            cache_dir = Path(xdg_cache) / "ImageSorter"
+            cache_dir = xdg_cache / "ImageSorter"
         else:
             cache_dir = Path.home() / ".cache" / "ImageSorter"
 
@@ -138,7 +166,7 @@ def get_logs_dir() -> Path:
         logs_dir = app_dir / "logs"
     elif sys.platform.startswith("win"):
         local_appdata = os.environ.get("LOCALAPPDATA")
-        if local_appdata:
+        if local_appdata and os.path.isabs(local_appdata):
             logs_dir = Path(local_appdata) / "ImageSorter" / "Logs"
         else:
             logs_dir = Path.home() / "AppData" / "Local" / "ImageSorter" / "Logs"
@@ -146,9 +174,9 @@ def get_logs_dir() -> Path:
         logs_dir = Path.home() / "Library" / "Logs" / "ImageSorter"
     else:
         # Linux / POSIX XDG Spec
-        xdg_state = os.environ.get("XDG_STATE_HOME")
+        xdg_state = _get_valid_env_path("XDG_STATE_HOME")
         if xdg_state:
-            logs_dir = Path(xdg_state) / "ImageSorter" / "logs"
+            logs_dir = xdg_state / "ImageSorter" / "logs"
         else:
             logs_dir = Path.home() / ".local" / "state" / "ImageSorter" / "logs"
 

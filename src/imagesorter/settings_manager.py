@@ -5,8 +5,8 @@ import time
 import threading
 from pathlib import Path
 from typing import Any, Dict, Optional
-from src.logger import logger
-from src.paths import get_settings_path
+from .logger import logger
+from .paths import get_settings_path
 
 DEFAULT_SETTINGS: Dict[str, Any] = {
     "directories": {
