@@ -1,7 +1,7 @@
 import os
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 from PyQt6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLineEdit,
+    QDialog, QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLineEdit,
     QLabel, QFileDialog, QTabWidget, QFormLayout, QCheckBox,
     QComboBox, QSpinBox, QTableWidget, QTableWidgetItem, QHeaderView, QMessageBox, QProgressDialog
 )
@@ -12,12 +12,12 @@ from src.ai_tagger import ModelDownloader
 from src.paths import get_data_dir
 from src.logger import logger
 
-class SettingsWindow(QWidget):
+class SettingsWindow(QDialog):
     """
     Settings interface with WCAG AAA accessibility options and input validation.
     """
-    def __init__(self, settings_manager: SettingsManager) -> None:
-        super().__init__()
+    def __init__(self, settings_manager: SettingsManager, parent: Optional[QWidget] = None) -> None:
+        super().__init__(parent)
         self.settings = settings_manager
         self.setWindowTitle("Image Sorter Settings")
         self.resize(800, 600)
@@ -70,6 +70,24 @@ class SettingsWindow(QWidget):
         btn_layout.addWidget(self.btn_save)
 
         layout.addLayout(btn_layout)
+
+        # Visible focus outline stylesheet for WCAG AAA
+        self.setStyleSheet("""
+            QWidget:focus {
+                outline: 2px solid #3B82F6;
+            }
+        """)
+
+        # Set up tab order
+        self.setTabOrder(self.tabs, self.src_edit)
+        self.setTabOrder(self.src_edit, self.src_btn)
+        self.setTabOrder(self.src_btn, self.trash_edit)
+        self.setTabOrder(self.trash_edit, self.trash_btn)
+        self.setTabOrder(self.trash_btn, self.chk_fullscreen)
+        self.setTabOrder(self.chk_fullscreen, self.chk_tooltips)
+        self.setTabOrder(self.chk_tooltips, self.theme_combo)
+        self.setTabOrder(self.theme_combo, self.font_spin)
+        self.setTabOrder(self.font_spin, self.btn_save)
 
     def init_general_tab(self) -> None:
         """Initializes the General & UI options tab."""
@@ -394,4 +412,4 @@ class SettingsWindow(QWidget):
         self.settings.update_section('hotkeys', hotkeys)
 
         QMessageBox.information(self, "Success", "Settings saved successfully.")
-        self.close()
+        self.accept()
