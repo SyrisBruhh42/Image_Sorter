@@ -8,7 +8,7 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtGui import (
     QPixmap, QImageReader, QKeySequence, QAction, QPalette, QColor, QPainter,
-    QTransform, QCursor, QImage, QWheelEvent, QMouseEvent
+    QTransform, QCursor, QImage, QWheelEvent, QMouseEvent, QGuiApplication
 )
 from PyQt6.QtCore import Qt, QSize, QEvent, QObject
 from src.ui_settings import SettingsWindow
@@ -160,6 +160,7 @@ class MainViewer(QMainWindow):
         super().__init__()
         self.settings = settings_manager
 
+        QGuiApplication.setDesktopFileName("imagesorter.desktop")
         QApplication.instance().installEventFilter(self)
 
         self.worker = QueueWorker(self.settings)
