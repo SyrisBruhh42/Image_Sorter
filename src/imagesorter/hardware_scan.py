@@ -1,7 +1,7 @@
 import psutil
 import onnxruntime as ort
 from typing import Dict, Any, List
-from src.logger import logger
+from .logger import logger
 
 # Priority order for AI Execution Providers across platforms (Linux, Windows, macOS)
 PROVIDER_PRIORITY: List[str] = [

@@ -3,10 +3,10 @@ import json
 import pytest
 from pathlib import Path
 
-from src.paths import get_config_dir, get_data_dir, get_cache_dir, get_logs_dir, get_settings_path, is_portable_mode
-from src.settings_manager import SettingsManager
-from src.hardware_scan import scan_hardware, get_prioritized_providers
-from src.ai_tagger import AITagger, BaseVisionEngine, write_metadata
+from imagesorter.paths import get_config_dir, get_data_dir, get_cache_dir, get_logs_dir, get_settings_path, is_portable_mode
+from imagesorter.settings_manager import SettingsManager
+from imagesorter.hardware_scan import scan_hardware, get_prioritized_providers
+from imagesorter.ai_tagger import AITagger, BaseVisionEngine, write_metadata
 
 
 def test_paths_xdg_and_portable(monkeypatch, tmp_path):

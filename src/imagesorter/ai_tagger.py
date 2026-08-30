@@ -13,9 +13,9 @@ from PIL import Image
 import piexif
 from PyQt6.QtCore import QThread, pyqtSignal
 
-from src.logger import logger
-from src.hardware_scan import get_prioritized_providers
-from src.paths import get_data_dir
+from .logger import logger
+from .hardware_scan import get_prioritized_providers
+from .paths import get_data_dir
 
 # Set process start method to 'spawn' for safe CUDA/multiprocessing compliance
 try:

@@ -11,11 +11,11 @@ from PyQt6.QtGui import (
     QTransform, QCursor, QImage, QWheelEvent, QMouseEvent
 )
 from PyQt6.QtCore import Qt, QSize, QEvent, QObject
-from src.ui_settings import SettingsWindow
-from src.queue_worker import QueueWorker
-from src.settings_manager import SettingsManager
-from src.logger import logger
-from src.image_loader import ImageLoader
+from .ui_settings import SettingsWindow
+from .queue_worker import QueueWorker
+from .settings_manager import SettingsManager
+from .logger import logger
+from .image_loader import ImageLoader
 import numpy as np
 
 

@@ -3,7 +3,7 @@ import sys
 import os
 from logging.handlers import RotatingFileHandler
 from typing import Optional
-from src.paths import get_logs_dir
+from .paths import get_logs_dir
 
 
 def setup_logger(
