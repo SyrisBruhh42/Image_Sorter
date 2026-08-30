@@ -90,9 +90,9 @@ def test_queue_worker_enospc_disk_full(qtbot, tmp_path):
     errors = []
     worker.signals.error.connect(lambda f, err: errors.append((f, err)))
 
-    # Simulate ENOSPC disk full error during shutil.move
+    # Simulate ENOSPC disk full error during streaming write in _atomic_copy_stream
     enospc_error = OSError(errno.ENOSPC, "No space left on device")
-    with patch("shutil.move", side_effect=enospc_error):
+    with patch("shutil.copyfileobj", side_effect=enospc_error):
         worker.add_task("move", str(test_file), str(dst_dir))
         qtbot.waitUntil(lambda: len(errors) == 1, timeout=5000)
         worker.stop()
