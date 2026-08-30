@@ -61,3 +61,6 @@ where = ["src"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src"]
+markers = [
+    "packaging: marks tests related to packaging and building binaries",
+]
