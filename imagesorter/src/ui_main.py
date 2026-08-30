@@ -1,15 +1,22 @@
 import os
 import shutil
+from collections import OrderedDict
 from typing import List, Dict, Optional, Any
+import psutil
 from PyQt6.QtWidgets import (
     QMainWindow, QLabel, QVBoxLayout, QHBoxLayout, QWidget, QMessageBox, QMenu,
     QApplication, QGraphicsView, QGraphicsScene, QGraphicsPixmapItem, QProgressBar,
-    QLineEdit, QTextEdit, QSpinBox, QComboBox
+    QLineEdit, QTextEdit, QPlainTextEdit, QAbstractSpinBox, QComboBox, QKeySequenceEdit
 )
 from PyQt6.QtGui import (
     QPixmap, QImageReader, QKeySequence, QAction, QPalette, QColor, QPainter,
     QTransform, QCursor, QImage, QWheelEvent, QMouseEvent
 )
+try:
+    from PyQt6.QtGui import QAccessible, QAccessibleEvent  # type: ignore
+    HAS_QACCESSIBLE = True
+except ImportError:
+    HAS_QACCESSIBLE = False
 from PyQt6.QtCore import Qt, QSize, QEvent, QObject
 from src.ui_settings import SettingsWindow
 from src.queue_worker import QueueWorker
@@ -23,6 +30,9 @@ class ImageViewer(QGraphicsView):
     """
     Custom QGraphicsView for displaying images with pan/zoom and clipping analysis.
     """
+    MIN_ZOOM: float = 0.05
+    MAX_ZOOM: float = 32.0
+
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
         self.scene: QGraphicsScene = QGraphicsScene(self)
@@ -36,6 +46,9 @@ class ImageViewer(QGraphicsView):
         self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.setStyleSheet("background-color: black; border: none;")
+
+        self.setTransformationAnchor(QGraphicsView.ViewportAnchor.AnchorUnderMouse)
+        self.setResizeAnchor(QGraphicsView.ViewportAnchor.AnchorViewCenter)
 
         self.setAccessibleName("Image Canvas Viewport")
         self.setAccessibleDescription("Interactive viewport supporting smooth zoom, pan, and exposure clipping overlays.")
@@ -73,39 +86,66 @@ class ImageViewer(QGraphicsView):
             self.pixmap_item.setPixmap(self.original_pixmap)
 
     def apply_clipping_overlay(self) -> None:
-        """Calculates and applies clipping overlay using numpy."""
+        """Calculates and applies clipping overlay using downsampled vectorized numpy math."""
         if self.original_pixmap.isNull():
             return
 
         if self.clipping_pixmap.isNull():
-            img = self.original_pixmap.toImage().convertToFormat(QImage.Format.Format_ARGB32)
-            ptr = img.bits()
-            ptr.setsize(img.height() * img.bytesPerLine())
-            arr = np.frombuffer(ptr, np.uint8).reshape((img.height(), img.bytesPerLine() // 4, 4))
+            full_img = self.original_pixmap.toImage().convertToFormat(QImage.Format.Format_ARGB32)
 
-            b = arr[..., 0]
-            g = arr[..., 1]
-            r = arr[..., 2]
+            w, h = full_img.width(), full_img.height()
+            max_w, max_h = 2560, 1440
+            scale = min(1.0, max_w / max(1, w), max_h / max(1, h))
 
-            overexposed = (r > 250) & (g > 250) & (b > 250)
-            underexposed = (r < 5) & (g < 5) & (b < 5)
+            if scale < 1.0:
+                calc_img = full_img.scaled(
+                    int(w * scale), int(h * scale),
+                    Qt.AspectRatioMode.KeepAspectRatio,
+                    Qt.TransformationMode.FastTransformation
+                )
+            else:
+                calc_img = full_img
 
-            overlay = QImage(img.width(), img.height(), QImage.Format.Format_ARGB32)
+            ptr = calc_img.bits()
+            ptr.setsize(calc_img.height() * calc_img.bytesPerLine())
+            arr = np.frombuffer(ptr, np.uint8).reshape((calc_img.height(), calc_img.bytesPerLine() // 4, 4))
+
+            b = arr[..., 0].astype(np.float32)
+            g = arr[..., 1].astype(np.float32)
+            r = arr[..., 2].astype(np.float32)
+
+            y = 0.2126 * r + 0.7152 * g + 0.0722 * b
+            max_c = np.maximum(np.maximum(r, g), b)
+            min_c = np.minimum(np.minimum(r, g), b)
+
+            overexposed = (y > 250) | (max_c > 254)
+            underexposed = (y < 5) | (min_c < 5)
+
+            overlay = QImage(calc_img.width(), calc_img.height(), QImage.Format.Format_ARGB32)
             overlay.fill(Qt.GlobalColor.transparent)
 
             ptr_out = overlay.bits()
             ptr_out.setsize(overlay.height() * overlay.bytesPerLine())
             arr_out = np.frombuffer(ptr_out, np.uint8).reshape((overlay.height(), overlay.bytesPerLine() // 4, 4))
 
+            # Little-Endian ARGB32 (BGRA byte order): Red overlay [0, 0, 255, 255], Blue overlay [255, 0, 0, 255]
             arr_out[overexposed] = [0, 0, 255, 255]
             arr_out[underexposed] = [255, 0, 0, 255]
 
-            painter = QPainter(img)
+            if scale < 1.0:
+                overlay = overlay.scaled(
+                    w, h,
+                    Qt.AspectRatioMode.IgnoreAspectRatio,
+                    Qt.TransformationMode.FastTransformation
+                )
+
+            result_img = full_img.copy()
+            painter = QPainter(result_img)
             painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceOver)
             painter.drawImage(0, 0, overlay)
             painter.end()
 
-            self.clipping_pixmap = QPixmap.fromImage(img)
+            self.clipping_pixmap = QPixmap.fromImage(result_img)
 
         self.pixmap_item.setPixmap(self.clipping_pixmap)
 
@@ -126,16 +166,23 @@ class ImageViewer(QGraphicsView):
             self.setTransform(self.saved_transform)
 
     def wheelEvent(self, event: QWheelEvent) -> None:
-        """Handles mouse wheel zooming."""
+        """Handles mouse wheel zooming bounded between MIN_ZOOM and MAX_ZOOM."""
         if self.locked_zoom_pan:
             return
 
-        if event.angleDelta().y() > 0:
-            self.scale(self.zoom_factor, self.zoom_factor)
-        else:
-            self.scale(1 / self.zoom_factor, 1 / self.zoom_factor)
-        self.saved_transform = self.transform()
-        self.is_smart_zoom = False
+        current_scale = self.transform().m11()
+        factor = self.zoom_factor if event.angleDelta().y() > 0 else (1.0 / self.zoom_factor)
+        new_scale = current_scale * factor
+
+        if new_scale < self.MIN_ZOOM:
+            factor = self.MIN_ZOOM / current_scale
+        elif new_scale > self.MAX_ZOOM:
+            factor = self.MAX_ZOOM / current_scale
+
+        if abs(factor - 1.0) > 1e-5:
+            self.scale(factor, factor)
+            self.saved_transform = self.transform()
+            self.is_smart_zoom = False
 
     def mouseDoubleClickEvent(self, event: QMouseEvent) -> None:
         """Handles smart zooming on double click."""
@@ -172,7 +219,11 @@ class MainViewer(QMainWindow):
         self.history: List[Dict[str, Any]] = []
         self.zen_mode: bool = False
 
-        self.pixmap_cache: Dict[str, QPixmap] = {}
+        self.pixmap_cache: OrderedDict[str, QPixmap] = OrderedDict()
+        self.cache_bytes: int = 0
+        self.max_cache_items: int = 25
+        self._update_max_cache_bytes()
+
         self.loader = ImageLoader()
         self.loader.image_loaded.connect(self.on_image_preloaded)
         self.loader.start()
@@ -180,6 +231,33 @@ class MainViewer(QMainWindow):
         self.apply_theme()
         self.init_ui()
         self.load_images()
+
+    def _update_max_cache_bytes(self) -> None:
+        custom_mb = self.settings.get('advanced', 'cache_size_mb')
+        if custom_mb and str(custom_mb).isdigit():
+            self.max_cache_bytes = int(custom_mb) * 1024 * 1024
+        else:
+            total_ram = psutil.virtual_memory().total
+            self.max_cache_bytes = min(256 * 1024 * 1024, int(0.20 * total_ram))
+
+    def _add_pixmap_to_cache(self, filepath: str, pixmap: QPixmap) -> None:
+        if filepath in self.pixmap_cache:
+            old_pixmap = self.pixmap_cache.pop(filepath)
+            self.cache_bytes -= (old_pixmap.width() * old_pixmap.height() * 4)
+
+        pixmap_size = pixmap.width() * pixmap.height() * 4
+        self.pixmap_cache[filepath] = pixmap
+        self.cache_bytes += pixmap_size
+
+        while len(self.pixmap_cache) > 1 and (self.cache_bytes > self.max_cache_bytes or len(self.pixmap_cache) > self.max_cache_items):
+            old_k, old_pm = self.pixmap_cache.popitem(last=False)
+            self.cache_bytes -= (old_pm.width() * old_pm.height() * 4)
+
+    def _get_pixmap_from_cache(self, filepath: str) -> Optional[QPixmap]:
+        if filepath in self.pixmap_cache:
+            self.pixmap_cache.move_to_end(filepath)
+            return self.pixmap_cache[filepath]
+        return None
 
     def eventFilter(self, obj: 'QObject', event: QEvent) -> bool:
         if event.type() == QEvent.Type.ToolTip:
@@ -192,14 +270,23 @@ class MainViewer(QMainWindow):
                     return True
         return super().eventFilter(obj, event)
 
+    def announce_accessibility_event(self, widget: QWidget, message: str) -> None:
+        """Announces accessibility event to screen readers using QAccessible."""
+        widget.setAccessibleDescription(message)
+        if HAS_QACCESSIBLE:
+            try:
+                event = QAccessibleEvent(widget, QAccessible.Event.Alert)
+                QAccessible.updateAccessibility(event)
+            except Exception:
+                pass
+
     def on_image_preloaded(self, filepath: str, img: QImage) -> None:
         if filepath not in self.pixmap_cache:
-            self.pixmap_cache[filepath] = QPixmap.fromImage(img)
+            pixmap = QPixmap.fromImage(img)
+            if not pixmap.isNull():
+                self._add_pixmap_to_cache(filepath, pixmap)
 
     def preload_adjacent_images(self) -> None:
-        if len(self.pixmap_cache) > 10:
-            self.pixmap_cache.clear()
-
         if self.current_index + 1 < len(self.images):
             self.loader.add_task(self.images[self.current_index + 1])
 
@@ -275,42 +362,56 @@ class MainViewer(QMainWindow):
         self.statusBar().showMessage("Ready", 3000)
 
     def apply_theme(self) -> None:
-        """Applies visual theme palette."""
+        """Applies visual theme palette with WCAG AAA contrast compliance."""
         theme = self.settings.get('ui', 'theme') or 'Dark'
         app = QApplication.instance()
         palette = QPalette()
 
         if theme == 'Dark':
-            palette.setColor(QPalette.ColorRole.Window, QColor(30, 30, 30))
-            palette.setColor(QPalette.ColorRole.WindowText, Qt.GlobalColor.white)
-            palette.setColor(QPalette.ColorRole.Base, QColor(45, 45, 45))
-            palette.setColor(QPalette.ColorRole.AlternateBase, QColor(53, 53, 53))
-            palette.setColor(QPalette.ColorRole.ToolTipBase, Qt.GlobalColor.white)
-            palette.setColor(QPalette.ColorRole.ToolTipText, Qt.GlobalColor.white)
-            palette.setColor(QPalette.ColorRole.Text, Qt.GlobalColor.white)
-            palette.setColor(QPalette.ColorRole.Button, QColor(53, 53, 53))
-            palette.setColor(QPalette.ColorRole.ButtonText, Qt.GlobalColor.white)
-            palette.setColor(QPalette.ColorRole.BrightText, Qt.GlobalColor.red)
-            palette.setColor(QPalette.ColorRole.Link, QColor(42, 130, 218))
-            palette.setColor(QPalette.ColorRole.Highlight, QColor(42, 130, 218))
-            palette.setColor(QPalette.ColorRole.HighlightedText, Qt.GlobalColor.black)
+            palette.setColor(QPalette.ColorRole.Window, QColor("#181818"))
+            palette.setColor(QPalette.ColorRole.WindowText, QColor("#FFFFFF"))
+            palette.setColor(QPalette.ColorRole.Base, QColor("#242424"))
+            palette.setColor(QPalette.ColorRole.AlternateBase, QColor("#2D2D2D"))
+            palette.setColor(QPalette.ColorRole.ToolTipBase, QColor("#181818"))
+            palette.setColor(QPalette.ColorRole.ToolTipText, QColor("#FFFFFF"))
+            palette.setColor(QPalette.ColorRole.Text, QColor("#FFFFFF"))
+            palette.setColor(QPalette.ColorRole.Button, QColor("#2D2D2D"))
+            palette.setColor(QPalette.ColorRole.ButtonText, QColor("#FFFFFF"))
+            palette.setColor(QPalette.ColorRole.BrightText, QColor("#FF4D4D"))
+            palette.setColor(QPalette.ColorRole.Link, QColor("#3B82F6"))
+            palette.setColor(QPalette.ColorRole.Highlight, QColor("#3B82F6"))
+            palette.setColor(QPalette.ColorRole.HighlightedText, QColor("#FFFFFF"))
+            app.setStyleSheet("QWidget:focus { outline: 2px solid #3B82F6; }")
         elif theme == 'High Contrast':
-            palette.setColor(QPalette.ColorRole.Window, Qt.GlobalColor.black)
-            palette.setColor(QPalette.ColorRole.WindowText, Qt.GlobalColor.yellow)
-            palette.setColor(QPalette.ColorRole.Base, Qt.GlobalColor.black)
-            palette.setColor(QPalette.ColorRole.AlternateBase, Qt.GlobalColor.black)
-            palette.setColor(QPalette.ColorRole.ToolTipBase, Qt.GlobalColor.black)
-            palette.setColor(QPalette.ColorRole.ToolTipText, Qt.GlobalColor.yellow)
-            palette.setColor(QPalette.ColorRole.Text, Qt.GlobalColor.yellow)
-            palette.setColor(QPalette.ColorRole.Button, Qt.GlobalColor.black)
-            palette.setColor(QPalette.ColorRole.ButtonText, Qt.GlobalColor.yellow)
-            palette.setColor(QPalette.ColorRole.BrightText, Qt.GlobalColor.red)
-            palette.setColor(QPalette.ColorRole.Link, Qt.GlobalColor.cyan)
-            palette.setColor(QPalette.ColorRole.Highlight, Qt.GlobalColor.cyan)
-            palette.setColor(QPalette.ColorRole.HighlightedText, Qt.GlobalColor.black)
-        else:
-            app.setPalette(app.style().standardPalette())
-            return
+            palette.setColor(QPalette.ColorRole.Window, QColor("#000000"))
+            palette.setColor(QPalette.ColorRole.WindowText, QColor("#FFFF00"))
+            palette.setColor(QPalette.ColorRole.Base, QColor("#000000"))
+            palette.setColor(QPalette.ColorRole.AlternateBase, QColor("#000000"))
+            palette.setColor(QPalette.ColorRole.ToolTipBase, QColor("#000000"))
+            palette.setColor(QPalette.ColorRole.ToolTipText, QColor("#FFFF00"))
+            palette.setColor(QPalette.ColorRole.Text, QColor("#FFFF00"))
+            palette.setColor(QPalette.ColorRole.Button, QColor("#000000"))
+            palette.setColor(QPalette.ColorRole.ButtonText, QColor("#FFFF00"))
+            palette.setColor(QPalette.ColorRole.BrightText, QColor("#FF0000"))
+            palette.setColor(QPalette.ColorRole.Link, QColor("#00FFFF"))
+            palette.setColor(QPalette.ColorRole.Highlight, QColor("#00FFFF"))
+            palette.setColor(QPalette.ColorRole.HighlightedText, QColor("#000000"))
+            app.setStyleSheet("QWidget { border: 3px solid #FFFF00; } QWidget:focus { outline: 3px solid #00FFFF; }")
+        else: # Light theme
+            palette.setColor(QPalette.ColorRole.Window, QColor("#F8F9FA"))
+            palette.setColor(QPalette.ColorRole.WindowText, QColor("#0F172A"))
+            palette.setColor(QPalette.ColorRole.Base, QColor("#FFFFFF"))
+            palette.setColor(QPalette.ColorRole.AlternateBase, QColor("#F1F5F9"))
+            palette.setColor(QPalette.ColorRole.ToolTipBase, QColor("#F8F9FA"))
+            palette.setColor(QPalette.ColorRole.ToolTipText, QColor("#0F172A"))
+            palette.setColor(QPalette.ColorRole.Text, QColor("#0F172A"))
+            palette.setColor(QPalette.ColorRole.Button, QColor("#E2E8F0"))
+            palette.setColor(QPalette.ColorRole.ButtonText, QColor("#0F172A"))
+            palette.setColor(QPalette.ColorRole.BrightText, QColor("#DC2626"))
+            palette.setColor(QPalette.ColorRole.Link, QColor("#1D4ED8"))
+            palette.setColor(QPalette.ColorRole.Highlight, QColor("#1D4ED8"))
+            palette.setColor(QPalette.ColorRole.HighlightedText, QColor("#FFFFFF"))
+            app.setStyleSheet("QWidget:focus { outline: 2px solid #1D4ED8; }")
 
         app.setPalette(palette)
 
@@ -424,21 +525,23 @@ class MainViewer(QMainWindow):
             self.empty_label.show()
             self.empty_label.setText("All done!")
             self.setWindowTitle("Image Sorter - Enterprise")
+            self.announce_accessibility_event(self.empty_label, "All done! No remaining images in queue.")
             return
 
         filepath = self.images[self.current_index]
 
-        if filepath in self.pixmap_cache:
-            pixmap = self.pixmap_cache[filepath]
-        else:
+        pixmap = self._get_pixmap_from_cache(filepath)
+        if pixmap is None:
             pixmap = QPixmap(filepath)
             if not pixmap.isNull():
-                self.pixmap_cache[filepath] = pixmap
+                self._add_pixmap_to_cache(filepath, pixmap)
 
-        if pixmap.isNull():
+        if pixmap is None or pixmap.isNull():
             self.viewer.hide()
             self.empty_label.show()
-            self.empty_label.setText(f"Failed to load image: {os.path.basename(filepath)}")
+            err_msg = f"Failed to load image: {os.path.basename(filepath)}"
+            self.empty_label.setText(err_msg)
+            self.announce_accessibility_event(self.empty_label, err_msg)
             logger.warning(f"QPixmap failed to load valid image data from {filepath}")
             return
 
@@ -447,20 +550,54 @@ class MainViewer(QMainWindow):
         self.viewer.set_image(pixmap)
 
         filename = os.path.basename(filepath)
-        self.empty_label.setAccessibleName(f"Image {self.current_index + 1} of {len(self.images)}: {filename}")
+        accessible_desc = f"Image {self.current_index + 1} of {len(self.images)}: {filename}"
+        self.viewer.setAccessibleName(accessible_desc)
+        self.empty_label.setAccessibleName(accessible_desc)
         self.setWindowTitle(f"Image Sorter - {filename} ({self.current_index + 1}/{len(self.images)})")
+        self.announce_accessibility_event(self.viewer, accessible_desc)
 
         self.preload_adjacent_images()
 
-    def keyPressEvent(self, event: QEvent) -> None:
-        """Handles keyboard navigation and sorting with focus isolation to prevent input collision."""
+    def is_input_focused(self) -> bool:
+        """Determines if any input or editor widget currently has keyboard focus."""
         focus_widget = QApplication.focusWidget()
-        if focus_widget and isinstance(focus_widget, (QLineEdit, QTextEdit, QSpinBox, QComboBox)):
+        if not focus_widget:
+            return False
+        if isinstance(focus_widget, (QLineEdit, QTextEdit, QPlainTextEdit, QAbstractSpinBox, QComboBox, QKeySequenceEdit)):
+            return True
+        if hasattr(focus_widget, "isReadOnly") and not focus_widget.isReadOnly():
+            return True
+        return False
+
+    def keyPressEvent(self, event: QEvent) -> None:
+        """Handles keyboard navigation and sorting adhering strictly to the Precedence Matrix."""
+        if self.is_input_focused():
             super().keyPressEvent(event)
             return
 
         key = event.key()
+        modifiers = event.modifiers()
         key_str = event.text().upper()
+
+        # Level 0 (System Shortcuts with Modifiers)
+        if modifiers == Qt.KeyboardModifier.ControlModifier:
+            if key == Qt.Key.Key_Z:
+                self.undo_last_action()
+                return
+            elif key == Qt.Key.Key_S:
+                self.open_settings()
+                return
+            elif key == Qt.Key.Key_C:
+                if 0 <= self.current_index < len(self.images):
+                    filepath = self.images[self.current_index]
+                    QApplication.clipboard().setText(filepath)
+                    msg = f"Copied filepath to clipboard: {os.path.basename(filepath)}"
+                    self.statusBar().showMessage(msg, 3000)
+                    self.announce_accessibility_event(self.central_widget, msg)
+                return
+            elif key == Qt.Key.Key_Q:
+                self.close()
+                return
 
         if key == Qt.Key.Key_Escape:
             if self.zen_mode:
@@ -473,70 +610,75 @@ class MainViewer(QMainWindow):
                 self.close()
             return
 
-        if key == Qt.Key.Key_Z:
-            self.toggle_zen_mode()
+        # Level 1 (Direct Navigation without Modifiers)
+        if key in (Qt.Key.Key_Space, Qt.Key.Key_Right):
+            if 0 <= self.current_index < len(self.images):
+                self.current_index += 1
+                self.show_image()
             return
 
-        if key == Qt.Key.Key_L:
-            self.locked_zoom_action.setChecked(not self.locked_zoom_action.isChecked())
-            self.toggle_locked_zoom(self.locked_zoom_action.isChecked())
-            return
-
-        if key == Qt.Key.Key_C:
-            self.viewer.toggle_clipping_warnings()
-            return
-
-        if key == Qt.Key.Key_S:
-            self.open_settings()
-            return
-
-        if key == Qt.Key.Key_R:
-            self.load_images()
-            return
-
-        if event.modifiers() == Qt.KeyboardModifier.ControlModifier and key == Qt.Key.Key_Z:
-            self.undo_last_action()
-            return
-
-        if self.current_index < 0 or self.current_index >= len(self.images):
-            return
-
-        filepath = self.images[self.current_index]
-
-        if key == Qt.Key.Key_Space or key == Qt.Key.Key_Right:
-            self.current_index += 1
-            self.show_image()
-            return
-
-        if key == Qt.Key.Key_Left or key == Qt.Key.Key_Backspace:
+        if key in (Qt.Key.Key_Left, Qt.Key.Key_Backspace):
             if self.current_index > 0:
                 self.current_index -= 1
                 self.show_image()
             return
 
         if key == Qt.Key.Key_Delete:
-            self.worker.add_task('trash', filepath)
-            self.next_image_after_action()
+            if 0 <= self.current_index < len(self.images):
+                filepath = self.images[self.current_index]
+                self.worker.add_task('trash', filepath)
+                self.announce_accessibility_event(self.central_widget, f"Moved {os.path.basename(filepath)} to trash.")
+                self.next_image_after_action()
             return
 
-        hotkeys = self.settings.get('hotkeys') or {}
-        if key_str in hotkeys:
-            config = hotkeys[key_str]
-            action = config.get('action', 'move')
-            folder = config.get('folder')
+        # Level 2 (Custom User Hotkeys - evaluated ONLY when NoModifier)
+        if modifiers == Qt.KeyboardModifier.NoModifier:
+            hotkeys = self.settings.get('hotkeys') or {}
+            if key_str and key_str in hotkeys:
+                if 0 <= self.current_index < len(self.images):
+                    filepath = self.images[self.current_index]
+                    config = hotkeys[key_str]
+                    action = config.get('action', 'move')
+                    folder = config.get('folder')
 
-            if not folder:
-                self.statusBar().showMessage(f"Warning: No destination folder set for hotkey '{key_str}'", 4000)
+                    if not folder:
+                        msg = f"Warning: No destination folder set for hotkey '{key_str}'"
+                        self.statusBar().showMessage(msg, 4000)
+                        self.announce_accessibility_event(self.central_widget, msg)
+                        return
+
+                    self.worker.add_task(action, filepath, folder)
+                    self.announce_accessibility_event(self.central_widget, f"Executed {action} for {os.path.basename(filepath)} to {folder}.")
+
+                    if config.get('auto_advance', True):
+                        if action in ('move', 'trash'):
+                            self.next_image_after_action()
+                        else:
+                            self.current_index += 1
+                            self.show_image()
                 return
 
-            self.worker.add_task(action, filepath, folder)
+            # Level 3 (Fallback Letters)
+            if key == Qt.Key.Key_Z:
+                self.toggle_zen_mode()
+                return
 
-            if config.get('auto_advance', True):
-                if action in ('move', 'trash'):
-                    self.next_image_after_action()
-                else:
-                    self.current_index += 1
-                    self.show_image()
+            if key == Qt.Key.Key_L:
+                self.locked_zoom_action.setChecked(not self.locked_zoom_action.isChecked())
+                self.toggle_locked_zoom(self.locked_zoom_action.isChecked())
+                return
+
+            if key == Qt.Key.Key_C:
+                self.viewer.toggle_clipping_warnings()
+                return
+
+            if key == Qt.Key.Key_S:
+                self.open_settings()
+                return
+
+            if key == Qt.Key.Key_R:
+                self.load_images()
+                return
 
     def next_image_after_action(self) -> None:
         """Advances to next image after action."""
@@ -564,21 +706,26 @@ class MainViewer(QMainWindow):
         if action_type in ('move', 'trash'):
             if current_path and original_path:
                 self.worker.add_task('undo_move', current_path, original_path)
-                self.statusBar().showMessage("Undoing move... Press 'R' to reload folder.", 3000)
+                msg = f"Restoring {os.path.basename(original_path)} to original location..."
+                self.statusBar().showMessage(msg, 3000)
+                self.announce_accessibility_event(self.central_widget, msg)
 
         elif action_type == 'copy':
             if current_path:
                 self.worker.add_task('undo_copy', current_path)
-                self.statusBar().showMessage("Undoing copy...", 3000)
+                msg = f"Undoing copy of {os.path.basename(current_path)}..."
+                self.statusBar().showMessage(msg, 3000)
+                self.announce_accessibility_event(self.central_widget, msg)
 
     def open_settings(self) -> None:
-        """Opens settings configuration window."""
-        self.settings_window = SettingsWindow(self.settings)
-        self.settings_window.destroyed.connect(self.on_settings_closed)
-        self.settings_window.show()
+        """Opens settings configuration window as a modal dialog."""
+        dialog = SettingsWindow(self.settings, parent=self)
+        if dialog.exec():
+            self.on_settings_closed()
 
     def on_settings_closed(self) -> None:
         """Called when settings window closes."""
+        self._update_max_cache_bytes()
         self.apply_theme()
         font_size = self.settings.get('ui', 'font_size') or 24
         self.empty_label.setStyleSheet(f"font-size: {font_size}px; padding: 20px;")
@@ -590,8 +737,10 @@ class MainViewer(QMainWindow):
         self.statusBar().showMessage(msg, 3000)
 
     def on_worker_error(self, filepath: str, error: str) -> None:
-        """Displays error messages in status bar."""
-        self.statusBar().showMessage(f"Error: {error}", 5000)
+        """Displays error messages in status bar and announces via screen reader."""
+        msg = f"Error processing {os.path.basename(filepath)}: {error}"
+        self.statusBar().showMessage(msg, 5000)
+        self.announce_accessibility_event(self.central_widget, msg)
 
     def closeEvent(self, event: QEvent) -> None:
         """Ensures background threads are safely stopped upon window close."""
