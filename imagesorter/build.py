@@ -29,6 +29,66 @@ MIME_XML = """<?xml version="1.0" encoding="UTF-8"?>
 """
 
 
+def ensure_icon_assets(root_dir: Path) -> Path:
+    """Procedurally generates high-resolution icon assets if missing using Pillow."""
+    resources_dir = root_dir / "src" / "imagesorter" / "resources"
+    resources_dir.mkdir(parents=True, exist_ok=True)
+
+    img_256_path = resources_dir / "imagesorter_256.png"
+    img_512_path = resources_dir / "imagesorter_512.png"
+    img_default_path = resources_dir / "imagesorter.png"
+    ico_path = resources_dir / "imagesorter.ico"
+
+    if not (img_256_path.exists() and img_512_path.exists() and img_default_path.exists() and ico_path.exists()):
+        print("Generating procedural icon assets...")
+        from PIL import Image, ImageDraw
+
+        def create_app_icon(size: int) -> Image.Image:
+            img = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+            draw = ImageDraw.Draw(img)
+            pad = size // 16
+            draw.rounded_rectangle(
+                [pad, pad, size - pad, size - pad],
+                radius=size // 8,
+                fill=(30, 30, 35, 255),
+                outline=(42, 130, 218, 255),
+                width=max(2, size // 32)
+            )
+            # Inner stylized photo frame symbol
+            inner_pad = size // 4
+            draw.rectangle(
+                [inner_pad, inner_pad, size - inner_pad, size - inner_pad],
+                outline=(255, 255, 255, 220),
+                width=max(2, size // 32)
+            )
+            # Mountain/triangle visual element inside frame
+            draw.polygon(
+                [
+                    (inner_pad + size // 16, size - inner_pad - size // 16),
+                    (size // 2, inner_pad + size // 8),
+                    (size - inner_pad - size // 16, size - inner_pad - size // 16)
+                ],
+                fill=(42, 130, 218, 255)
+            )
+            return img
+
+        img_512 = create_app_icon(512)
+        img_512.save(img_512_path)
+
+        img_256 = img_512.resize((256, 256), Image.Resampling.LANCZOS)
+        img_256.save(img_256_path)
+
+        # Main default png icon
+        img_256.save(img_default_path)
+
+        # Save multi-resolution ICO file
+        ico_sizes = [(16, 16), (32, 32), (48, 48), (64, 64), (128, 128), (256, 256)]
+        img_512.save(ico_path, format="ICO", sizes=ico_sizes)
+        print(f"Generated icons in {resources_dir}")
+
+    return resources_dir
+
+
 def generate_freedesktop_artifacts(output_dir: Path) -> None:
     """Generates standard Freedesktop .desktop and MIME integration files."""
     desktop_path = output_dir / "imagesorter.desktop"
@@ -49,21 +109,30 @@ def generate_appimage_builder_script(output_dir: Path) -> None:
     content = """#!/usr/bin/env bash
 set -e
 
-APP_DIR="ImageSorter.AppDir"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+APP_DIR="$SCRIPT_DIR/ImageSorter.AppDir"
 rm -rf "$APP_DIR"
 mkdir -p "$APP_DIR/usr/bin"
 mkdir -p "$APP_DIR/usr/share/applications"
 mkdir -p "$APP_DIR/usr/share/icons/hicolor/256x256/apps"
 
-cp -r dist/ImageSorter/* "$APP_DIR/usr/bin/"
-cp dist/imagesorter.desktop "$APP_DIR/usr/share/applications/"
-cp dist/imagesorter.desktop "$APP_DIR/"
+cp -r "$SCRIPT_DIR/ImageSorter"/* "$APP_DIR/usr/bin/"
+cp "$SCRIPT_DIR/imagesorter.desktop" "$APP_DIR/usr/share/applications/"
+cp "$SCRIPT_DIR/imagesorter.desktop" "$APP_DIR/"
+
+if [ -f "$SCRIPT_DIR/../src/imagesorter/resources/imagesorter.png" ]; then
+    cp "$SCRIPT_DIR/../src/imagesorter/resources/imagesorter.png" "$APP_DIR/imagesorter.png"
+    cp "$SCRIPT_DIR/../src/imagesorter/resources/imagesorter.png" "$APP_DIR/.DirIcon"
+    cp "$SCRIPT_DIR/../src/imagesorter/resources/imagesorter.png" "$APP_DIR/usr/share/icons/hicolor/256x256/apps/"
+fi
 
 cat << 'EOF' > "$APP_DIR/AppRun"
 #!/usr/bin/env bash
 HERE="$(dirname "$(readlink -f "${0}")")"
 export PATH="$HERE/usr/bin:$PATH"
 export LD_LIBRARY_PATH="$HERE/usr/bin:$LD_LIBRARY_PATH"
+export QT_PLUGIN_PATH="$HERE/usr/bin/PyQt6/Qt6/plugins:$HERE/usr/bin/PyQt6/Qt/plugins:$QT_PLUGIN_PATH"
+export QT_QPA_PLATFORM_PLUGIN_PATH="$HERE/usr/bin/PyQt6/Qt6/plugins/platforms:$HERE/usr/bin/PyQt6/Qt/plugins/platforms:$QT_QPA_PLATFORM_PLUGIN_PATH"
 export QT_QPA_PLATFORM="${QT_QPA_PLATFORM:-wayland;xcb}"
 exec "$HERE/usr/bin/ImageSorter" "$@"
 EOF
@@ -71,8 +140,8 @@ EOF
 chmod +x "$APP_DIR/AppRun"
 
 if command -v appimagetool >/dev/null 2>&1; then
-    appimagetool "$APP_DIR" ImageSorter-x86_64.AppImage
-    echo "AppImage created successfully: ImageSorter-x86_64.AppImage"
+    appimagetool "$APP_DIR" "$SCRIPT_DIR/ImageSorter-x86_64.AppImage"
+    echo "AppImage created successfully: $SCRIPT_DIR/ImageSorter-x86_64.AppImage"
 else
     echo "AppDir prepared at $APP_DIR. Install 'appimagetool' to package into .AppImage binary."
 fi
@@ -98,16 +167,12 @@ def build_executable() -> None:
         sys.exit(1)
 
     os.makedirs("models", exist_ok=True)
+    ensure_icon_assets(root_dir)
 
-    separator = ";" if sys.platform == "win32" else ":"
     cmd = [
         "pyinstaller",
         "--noconfirm",
-        "--onedir",
-        "--windowed",
-        "--name", "ImageSorter",
-        "--add-data", f"models{separator}models",
-        "src/main.py"
+        "ImageSorter.spec"
     ]
 
     print(f"Running PyInstaller: {' '.join(cmd)}")
