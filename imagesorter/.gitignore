@@ -1,6 +1,7 @@
 dist/
 build/
-*.spec
+.coverage
+.pytest_cache/
 __pycache__/
 venv/
 imagesorter.log

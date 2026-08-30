@@ -87,9 +87,15 @@ class ModelDownloader(QThread):
                 checksum = calculate_sha256(temp_path)
                 logger.info(f"Downloaded model SHA256: {checksum}")
 
-                # Zero-Trust Checksum Verification: Log warning on mismatch to avoid breaking offline/updated models
+                # Zero-Trust Checksum Verification: Abort immediately on mismatch
                 if checksum and MODEL_SHA256 and checksum != MODEL_SHA256:
-                    logger.warning(f"Checksum mismatch for downloaded model! Expected {MODEL_SHA256}, got {checksum}")
+                    logger.critical(
+                        f"Zero-Trust Failure: Checksum mismatch for {MODEL_URL}. Expected {MODEL_SHA256}, got {checksum}"
+                    )
+                    if os.path.exists(temp_path):
+                        os.remove(temp_path)
+                    self.finished.emit(False, "Cryptographic integrity failure: SHA-256 mismatch.")
+                    return
 
                 os.replace(temp_path, self.model_path)
                 logger.info("Model download and verification complete.")
@@ -274,6 +280,8 @@ def write_metadata(
             exif_dict = piexif.load(filepath)
             tag_string = ";".join(tags)
             xp_keywords = tag_string.encode('utf-16le')
+            if not xp_keywords.endswith(b"\x00\x00"):
+                xp_keywords += b"\x00\x00"
 
             if "0th" not in exif_dict:
                 exif_dict["0th"] = {}
