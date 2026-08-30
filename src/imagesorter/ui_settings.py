@@ -6,11 +6,11 @@ from PyQt6.QtWidgets import (
     QComboBox, QSpinBox, QTableWidget, QTableWidgetItem, QHeaderView, QMessageBox, QProgressDialog
 )
 from PyQt6.QtCore import Qt
-from src.settings_manager import SettingsManager
-from src.hardware_scan import scan_hardware
-from src.ai_tagger import ModelDownloader
-from src.paths import get_data_dir
-from src.logger import logger
+from .settings_manager import SettingsManager
+from .hardware_scan import scan_hardware
+from .ai_tagger import ModelDownloader
+from .paths import get_data_dir
+from .logger import logger
 
 class SettingsWindow(QWidget):
     """

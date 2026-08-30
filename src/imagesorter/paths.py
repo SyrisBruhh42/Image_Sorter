@@ -1,7 +1,6 @@
 import os
 import sys
 from pathlib import Path
-from typing import Union
 
 
 def get_app_dir() -> Path:
@@ -24,16 +23,28 @@ def is_portable_mode() -> bool:
     """
     Checks if the application is running in portable mode.
 
-    Portable mode is activated if 'portable.flag' or 'settings.json' exists
-    adjacent to the executable or main script root directory.
+    Portable mode is activated ONLY if 'portable.flag' exists adjacent to the
+    executable or main script root directory.
 
     Returns:
         bool: True if portable mode is active, False otherwise.
     """
     app_dir = get_app_dir()
     portable_flag = app_dir / "portable.flag"
-    local_settings = app_dir / "settings.json"
-    return portable_flag.exists() or local_settings.exists()
+    return portable_flag.exists()
+
+
+def _get_env_path(env_var: str) -> Path | None:
+    """
+    Retrieves an absolute Path from an environment variable if set and absolute.
+    Rejects relative paths to maintain XDG spec compliance and security.
+    """
+    val = os.environ.get(env_var)
+    if val:
+        p = Path(val)
+        if p.is_absolute():
+            return p
+    return None
 
 
 def get_config_dir() -> Path:
@@ -48,7 +59,7 @@ def get_config_dir() -> Path:
         config_dir = app_dir / "config"
     elif sys.platform.startswith("win"):
         appdata = os.environ.get("APPDATA")
-        if appdata:
+        if appdata and Path(appdata).is_absolute():
             config_dir = Path(appdata) / "ImageSorter"
         else:
             config_dir = Path.home() / "AppData" / "Roaming" / "ImageSorter"
@@ -56,9 +67,9 @@ def get_config_dir() -> Path:
         config_dir = Path.home() / "Library" / "Application Support" / "ImageSorter"
     else:
         # Linux / POSIX XDG Spec
-        xdg_config = os.environ.get("XDG_CONFIG_HOME")
-        if xdg_config:
-            config_dir = Path(xdg_config) / "ImageSorter"
+        env_p = _get_env_path("XDG_CONFIG_HOME")
+        if env_p:
+            config_dir = env_p / "ImageSorter"
         else:
             config_dir = Path.home() / ".config" / "ImageSorter"
 
@@ -78,7 +89,7 @@ def get_data_dir() -> Path:
         data_dir = app_dir / "data"
     elif sys.platform.startswith("win"):
         local_appdata = os.environ.get("LOCALAPPDATA")
-        if local_appdata:
+        if local_appdata and Path(local_appdata).is_absolute():
             data_dir = Path(local_appdata) / "ImageSorter" / "Data"
         else:
             data_dir = Path.home() / "AppData" / "Local" / "ImageSorter" / "Data"
@@ -86,9 +97,9 @@ def get_data_dir() -> Path:
         data_dir = Path.home() / "Library" / "Application Support" / "ImageSorter"
     else:
         # Linux / POSIX XDG Spec
-        xdg_data = os.environ.get("XDG_DATA_HOME")
-        if xdg_data:
-            data_dir = Path(xdg_data) / "ImageSorter"
+        env_p = _get_env_path("XDG_DATA_HOME")
+        if env_p:
+            data_dir = env_p / "ImageSorter"
         else:
             data_dir = Path.home() / ".local" / "share" / "ImageSorter"
 
@@ -108,7 +119,7 @@ def get_cache_dir() -> Path:
         cache_dir = app_dir / "cache"
     elif sys.platform.startswith("win"):
         local_appdata = os.environ.get("LOCALAPPDATA")
-        if local_appdata:
+        if local_appdata and Path(local_appdata).is_absolute():
             cache_dir = Path(local_appdata) / "ImageSorter" / "Cache"
         else:
             cache_dir = Path.home() / "AppData" / "Local" / "ImageSorter" / "Cache"
@@ -116,9 +127,9 @@ def get_cache_dir() -> Path:
         cache_dir = Path.home() / "Library" / "Caches" / "ImageSorter"
     else:
         # Linux / POSIX XDG Spec
-        xdg_cache = os.environ.get("XDG_CACHE_HOME")
-        if xdg_cache:
-            cache_dir = Path(xdg_cache) / "ImageSorter"
+        env_p = _get_env_path("XDG_CACHE_HOME")
+        if env_p:
+            cache_dir = env_p / "ImageSorter"
         else:
             cache_dir = Path.home() / ".cache" / "ImageSorter"
 
@@ -138,7 +149,7 @@ def get_logs_dir() -> Path:
         logs_dir = app_dir / "logs"
     elif sys.platform.startswith("win"):
         local_appdata = os.environ.get("LOCALAPPDATA")
-        if local_appdata:
+        if local_appdata and Path(local_appdata).is_absolute():
             logs_dir = Path(local_appdata) / "ImageSorter" / "Logs"
         else:
             logs_dir = Path.home() / "AppData" / "Local" / "ImageSorter" / "Logs"
@@ -146,9 +157,9 @@ def get_logs_dir() -> Path:
         logs_dir = Path.home() / "Library" / "Logs" / "ImageSorter"
     else:
         # Linux / POSIX XDG Spec
-        xdg_state = os.environ.get("XDG_STATE_HOME")
-        if xdg_state:
-            logs_dir = Path(xdg_state) / "ImageSorter" / "logs"
+        env_p = _get_env_path("XDG_STATE_HOME")
+        if env_p:
+            logs_dir = env_p / "ImageSorter" / "logs"
         else:
             logs_dir = Path.home() / ".local" / "state" / "ImageSorter" / "logs"
 

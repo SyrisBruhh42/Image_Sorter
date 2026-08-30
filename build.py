@@ -1,7 +1,6 @@
 import subprocess
 import sys
 import os
-import shutil
 from pathlib import Path
 
 
@@ -86,18 +85,16 @@ fi
 def build_executable() -> None:
     print("Starting build process for Image Sorter Enterprise...")
 
-    # Root detection: script can be executed from repo root or imagesorter/ folder
-    current_dir = Path.cwd()
-    if (current_dir / "src" / "main.py").exists():
-        root_dir = current_dir
-    elif (current_dir / "imagesorter" / "src" / "main.py").exists():
-        root_dir = current_dir / "imagesorter"
-        os.chdir(root_dir)
-    else:
-        print("Error: Could not locate src/main.py.")
+    root_dir = Path(__file__).resolve().parent
+    main_script = root_dir / "src" / "imagesorter" / "main.py"
+
+    if not main_script.exists():
+        print(f"Error: Could not locate entrypoint at {main_script}")
         sys.exit(1)
 
-    os.makedirs("models", exist_ok=True)
+    os.chdir(root_dir)
+    models_dir = root_dir / "models"
+    models_dir.mkdir(exist_ok=True)
 
     separator = ";" if sys.platform == "win32" else ":"
     cmd = [
@@ -106,8 +103,8 @@ def build_executable() -> None:
         "--onedir",
         "--windowed",
         "--name", "ImageSorter",
-        "--add-data", f"models{separator}models",
-        "src/main.py"
+        "--add-data", f"{models_dir}{separator}models",
+        str(main_script)
     ]
 
     print(f"Running PyInstaller: {' '.join(cmd)}")

@@ -5,9 +5,9 @@ import uuid
 from typing import Dict, Any, Optional, List
 from PyQt6.QtCore import QObject, pyqtSignal, QRunnable, QThreadPool, pyqtSlot
 from send2trash import send2trash, TrashPermissionError
-from src.ai_tagger import AITagger, write_metadata
-from src.logger import logger
-from src.settings_manager import SettingsManager
+from .ai_tagger import AITagger, write_metadata
+from .logger import logger
+from .settings_manager import SettingsManager
 
 class WorkerSignals(QObject):
     """Signals to communicate back to the main UI thread."""
