@@ -1,6 +1,10 @@
 # -*- mode: python ; coding: utf-8 -*-
 import sys
 import os
+from pathlib import Path
+
+_root_dir = Path(os.path.abspath(SPECPATH)) if 'SPECPATH' in globals() else Path.cwd()
+SRC_PATH = str(_root_dir / 'src')
 
 block_cipher = None
 
@@ -45,17 +49,17 @@ if sys.platform == "win32":
     except Exception:
         version_info = None
 
-icon_path = os.path.join('src', 'imagesorter', 'resources', 'imagesorter.ico')
+icon_path = os.path.join(SRC_PATH, 'imagesorter', 'resources', 'imagesorter.ico')
 if not os.path.exists(icon_path):
     icon_path = None
 
 a = Analysis(
-    ['src/imagesorter/main.py'],
-    pathex=[],
+    [os.path.join(str(_root_dir), 'run_app.py')],
+    pathex=[SRC_PATH],
     binaries=[],
     datas=[
-        ('models', 'models'),
-        ('src/imagesorter/resources', 'src/imagesorter/resources'),
+        (os.path.join(str(_root_dir), 'models'), 'models'),
+        (os.path.join(SRC_PATH, 'imagesorter', 'resources'), 'src/imagesorter/resources'),
     ],
     hiddenimports=[
         'onnxruntime',
@@ -69,6 +73,8 @@ a = Analysis(
         'PyQt6.QtGui',
         'PyQt6.QtWidgets',
         'PyQt6.QtSvg',
+        'imagesorter',
+        'imagesorter.main',
     ],
     hookspath=[],
     hooksconfig={},

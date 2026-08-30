@@ -1,7 +1,7 @@
+import importlib.util
 import subprocess
 import sys
 import os
-import shutil
 from pathlib import Path
 
 
@@ -27,6 +27,11 @@ MIME_XML = """<?xml version="1.0" encoding="UTF-8"?>
   </mime-type>
 </mime-info>
 """
+
+
+def check_pyinstaller_installed() -> bool:
+    """Preflight check to verify PyInstaller module availability."""
+    return importlib.util.find_spec("PyInstaller") is not None
 
 
 def ensure_icon_assets(root_dir: Path) -> Path:
@@ -155,30 +160,37 @@ fi
 def build_executable() -> None:
     print("Starting build process for Image Sorter Enterprise...")
 
-    # Root detection: script can be executed from repo root or imagesorter/ folder
-    current_dir = Path.cwd()
-    if (current_dir / "src" / "imagesorter" / "main.py").exists():
-        root_dir = current_dir
-    elif (current_dir / "imagesorter" / "src" / "imagesorter" / "main.py").exists():
-        root_dir = current_dir / "imagesorter"
-        os.chdir(root_dir)
-    else:
-        print("Error: Could not locate src/imagesorter/main.py.")
+    # Root detection: locate repository root relative to build.py file location
+    root_dir = Path(__file__).resolve().parent
+    if not (root_dir / "src" / "imagesorter" / "main.py").exists():
+        print(f"Error: Could not locate src/imagesorter/main.py under {root_dir}.")
         sys.exit(1)
 
-    os.makedirs("models", exist_ok=True)
+    # Preflight check for PyInstaller
+    if not check_pyinstaller_installed():
+        print(
+            "Error: PyInstaller is not installed in the active Python environment.\n"
+            "Please install it via: pip install pyinstaller"
+        )
+        sys.exit(1)
+
+    (root_dir / "models").mkdir(parents=True, exist_ok=True)
     ensure_icon_assets(root_dir)
 
+    spec_path = root_dir / "ImageSorter.spec"
+
     cmd = [
-        "pyinstaller",
+        sys.executable,
+        "-m",
+        "PyInstaller",
         "--noconfirm",
-        "ImageSorter.spec"
+        str(spec_path)
     ]
 
     print(f"Running PyInstaller: {' '.join(cmd)}")
 
     try:
-        subprocess.run(cmd, check=True)
+        subprocess.run(cmd, check=True, cwd=root_dir)
         dist_dir = root_dir / "dist"
         generate_freedesktop_artifacts(dist_dir)
         generate_appimage_builder_script(dist_dir)
