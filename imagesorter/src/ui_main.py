@@ -1,10 +1,15 @@
 import os
 import shutil
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Any
 from PyQt6.QtWidgets import (
-    QMainWindow, QLabel, QVBoxLayout, QHBoxLayout, QWidget, QMessageBox, QMenu, QApplication, QGraphicsView, QGraphicsScene, QGraphicsPixmapItem, QProgressBar
+    QMainWindow, QLabel, QVBoxLayout, QHBoxLayout, QWidget, QMessageBox, QMenu,
+    QApplication, QGraphicsView, QGraphicsScene, QGraphicsPixmapItem, QProgressBar,
+    QLineEdit, QTextEdit, QSpinBox, QComboBox
 )
-from PyQt6.QtGui import QPixmap, QImageReader, QKeySequence, QAction, QPalette, QColor, QPainter, QTransform, QCursor, QImage, qRgb, QWheelEvent, QMouseEvent
+from PyQt6.QtGui import (
+    QPixmap, QImageReader, QKeySequence, QAction, QPalette, QColor, QPainter,
+    QTransform, QCursor, QImage, QWheelEvent, QMouseEvent
+)
 from PyQt6.QtCore import Qt, QSize, QEvent, QObject
 from src.ui_settings import SettingsWindow
 from src.queue_worker import QueueWorker
@@ -13,12 +18,12 @@ from src.logger import logger
 from src.image_loader import ImageLoader
 import numpy as np
 
+
 class ImageViewer(QGraphicsView):
     """
     Custom QGraphicsView for displaying images with pan/zoom and clipping analysis.
     """
     def __init__(self, parent: Optional[QWidget] = None) -> None:
-        """Initializes the ImageViewer."""
         super().__init__(parent)
         self.scene: QGraphicsScene = QGraphicsScene(self)
         self.setScene(self.scene)
@@ -32,6 +37,9 @@ class ImageViewer(QGraphicsView):
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.setStyleSheet("background-color: black; border: none;")
 
+        self.setAccessibleName("Image Canvas Viewport")
+        self.setAccessibleDescription("Interactive viewport supporting smooth zoom, pan, and exposure clipping overlays.")
+
         self.zoom_factor: float = 1.15
         self.locked_zoom_pan: bool = False
         self.is_smart_zoom: bool = False
@@ -44,7 +52,7 @@ class ImageViewer(QGraphicsView):
     def set_image(self, pixmap: QPixmap) -> None:
         """Sets the image to display."""
         self.original_pixmap = pixmap
-        self.clipping_pixmap = QPixmap() # Reset cache
+        self.clipping_pixmap = QPixmap()
 
         if self.show_clipping:
             self.apply_clipping_overlay()
@@ -65,18 +73,16 @@ class ImageViewer(QGraphicsView):
             self.pixmap_item.setPixmap(self.original_pixmap)
 
     def apply_clipping_overlay(self) -> None:
-        """Calculates and applies the clipping overlay using numpy."""
+        """Calculates and applies clipping overlay using numpy."""
         if self.original_pixmap.isNull():
             return
 
         if self.clipping_pixmap.isNull():
-            # Convert to ARGB32 to ensure 4 bytes per pixel for numpy
             img = self.original_pixmap.toImage().convertToFormat(QImage.Format.Format_ARGB32)
             ptr = img.bits()
             ptr.setsize(img.height() * img.bytesPerLine())
             arr = np.frombuffer(ptr, np.uint8).reshape((img.height(), img.bytesPerLine() // 4, 4))
 
-            # Assuming Format_ARGB32 (BGRA)
             b = arr[..., 0]
             g = arr[..., 1]
             r = arr[..., 2]
@@ -84,7 +90,6 @@ class ImageViewer(QGraphicsView):
             overexposed = (r > 250) & (g > 250) & (b > 250)
             underexposed = (r < 5) & (g < 5) & (b < 5)
 
-            # Create an overlay image (transparent)
             overlay = QImage(img.width(), img.height(), QImage.Format.Format_ARGB32)
             overlay.fill(Qt.GlobalColor.transparent)
 
@@ -92,11 +97,9 @@ class ImageViewer(QGraphicsView):
             ptr_out.setsize(overlay.height() * overlay.bytesPerLine())
             arr_out = np.frombuffer(ptr_out, np.uint8).reshape((overlay.height(), overlay.bytesPerLine() // 4, 4))
 
-            # Red for overexposed, Blue for underexposed
-            arr_out[overexposed] = [0, 0, 255, 255] # BGRA
-            arr_out[underexposed] = [255, 0, 0, 255] # BGRA
+            arr_out[overexposed] = [0, 0, 255, 255]
+            arr_out[underexposed] = [255, 0, 0, 255]
 
-            # Blend
             painter = QPainter(img)
             painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceOver)
             painter.drawImage(0, 0, overlay)
@@ -105,7 +108,6 @@ class ImageViewer(QGraphicsView):
             self.clipping_pixmap = QPixmap.fromImage(img)
 
         self.pixmap_item.setPixmap(self.clipping_pixmap)
-
 
     def fit_to_window(self) -> None:
         """Fits the image into the view."""
@@ -126,7 +128,7 @@ class ImageViewer(QGraphicsView):
     def wheelEvent(self, event: QWheelEvent) -> None:
         """Handles mouse wheel zooming."""
         if self.locked_zoom_pan:
-            return # Don't allow zoom while locked
+            return
 
         if event.angleDelta().y() > 0:
             self.scale(self.zoom_factor, self.zoom_factor)
@@ -143,25 +145,23 @@ class ImageViewer(QGraphicsView):
         if self.is_smart_zoom:
             self.fit_to_window()
         else:
-            # Smart zoom: zoom 100% on the clicked area
             self.resetTransform()
             self.centerOn(self.mapToScene(event.pos()))
             self.saved_transform = self.transform()
             self.is_smart_zoom = True
 
+
 class MainViewer(QMainWindow):
     """
     Main application window for displaying and sorting images.
-    Features robust accessibility, theming, and an undo stack.
+    Features WCAG AAA accessibility, focus isolation, theming, and an undo stack.
     """
     def __init__(self, settings_manager: SettingsManager) -> None:
         super().__init__()
         self.settings = settings_manager
 
-        # Install application-wide event filter for tooltips
         QApplication.instance().installEventFilter(self)
 
-        # Initialize worker and connect signals
         self.worker = QueueWorker(self.settings)
         self.worker.signals.progress.connect(self.on_worker_progress)
         self.worker.signals.error.connect(self.on_worker_error)
@@ -169,7 +169,7 @@ class MainViewer(QMainWindow):
 
         self.images: List[str] = []
         self.current_index: int = -1
-        self.history: List[Dict[str, str]] = []  # Undo stack
+        self.history: List[Dict[str, Any]] = []
         self.zen_mode: bool = False
 
         self.pixmap_cache: Dict[str, QPixmap] = {}
@@ -181,7 +181,6 @@ class MainViewer(QMainWindow):
         self.init_ui()
         self.load_images()
 
-
     def eventFilter(self, obj: 'QObject', event: QEvent) -> bool:
         if event.type() == QEvent.Type.ToolTip:
             tooltips_enabled = self.settings.get('ui', 'tooltips_enabled')
@@ -190,7 +189,7 @@ class MainViewer(QMainWindow):
             if not tooltips_enabled:
                 modifiers = QApplication.keyboardModifiers()
                 if not (modifiers & Qt.KeyboardModifier.AltModifier):
-                    return True  # Consume the event to prevent tooltip
+                    return True
         return super().eventFilter(obj, event)
 
     def on_image_preloaded(self, filepath: str, img: QImage) -> None:
@@ -201,16 +200,14 @@ class MainViewer(QMainWindow):
         if len(self.pixmap_cache) > 10:
             self.pixmap_cache.clear()
 
-        # Preload next image
         if self.current_index + 1 < len(self.images):
             self.loader.add_task(self.images[self.current_index + 1])
 
-        # Preload previous image
         if self.current_index - 1 >= 0:
             self.loader.add_task(self.images[self.current_index - 1])
 
     def init_ui(self) -> None:
-        """Initializes the main UI components with accessibility features."""
+        """Initializes main UI with WCAG AAA accessibility properties."""
         self.setWindowTitle("Image Sorter - Enterprise")
 
         if self.settings.get('ui', 'fullscreen'):
@@ -231,37 +228,42 @@ class MainViewer(QMainWindow):
 
         self.hud_filename = QLabel("No File")
         self.hud_filename.setStyleSheet("font-weight: bold; font-size: 14px;")
+        self.hud_filename.setAccessibleName("Current Image Filename")
+        self.hud_filename.setAccessibleDescription("Displays the current image file name and index.")
         self.hud_filename.setToolTip("Current file name and index in the directory.")
 
         self.hud_filepath = QLabel("")
         self.hud_filepath.setStyleSheet("font-size: 10px; color: #aaaaaa;")
+        self.hud_filepath.setAccessibleName("Current Image Filepath")
+        self.hud_filepath.setAccessibleDescription("Displays the full absolute path of the loaded image.")
         self.hud_filepath.setToolTip("Full absolute path to the current image.")
 
         self.hud_status = QLabel("Ready")
         self.hud_status.setStyleSheet("font-size: 12px; color: #55ff55;")
-        self.hud_status.setToolTip("Current background operation status (e.g., Tagging, Moving).")
+        self.hud_status.setAccessibleName("Background Task Status")
+        self.hud_status.setAccessibleDescription("Displays real-time background processing operations.")
+        self.hud_status.setToolTip("Current background operation status.")
 
         self.hud_progress = QProgressBar()
         self.hud_progress.setTextVisible(False)
         self.hud_progress.setFixedHeight(4)
         self.hud_progress.hide()
-        self.hud_progress.setToolTip("Progress of the current background operation.")
+        self.hud_progress.setAccessibleName("Background Task Progress")
 
         hud_layout.addWidget(self.hud_filename)
         hud_layout.addWidget(self.hud_filepath)
         hud_layout.addWidget(self.hud_status)
         hud_layout.addWidget(self.hud_progress)
+        self.hud_widget.hide()
 
-        self.hud_widget.hide() # Hidden initially until image loads
-
-        # Image Display Viewer
+        # Viewer
         self.viewer = ImageViewer(self)
         self.viewer.hide()
 
         self.empty_label = QLabel("No images loaded. Press 'S' to open settings.")
         self.empty_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.empty_label.setAccessibleName("Image Display Area")
-        self.empty_label.setAccessibleDescription("Displays the current image to be sorted.")
+        self.empty_label.setAccessibleName("Image Viewer Display State")
+        self.empty_label.setAccessibleDescription("Main image container displaying loaded image or empty state notification.")
         self.empty_label.setToolTip("The source directory has no supported images. Open settings to configure a valid source path.")
         font_size = self.settings.get('ui', 'font_size') or 24
         self.empty_label.setStyleSheet(f"font-size: {font_size}px; padding: 20px;")
@@ -273,7 +275,7 @@ class MainViewer(QMainWindow):
         self.statusBar().showMessage("Ready", 3000)
 
     def apply_theme(self) -> None:
-        """Applies the selected theme (Light, Dark, High Contrast) to the application."""
+        """Applies visual theme palette."""
         theme = self.settings.get('ui', 'theme') or 'Dark'
         app = QApplication.instance()
         palette = QPalette()
@@ -307,14 +309,13 @@ class MainViewer(QMainWindow):
             palette.setColor(QPalette.ColorRole.Highlight, Qt.GlobalColor.cyan)
             palette.setColor(QPalette.ColorRole.HighlightedText, Qt.GlobalColor.black)
         else:
-             # Default Light theme (system default)
-             app.setPalette(app.style().standardPalette())
-             return
+            app.setPalette(app.style().standardPalette())
+            return
 
         app.setPalette(palette)
 
     def setup_menu(self) -> None:
-        """Sets up the application menu bar with shortcuts for accessibility."""
+        """Sets up application menu bar with accessible shortcuts."""
         menu = self.menuBar()
         file_menu = menu.addMenu("&File")
 
@@ -332,7 +333,7 @@ class MainViewer(QMainWindow):
 
         undo_action = QAction("&Undo Last Action", self)
         undo_action.setShortcut(QKeySequence("Ctrl+Z"))
-        undo_action.setToolTip("Revert the last file move or copy operation. (Shortcut: Ctrl+Z)")
+        undo_action.setToolTip("Revert the last file move, copy, or trash operation. (Shortcut: Ctrl+Z)")
         undo_action.triggered.connect(self.undo_last_action)
         file_menu.addAction(undo_action)
 
@@ -348,16 +349,15 @@ class MainViewer(QMainWindow):
 
         self.locked_zoom_action = QAction("&Lock Pan/Zoom", self, checkable=True)
         self.locked_zoom_action.setShortcut(QKeySequence("L"))
-        self.locked_zoom_action.setToolTip("Keep the current zoom level and pan position when navigating between images. (Shortcut: L)")
+        self.locked_zoom_action.setToolTip("Keep current zoom level and pan position when navigating between images. (Shortcut: L)")
         self.locked_zoom_action.triggered.connect(self.toggle_locked_zoom)
         view_menu.addAction(self.locked_zoom_action)
 
         zen_action = QAction("&Zen Mode", self)
         zen_action.setShortcut(QKeySequence("Z"))
-        zen_action.setToolTip("Hide all UI elements (menus, status bar) for an immersive viewing experience. (Shortcut: Z)")
+        zen_action.setToolTip("Hide all UI elements for immersive viewing. (Shortcut: Z)")
         zen_action.triggered.connect(self.toggle_zen_mode)
         view_menu.addAction(zen_action)
-
 
     def toggle_zen_mode(self) -> None:
         self.zen_mode = not self.zen_mode
@@ -377,7 +377,11 @@ class MainViewer(QMainWindow):
             self.viewer.fit_to_window()
 
     def load_images(self) -> None:
-        """Loads supported image files from the configured source directory."""
+        """Loads supported image files from configured source directory."""
+        if hasattr(self, 'loader'):
+            self.loader.clear_tasks()
+        self.pixmap_cache.clear()
+
         src_dir = self.settings.get('directories', 'source')
         if not src_dir or not os.path.isdir(src_dir):
             self.viewer.hide()
@@ -413,7 +417,7 @@ class MainViewer(QMainWindow):
             self.empty_label.setText(f"Error reading source directory:\n{e}")
 
     def show_image(self) -> None:
-        """Displays the image at the current index, using efficient scaling and QGraphicsView caching."""
+        """Displays image at current index."""
         if not self.images or self.current_index < 0 or self.current_index >= len(self.images):
             self.viewer.hide()
             self.hud_widget.hide()
@@ -442,21 +446,19 @@ class MainViewer(QMainWindow):
         self.viewer.show()
         self.viewer.set_image(pixmap)
 
-        # Accessibility and UI Updates
         filename = os.path.basename(filepath)
         self.empty_label.setAccessibleName(f"Image {self.current_index + 1} of {len(self.images)}: {filename}")
         self.setWindowTitle(f"Image Sorter - {filename} ({self.current_index + 1}/{len(self.images)})")
 
         self.preload_adjacent_images()
 
-    def resizeEvent(self, event: QEvent) -> None:
-        """Handles window resize events to rescale the image."""
-        super().resizeEvent(event)
-        if self.images and 0 <= self.current_index < len(self.images):
-            pass # QGraphicsView handles resize
-
     def keyPressEvent(self, event: QEvent) -> None:
-        """Handles keyboard navigation and sorting actions."""
+        """Handles keyboard navigation and sorting with focus isolation to prevent input collision."""
+        focus_widget = QApplication.focusWidget()
+        if focus_widget and isinstance(focus_widget, (QLineEdit, QTextEdit, QSpinBox, QComboBox)):
+            super().keyPressEvent(event)
+            return
+
         key = event.key()
         key_str = event.text().upper()
 
@@ -480,10 +482,6 @@ class MainViewer(QMainWindow):
             self.toggle_locked_zoom(self.locked_zoom_action.isChecked())
             return
 
-        if key == Qt.Key.Key_X:
-            # Smart zoom is double click in QGraphicsView, but we can map a key too if we want
-            pass
-
         if key == Qt.Key.Key_C:
             self.viewer.toggle_clipping_warnings()
             return
@@ -497,35 +495,30 @@ class MainViewer(QMainWindow):
             return
 
         if event.modifiers() == Qt.KeyboardModifier.ControlModifier and key == Qt.Key.Key_Z:
-             self.undo_last_action()
-             return
+            self.undo_last_action()
+            return
 
         if self.current_index < 0 or self.current_index >= len(self.images):
             return
 
         filepath = self.images[self.current_index]
 
-        # Built-in QOL features
         if key == Qt.Key.Key_Space or key == Qt.Key.Key_Right:
-            # Skip
             self.current_index += 1
             self.show_image()
             return
 
         if key == Qt.Key.Key_Left or key == Qt.Key.Key_Backspace:
-            # Go back visually
             if self.current_index > 0:
                 self.current_index -= 1
                 self.show_image()
             return
 
         if key == Qt.Key.Key_Delete:
-            # Trash
             self.worker.add_task('trash', filepath)
             self.next_image_after_action()
             return
 
-        # Check Hotkeys
         hotkeys = self.settings.get('hotkeys') or {}
         if key_str in hotkeys:
             config = hotkeys[key_str]
@@ -533,78 +526,75 @@ class MainViewer(QMainWindow):
             folder = config.get('folder')
 
             if not folder:
-                 self.statusBar().showMessage(f"Warning: No destination folder set for hotkey '{key_str}'", 4000)
-                 return
+                self.statusBar().showMessage(f"Warning: No destination folder set for hotkey '{key_str}'", 4000)
+                return
 
             self.worker.add_task(action, filepath, folder)
 
             if config.get('auto_advance', True):
-                if action == 'move':
+                if action in ('move', 'trash'):
                     self.next_image_after_action()
                 else:
                     self.current_index += 1
                     self.show_image()
 
     def next_image_after_action(self) -> None:
-        """Advances to the next image after an action is queued."""
+        """Advances to next image after action."""
         if 0 <= self.current_index < len(self.images):
             self.images.pop(self.current_index)
         self.show_image()
 
-    def on_undo_record_received(self, data: Dict[str, str]) -> None:
-         """Receives undo data from the worker thread."""
-         self.history.append(data)
-         # Limit history size to prevent memory bloat
-         if len(self.history) > 50:
-              self.history.pop(0)
+    def on_undo_record_received(self, data: Dict[str, Any]) -> None:
+        """Receives UndoToken from background worker."""
+        self.history.append(data)
+        if len(self.history) > 50:
+            self.history.pop(0)
 
     def undo_last_action(self) -> None:
-         """Reverts the last move or copy operation."""
-         if not self.history:
-              self.statusBar().showMessage("Nothing to undo.", 3000)
-              return
+        """Reverts last move, copy, or trash operation using UndoToken."""
+        if not self.history:
+            self.statusBar().showMessage("Nothing to undo.", 3000)
+            return
 
-         last_action = self.history.pop()
+        last_action = self.history.pop()
+        action_type = last_action.get('action') or last_action.get('type')
+        current_path = last_action.get('current') or last_action.get('new')
+        original_path = last_action.get('original')
 
-         if last_action.get('action') == 'move' or last_action.get('type') == 'move':
-             # Use the worker thread to undo
-             original_key = 'original'
-             current_key = 'current' if 'current' in last_action else 'new'
+        if action_type in ('move', 'trash'):
+            if current_path and original_path:
+                self.worker.add_task('undo_move', current_path, original_path)
+                self.statusBar().showMessage("Undoing move... Press 'R' to reload folder.", 3000)
 
-             self.worker.add_task('undo_move', last_action[current_key], last_action[original_key])
-             self.statusBar().showMessage("Undoing move... Press 'R' to reload folder.", 3000)
-
-         elif last_action.get('action') == 'copy' or last_action.get('type') == 'copy':
-             current_key = 'current' if 'current' in last_action else 'new'
-             self.worker.add_task('undo_copy', last_action[current_key])
+        elif action_type == 'copy':
+            if current_path:
+                self.worker.add_task('undo_copy', current_path)
+                self.statusBar().showMessage("Undoing copy...", 3000)
 
     def open_settings(self) -> None:
-        """Opens the settings window."""
+        """Opens settings configuration window."""
         self.settings_window = SettingsWindow(self.settings)
         self.settings_window.destroyed.connect(self.on_settings_closed)
         self.settings_window.show()
 
     def on_settings_closed(self) -> None:
-        """Called when settings window closes to refresh state."""
+        """Called when settings window closes."""
         self.apply_theme()
-
-        # Update image label font size in case it changed
         font_size = self.settings.get('ui', 'font_size') or 24
         self.empty_label.setStyleSheet(f"font-size: {font_size}px; padding: 20px;")
-
         self.worker.refresh_settings()
         self.load_images()
 
     def on_worker_progress(self, msg: str) -> None:
-        """Displays progress messages in the status bar."""
+        """Displays progress messages in status bar."""
         self.statusBar().showMessage(msg, 3000)
 
     def on_worker_error(self, filepath: str, error: str) -> None:
-        """Displays errors in the status bar."""
+        """Displays error messages in status bar."""
         self.statusBar().showMessage(f"Error: {error}", 5000)
 
     def closeEvent(self, event: QEvent) -> None:
-        """Ensures background threads are stopped before closing."""
+        """Ensures background threads are safely stopped upon window close."""
         self.worker.stop()
         if hasattr(self, 'loader'):
             self.loader.stop()

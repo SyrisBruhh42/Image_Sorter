@@ -1,5 +1,7 @@
 import os
-from typing import List, Optional
+import queue
+import threading
+from typing import Optional
 from PyQt6.QtCore import QThread, pyqtSignal, QObject
 from PyQt6.QtGui import QImage
 from src.logger import logger
@@ -7,37 +9,38 @@ from src.logger import logger
 class ImageLoader(QThread):
     """
     Background thread for preloading images to achieve zero-latency navigation.
+    Delegates rendering/caching to UI layer and uses thread-safe queue.Queue with cancellation token.
     """
     image_loaded = pyqtSignal(str, QImage)
 
     def __init__(self, parent: Optional[QObject] = None) -> None:
-        """
-        Initializes the ImageLoader thread.
-        """
         super().__init__(parent)
-        self.queue: List[str] = []
+        self._queue: queue.Queue[Optional[str]] = queue.Queue()
         self.running: bool = True
+        self._lock = threading.Lock()
 
     def add_task(self, filepath: str) -> None:
-        """
-        Adds an image path to the preload queue.
+        """Adds an image path to the preload queue in a thread-safe manner."""
+        if not filepath:
+            return
+        self._queue.put(filepath)
 
-        Args:
-            filepath (str): The absolute path to the image.
-        """
-        if filepath not in self.queue:
-            self.queue.append(filepath)
+    def clear_tasks(self) -> None:
+        """Flushes in-flight preload tasks when directory changes."""
+        with self._queue.mutex:
+            self._queue.queue.clear()
 
     def run(self) -> None:
-        """
-        Main loop for the background thread. Processes the queue sequentially.
-        """
+        """Main processing loop."""
         while self.running:
-            if not self.queue:
-                self.msleep(50)
+            try:
+                filepath = self._queue.get(timeout=0.05)
+            except queue.Empty:
                 continue
 
-            filepath = self.queue.pop(0)
+            if filepath is None:
+                break
+
             try:
                 if os.path.exists(filepath):
                     img = QImage(filepath)
@@ -45,10 +48,12 @@ class ImageLoader(QThread):
                         self.image_loaded.emit(filepath, img)
             except Exception as e:
                 logger.error(f"Error preloading image {filepath}: {e}")
+            finally:
+                self._queue.task_done()
 
     def stop(self) -> None:
-        """
-        Stops the background thread gracefully.
-        """
+        """Stops the thread safely."""
         self.running = False
+        self.clear_tasks()
+        self._queue.put(None)
         self.wait()

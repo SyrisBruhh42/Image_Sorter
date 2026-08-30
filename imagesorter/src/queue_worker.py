@@ -1,6 +1,7 @@
 import os
 import shutil
 import time
+import uuid
 from typing import Dict, Any, Optional, List
 from PyQt6.QtCore import QObject, pyqtSignal, QRunnable, QThreadPool, pyqtSlot
 from send2trash import send2trash, TrashPermissionError
@@ -13,12 +14,12 @@ class WorkerSignals(QObject):
     finished = pyqtSignal(str)          # Emits filepath upon successful completion
     error = pyqtSignal(str, str)        # Emits (filepath, error_message)
     progress = pyqtSignal(str)          # Emits human-readable progress updates
-    undo_record = pyqtSignal(dict)      # Emits data for the undo stack
+    undo_record = pyqtSignal(dict)      # Emits standard UndoToken dictionary
 
 class FileTaskRunnable(QRunnable):
     """
     A single file operation task designed for concurrent execution in QThreadPool.
-    Implements antifragile retry logic and robust path sanitization.
+    Implements antifragile retry logic, POSIX safe moves, trash fallback, and transactional UndoTokens.
     """
     def __init__(self, task_type: str, filepath: str, dest_folder: Optional[str],
                  settings: SettingsManager, ai_tagger: Optional[AITagger], signals: WorkerSignals) -> None:
@@ -51,7 +52,7 @@ class FileTaskRunnable(QRunnable):
                 return  # Non-retryable error
 
     def _execute(self) -> None:
-        """The core logic for moving, copying, or trashing."""
+        """Core transactional logic for moving, copying, trashing, or undoing."""
         if not os.path.exists(self.filepath):
             raise FileNotFoundError(f"Source file missing: {self.filepath}")
 
@@ -59,7 +60,7 @@ class FileTaskRunnable(QRunnable):
         filepath = os.path.normpath(self.filepath)
         filename = os.path.basename(filepath)
         final_path = filepath
-        undo_data = None
+        undo_token: Optional[Dict[str, Any]] = None
 
         if self.task_type in ['move', 'copy']:
             if not self.dest_folder or not os.path.exists(self.dest_folder):
@@ -78,34 +79,66 @@ class FileTaskRunnable(QRunnable):
 
             if self.task_type == 'move':
                 shutil.move(filepath, dest_path)
-                undo_data = {'action': 'move', 'original': filepath, 'current': dest_path}
+                undo_token = {
+                    'token_id': str(uuid.uuid4()),
+                    'action': 'move',
+                    'original': filepath,
+                    'current': dest_path,
+                    'timestamp': time.time()
+                }
                 self.signals.progress.emit(f"Moved {filename} to {dest_folder}")
             elif self.task_type == 'copy':
                 shutil.copy2(filepath, dest_path)
-                undo_data = {'action': 'copy', 'original': filepath, 'current': dest_path}
+                undo_token = {
+                    'token_id': str(uuid.uuid4()),
+                    'action': 'copy',
+                    'original': filepath,
+                    'current': dest_path,
+                    'timestamp': time.time()
+                }
                 self.signals.progress.emit(f"Copied {filename} to {dest_folder}")
 
         elif self.task_type == 'trash':
-            try:
-                send2trash(filepath)
-                # Note: Trashed items generally can't be safely 'undone' cross-platform in python easily
-                # without OS specific APIs, so we omit undo data for trash.
-                self.signals.progress.emit(f"Trashed {filename}")
+            trash_folder = self.settings.get('directories', 'trash')
+            if trash_folder and os.path.isdir(trash_folder):
+                # Move to dedicated staging trash folder first to resolve collisions
+                dest_path = os.path.join(trash_folder, filename)
+                if os.path.exists(dest_path):
+                    base, ext = os.path.splitext(filename)
+                    dest_path = os.path.join(trash_folder, f"{base}_{int(time.time())}{ext}")
+                shutil.move(filepath, dest_path)
+                undo_token = {
+                    'token_id': str(uuid.uuid4()),
+                    'action': 'trash',
+                    'original': filepath,
+                    'current': dest_path,
+                    'timestamp': time.time()
+                }
+                self.signals.progress.emit(f"Moved {filename} to Trash folder")
                 self.signals.finished.emit(filepath)
+                if undo_token:
+                    self.signals.undo_record.emit(undo_token)
                 return
-            except TrashPermissionError as e:
-                 raise PermissionError(f"Trash permission denied: {e}")
+            else:
+                # Fallback to OS system recycle bin via send2trash
+                try:
+                    send2trash(filepath)
+                    self.signals.progress.emit(f"Trashed {filename}")
+                    self.signals.finished.emit(filepath)
+                    return
+                except TrashPermissionError as e:
+                    raise PermissionError(f"Trash permission denied: {e}")
 
-        elif self.task_type == 'undo_move':
+        elif self.task_type == 'undo_move' or self.task_type == 'undo_trash':
             if not self.dest_folder:
-                 raise ValueError("Original path (dest_folder) required to undo move.")
+                 raise ValueError("Original path (dest_folder) required to undo operation.")
             try:
                  shutil.move(filepath, self.dest_folder)
-                 self.signals.progress.emit(f"Undid move: {filename}")
+                 self.signals.progress.emit(f"Undid action: restored {filename}")
                  self.signals.finished.emit(self.dest_folder)
             except OSError as e:
-                 logger.error(f"Error undoing move for {filename}: {e}")
-                 self.signals.error.emit(filepath, f"Failed to undo move: {e}")
+                 logger.error(f"Error restoring file for {filename}: {e}")
+                 self.signals.error.emit(filepath, f"Failed to restore file: {e}")
             return
 
         elif self.task_type == 'undo_copy':
@@ -126,8 +159,8 @@ class FileTaskRunnable(QRunnable):
                 write_metadata(final_path, tags, write_exif, write_sidecar)
                 self.signals.progress.emit(f"Tagged {filename} with: {', '.join(tags)}")
 
-        if undo_data:
-             self.signals.undo_record.emit(undo_data)
+        if undo_token:
+             self.signals.undo_record.emit(undo_token)
 
         self.signals.finished.emit(final_path)
 
@@ -141,8 +174,6 @@ class QueueWorker(QObject):
         self.settings = settings_manager
         self.signals = WorkerSignals()
 
-        # Determine optimal threads (Antifragility via resource management)
-        # Default to 2 if hardware scan wasn't run or failed
         max_threads = self.settings.get('advanced', 'worker_threads') or 2
         self.thread_pool = QThreadPool()
         self.thread_pool.setMaxThreadCount(int(max_threads))
@@ -174,9 +205,9 @@ class QueueWorker(QObject):
         Submits a new task to the thread pool for execution.
 
         Args:
-            task_type (str): 'move', 'copy', or 'trash'.
+            task_type (str): 'move', 'copy', 'trash', etc.
             filepath (str): Source file path.
-            dest_folder (Optional[str]): Destination folder path (for move/copy).
+            dest_folder (Optional[str]): Destination folder path.
         """
         logger.debug(f"Adding task: {task_type} {filepath}")
         task = FileTaskRunnable(
