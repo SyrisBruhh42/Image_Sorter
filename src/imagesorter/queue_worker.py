@@ -2,7 +2,7 @@ import os
 import shutil
 import time
 import uuid
-from typing import Dict, Any, Optional, List
+from typing import Dict, Any, Optional
 from PyQt6.QtCore import QObject, pyqtSignal, QRunnable, QThreadPool, pyqtSlot
 from send2trash import send2trash, TrashPermissionError
 from .ai_tagger import AITagger, write_metadata

@@ -3,7 +3,6 @@ import os
 import tempfile
 import time
 import threading
-from pathlib import Path
 from typing import Any, Dict, Optional
 from .logger import logger
 from .paths import get_settings_path

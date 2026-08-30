@@ -1,6 +1,4 @@
-import os
-import pytest
-from PyQt6.QtWidgets import QLineEdit, QTextEdit
+from PyQt6.QtWidgets import QLineEdit
 from PyQt6.QtGui import QColor, QPalette
 from PyQt6.QtCore import Qt
 

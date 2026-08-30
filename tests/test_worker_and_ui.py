@@ -1,8 +1,5 @@
-import os
-import time
-import pytest
 from PyQt6.QtCore import QCoreApplication
-from PyQt6.QtGui import QImage, QPixmap
+from PyQt6.QtGui import QImage
 from imagesorter.settings_manager import SettingsManager
 from imagesorter.queue_worker import QueueWorker
 from imagesorter.image_loader import ImageLoader

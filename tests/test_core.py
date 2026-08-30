@@ -1,7 +1,4 @@
-import os
 import json
-import pytest
-from pathlib import Path
 
 import imagesorter.paths as paths_module
 from imagesorter.paths import get_config_dir, get_data_dir, get_cache_dir, get_logs_dir, get_settings_path, is_portable_mode
