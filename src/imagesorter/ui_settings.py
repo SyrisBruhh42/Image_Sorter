@@ -8,7 +8,7 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import Qt
 from .settings_manager import SettingsManager
 from .hardware_scan import scan_hardware
-from .ai_tagger import ModelDownloader
+from .ai_tagger import ModelDownloader, is_model_and_labels_valid, get_model_dir
 from .paths import get_data_dir
 from .logger import logger
 
@@ -196,7 +196,6 @@ class SettingsWindow(QDialog):
         self.chk_ai_enable.setAccessibleName("Enable AI Auto-Tagging Checkbox")
         self.chk_ai_enable.setAccessibleDescription("Toggles automatic image classification using ONNX model.")
         self.chk_ai_enable.setToolTip("Automatically analyze images to generate relevant descriptive tags.")
-        self.chk_ai_enable.setChecked(self.settings.get('ai_tagger', 'enabled') or False)
 
         self.btn_download_model = QPushButton("Download Model")
         self.btn_download_model.setAccessibleName("Download AI Model Button")
@@ -204,13 +203,7 @@ class SettingsWindow(QDialog):
         self.btn_download_model.setToolTip("Download the required ONNX model for the AI Auto-Tagger to function.")
         self.btn_download_model.clicked.connect(self.download_ai_model)
 
-        model_dir = str(get_data_dir() / "models")
-        model_exists = os.path.exists(os.path.join(model_dir, "mobilenetv2.onnx")) or os.path.exists("models/mobilenetv2.onnx")
-        self.chk_ai_enable.setEnabled(model_exists)
-
-        if model_exists:
-            self.btn_download_model.setText("Model Downloaded")
-            self.btn_download_model.setEnabled(False)
+        self.refresh_ai_model_status()
 
         ai_layout.addWidget(self.chk_ai_enable)
         ai_layout.addWidget(self.btn_download_model)
@@ -334,6 +327,21 @@ class SettingsWindow(QDialog):
         for key, config in hotkeys.items():
             self.add_hotkey_row(key, config.get("action", "move"), config.get("folder", ""), config.get("auto_advance", True))
 
+    def refresh_ai_model_status(self) -> None:
+        """Refreshes button and checkbox states based on model and label cryptographic validity."""
+        model_valid = is_model_and_labels_valid()
+        if model_valid:
+            self.btn_download_model.setText("Model Downloaded")
+            self.btn_download_model.setEnabled(False)
+            self.chk_ai_enable.setEnabled(True)
+            saved_enabled = self.settings.get('ai_tagger', 'enabled') or False
+            self.chk_ai_enable.setChecked(saved_enabled)
+        else:
+            self.btn_download_model.setText("Download Model")
+            self.btn_download_model.setEnabled(True)
+            self.chk_ai_enable.setChecked(False)
+            self.chk_ai_enable.setEnabled(False)
+
     def download_ai_model(self) -> None:
         """Initiates model download."""
         reply = QMessageBox.question(self, 'Download Model', 'This will download approx 15MB. Continue?',
@@ -342,7 +350,7 @@ class SettingsWindow(QDialog):
             self.progress = QProgressDialog("Downloading model...", "Cancel", 0, 100, self)
             self.progress.setWindowModality(Qt.WindowModality.WindowModal)
 
-            model_dir = str(get_data_dir() / "models")
+            model_dir = get_model_dir()
             self.downloader = ModelDownloader(model_dir)
             self.downloader.progress.connect(self.progress.setValue)
             self.downloader.finished.connect(self.on_download_finished)
@@ -351,11 +359,9 @@ class SettingsWindow(QDialog):
     def on_download_finished(self, success: bool, msg: str) -> None:
         """Handles model download completion."""
         self.progress.close()
+        self.refresh_ai_model_status()
         if success:
             QMessageBox.information(self, "Success", "Model downloaded and verified successfully! You can now enable AI tagging.")
-            self.btn_download_model.setText("Model Downloaded")
-            self.btn_download_model.setEnabled(False)
-            self.chk_ai_enable.setEnabled(True)
         else:
             QMessageBox.critical(self, "Error", f"Failed to download model: {msg}")
 
