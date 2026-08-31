@@ -61,7 +61,7 @@ def test_pyinstaller_executable_smoke():
     except subprocess.TimeoutExpired:
         # Process stayed alive as expected for GUI app under offscreen mode
         proc.kill()
-        stdout, stderr = proc.communicate()
+        _stdout, stderr = proc.communicate()
     else:
         # If process exited within timeout, check returncode and ensure it was not due to ImportError
         assert proc.returncode == 0, f"Executable crashed on startup with code {proc.returncode}.\nStderr:\n{stderr}"

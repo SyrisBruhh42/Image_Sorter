@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import hashlib
 import multiprocessing as mp
 import os
@@ -7,7 +9,6 @@ import tempfile
 import urllib.error
 import urllib.request
 from abc import ABC, abstractmethod
-from typing import List, Optional
 
 import numpy as np
 import onnxruntime as ort
@@ -33,7 +34,7 @@ LABELS_URL = "https://raw.githubusercontent.com/pytorch/hub/a6fc887fbbbda0dd37c4
 LABELS_SHA256 = "1f386e0d1cb6e28b9c2dac651c3dea6801e98ad1b41a14ce6bb1a093d72069f5"
 
 
-def get_model_dir(model_dir: Optional[str] = None) -> str:
+def get_model_dir(model_dir: str | None = None) -> str:
     """Returns the resolved directory path for AI model artifacts."""
     if model_dir is not None:
         return model_dir
@@ -47,7 +48,7 @@ def get_model_dir(model_dir: Optional[str] = None) -> str:
     return default_dir
 
 
-def is_model_and_labels_valid(model_dir: Optional[str] = None) -> bool:
+def is_model_and_labels_valid(model_dir: str | None = None) -> bool:
     """
     Verifies that both the model file and labels file exist and match their expected SHA256 checksums.
     Does not perform model loading or network access.
@@ -62,10 +63,7 @@ def is_model_and_labels_valid(model_dir: Optional[str] = None) -> bool:
     if calculate_sha256(model_path) != MODEL_SHA256:
         return False
 
-    if calculate_sha256(labels_path) != LABELS_SHA256:
-        return False
-
-    return True
+    return calculate_sha256(labels_path) == LABELS_SHA256
 
 
 def calculate_sha256(filepath: str) -> str:
@@ -117,7 +115,7 @@ class ModelDownloader(QThread):
     progress = pyqtSignal(int)
     finished = pyqtSignal(bool, str)
 
-    def __init__(self, model_dir: Optional[str] = None) -> None:
+    def __init__(self, model_dir: str | None = None) -> None:
         super().__init__()
         self.model_dir = get_model_dir(model_dir)
         self.model_path = os.path.join(self.model_dir, "mobilenetv2.onnx")
@@ -202,7 +200,7 @@ class BaseVisionEngine(ABC):
         """Loads the vision model into memory."""
 
     @abstractmethod
-    def get_tags(self, image_path: str, top_k: int = 3) -> List[str]:
+    def get_tags(self, image_path: str, top_k: int = 3) -> list[str]:
         """Returns tags for the specified image."""
 
 
@@ -211,12 +209,12 @@ class AITagger(BaseVisionEngine):
     Implementation of MobileNetV2 ONNX tagger supporting dynamic multi-provider acceleration.
     """
 
-    def __init__(self, model_dir: Optional[str] = None) -> None:
+    def __init__(self, model_dir: str | None = None) -> None:
         self.model_dir: str = get_model_dir(model_dir)
         self.model_path: str = os.path.join(self.model_dir, "mobilenetv2.onnx")
         self.labels_path: str = os.path.join(self.model_dir, "labels.txt")
-        self.session: Optional[ort.InferenceSession] = None
-        self.labels: List[str] = []
+        self.session: ort.InferenceSession | None = None
+        self.labels: list[str] = []
         self.active_provider: str = "None"
         self.load_model()
 
@@ -268,7 +266,7 @@ class AITagger(BaseVisionEngine):
             self.session = None
             self.active_provider = "None"
 
-    def preprocess(self, image_path: str) -> Optional[np.ndarray]:
+    def preprocess(self, image_path: str) -> np.ndarray | None:
         """Preprocesses an image tensor for MobileNetV2 inference."""
         Image.MAX_IMAGE_PIXELS = 50_000_000
         try:
@@ -296,7 +294,7 @@ class AITagger(BaseVisionEngine):
             logger.error(f"Unexpected error preprocessing {image_path}: {e}")
             return None
 
-    def get_tags(self, image_path: str, top_k: int = 3) -> List[str]:
+    def get_tags(self, image_path: str, top_k: int = 3) -> list[str]:
         """Runs inference on an image and returns top_k tags."""
         if not self.session or not self.labels:
             logger.warning("Attempted to get tags, but model/labels are not loaded.")
@@ -334,9 +332,9 @@ class AITagger(BaseVisionEngine):
             return []
 
 
-def _sanitize_tags(tags: List[str]) -> List[str]:
+def _sanitize_tags(tags: list[str]) -> list[str]:
     """Sanitizes metadata tags: strips control chars, restricts to printable chars, limits to 64 chars per tag and max 30 tags."""
-    sanitized: List[str] = []
+    sanitized: list[str] = []
     for tag in tags:
         if not isinstance(tag, str):
             continue
@@ -351,7 +349,7 @@ def _sanitize_tags(tags: List[str]) -> List[str]:
 
 def write_metadata(
     filepath: str,
-    tags: List[str],
+    tags: list[str],
     write_exif: bool = True,
     write_sidecar: bool = False
 ) -> None:
@@ -380,7 +378,7 @@ def write_metadata(
             logger.error(err_msg)
             raise ValueError(err_msg)
 
-        temp_path: Optional[str] = None
+        temp_path: str | None = None
         try:
             fd, temp_path = tempfile.mkstemp(dir=parent_dir, prefix="sidecar_", suffix=".tmp")
             with os.fdopen(fd, 'w', encoding='utf-8') as f:
@@ -407,7 +405,7 @@ def write_metadata(
 
     # Write EXIF (Atomic piexif insertion via temp file in target directory)
     if write_exif and filepath.lower().endswith(('.jpg', '.jpeg')):
-        temp_img_path: Optional[str] = None
+        temp_img_path: str | None = None
         try:
             tag_string = ";".join(sanitized_tags)
             xp_keywords = (tag_string + "\x00").encode('utf-16le')

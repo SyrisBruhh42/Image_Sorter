@@ -1,9 +1,10 @@
+from __future__ import annotations
+
 import os
 import sys
 import tempfile
 import warnings
 from pathlib import Path
-from typing import Optional
 
 
 def get_app_dir() -> Path:
@@ -50,7 +51,7 @@ def is_portable_mode() -> bool:
     return (get_app_dir() / "portable.flag").exists()
 
 
-def _get_valid_env_path(var_name: str) -> Optional[Path]:
+def _get_valid_env_path(var_name: str) -> Path | None:
     """
     Retrieves an environment variable value only if set, non-empty, and an absolute path.
 

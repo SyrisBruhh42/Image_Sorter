@@ -1,8 +1,10 @@
+from __future__ import annotations
+
 import os
 import uuid
 from collections import OrderedDict
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 import psutil
 from PyQt6.QtGui import (
@@ -58,7 +60,7 @@ class ImageViewer(QGraphicsView):
     MIN_ZOOM: float = 0.05
     MAX_ZOOM: float = 32.0
 
-    def __init__(self, parent: Optional[QWidget] = None) -> None:
+    def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.scene: QGraphicsScene = QGraphicsScene(self)
         self.setScene(self.scene)
@@ -231,12 +233,12 @@ class PendingOp:
     raw_src_path: str
     original_index: int
     load_generation: int
-    dest_folder: Optional[str] = None
-    dest_path: Optional[str] = None
-    original_path: Optional[str] = None
-    raw_original_path: Optional[str] = None
+    dest_folder: str | None = None
+    dest_path: str | None = None
+    original_path: str | None = None
+    raw_original_path: str | None = None
     state: str = "pending"  # 'pending', 'finished', 'error'
-    undo_token: Optional[Dict[str, Any]] = None
+    undo_token: dict[str, Any] | None = None
     finished_received: bool = False
     undo_record_received: bool = False
 
@@ -267,13 +269,13 @@ class MainViewer(QMainWindow):
         self.worker.signals.error.connect(self.on_worker_error)
         self.worker.signals.undo_record.connect(self.on_undo_record_received)
 
-        self.images: List[str] = []
+        self.images: list[str] = []
         self.current_index: int = -1
-        self.history: List[Dict[str, Any]] = []
+        self.history: list[dict[str, Any]] = []
         self.zen_mode: bool = False
 
         self.load_generation: int = 0
-        self.pending_ops: Dict[str, PendingOp] = {}
+        self.pending_ops: dict[str, PendingOp] = {}
 
         self.pixmap_cache: OrderedDict[str, QPixmap] = OrderedDict()
         self.cache_bytes: int = 0
@@ -311,16 +313,16 @@ class MainViewer(QMainWindow):
         self.cache_bytes += pixmap_size
 
         while len(self.pixmap_cache) > 1 and (self.cache_bytes > self.max_cache_bytes or len(self.pixmap_cache) > self.max_cache_items):
-            old_k, old_pm = self.pixmap_cache.popitem(last=False)
+            _old_k, old_pm = self.pixmap_cache.popitem(last=False)
             self.cache_bytes -= (old_pm.width() * old_pm.height() * 4)
 
-    def _get_pixmap_from_cache(self, filepath: str) -> Optional[QPixmap]:
+    def _get_pixmap_from_cache(self, filepath: str) -> QPixmap | None:
         if filepath in self.pixmap_cache:
             self.pixmap_cache.move_to_end(filepath)
             return self.pixmap_cache[filepath]
         return None
 
-    def eventFilter(self, obj: 'QObject', event: QEvent) -> bool:
+    def eventFilter(self, obj: QObject, event: QEvent) -> bool:
         if event.type() == QEvent.Type.ToolTip:
             tooltips_enabled = self.settings.get('ui', 'tooltips_enabled')
             if tooltips_enabled is None:
@@ -652,7 +654,7 @@ class MainViewer(QMainWindow):
             self.current_index = next_idx
         self.show_image()
 
-    def trigger_file_action(self, action: str, filepath: str, dest_folder: Optional[str] = None) -> Optional[str]:
+    def trigger_file_action(self, action: str, filepath: str, dest_folder: str | None = None) -> str | None:
         """Submits a move or trash action with transactional pending op tracking and advances UI."""
         if not filepath:
             return None
@@ -703,9 +705,7 @@ class MainViewer(QMainWindow):
             return False
         if isinstance(focus_widget, (QLineEdit, QTextEdit, QPlainTextEdit, QAbstractSpinBox, QComboBox, QKeySequenceEdit)):
             return True
-        if hasattr(focus_widget, "isReadOnly") and not focus_widget.isReadOnly():
-            return True
-        return False
+        return bool(hasattr(focus_widget, "isReadOnly") and not focus_widget.isReadOnly())
 
     def keyPressEvent(self, event: QEvent) -> None:
         """Handles keyboard navigation and sorting adhering strictly to the Precedence Matrix."""
@@ -818,7 +818,7 @@ class MainViewer(QMainWindow):
         """Deprecated legacy helper retained for backward compatibility."""
         self.advance_ui_after_pending_action()
 
-    def _find_matching_pending_op(self, path: str, action_types: Optional[List[str]] = None) -> Optional[PendingOp]:
+    def _find_matching_pending_op(self, path: str, action_types: list[str] | None = None) -> PendingOp | None:
         can_p = _canonical_path(path)
         for op in self.pending_ops.values():
             if op.load_generation == self.load_generation and op.state == "pending":
@@ -828,7 +828,7 @@ class MainViewer(QMainWindow):
                     return op
         return None
 
-    def _match_pending_op(self, path: str) -> Optional[PendingOp]:
+    def _match_pending_op(self, path: str) -> PendingOp | None:
         can_p = _canonical_path(path)
         for op in self.pending_ops.values():
             if op.load_generation != self.load_generation or op.state != "pending":
@@ -846,7 +846,7 @@ class MainViewer(QMainWindow):
                     return op
         return None
 
-    def on_undo_record_received(self, data: Dict[str, Any]) -> None:
+    def on_undo_record_received(self, data: dict[str, Any]) -> None:
         """Receives UndoToken from background worker and correlates with pending op."""
         orig_p = data.get('original') or ''
         curr_p = data.get('current') or data.get('new') or ''
@@ -1013,23 +1013,22 @@ class MainViewer(QMainWindow):
                 self.statusBar().showMessage(msg, 3000)
                 self.announce_accessibility_event(self.central_widget, msg)
 
-        elif action_type == 'copy':
-            if current_path:
-                pending_op = PendingOp(
-                    op_id=op_id,
-                    action="undo_copy",
-                    src_path=_canonical_path(current_path),
-                    raw_src_path=current_path,
-                    original_index=orig_idx,
-                    load_generation=self.load_generation,
-                    state="pending",
-                    undo_token=last_action
-                )
-                self.pending_ops[op_id] = pending_op
-                self.worker.add_task('undo_copy', current_path)
-                msg = f"Undoing copy of {os.path.basename(current_path)}..."
-                self.statusBar().showMessage(msg, 3000)
-                self.announce_accessibility_event(self.central_widget, msg)
+        elif action_type == 'copy' and current_path:
+            pending_op = PendingOp(
+                op_id=op_id,
+                action="undo_copy",
+                src_path=_canonical_path(current_path),
+                raw_src_path=current_path,
+                original_index=orig_idx,
+                load_generation=self.load_generation,
+                state="pending",
+                undo_token=last_action
+            )
+            self.pending_ops[op_id] = pending_op
+            self.worker.add_task('undo_copy', current_path)
+            msg = f"Undoing copy of {os.path.basename(current_path)}..."
+            self.statusBar().showMessage(msg, 3000)
+            self.announce_accessibility_event(self.central_widget, msg)
 
     def open_settings(self) -> None:
         """Opens settings configuration window as a modal dialog."""

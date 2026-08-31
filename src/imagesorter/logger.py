@@ -1,15 +1,16 @@
+from __future__ import annotations
+
 import logging
 import os
 import sys
 from logging.handlers import RotatingFileHandler
-from typing import Optional
 
 from .paths import get_logs_dir
 
 
 def setup_logger(
     name: str = "ImageSorter",
-    log_file: Optional[str] = None,
+    log_file: str | None = None,
     level: int = logging.INFO
 ) -> logging.Logger:
     """

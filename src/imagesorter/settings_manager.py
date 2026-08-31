@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import json
 import math
 import os
@@ -5,12 +7,12 @@ import tempfile
 import threading
 import time
 import uuid
-from typing import Any, Dict, Optional
+from typing import Any
 
 from .logger import logger
 from .paths import get_settings_path
 
-DEFAULT_SETTINGS: Dict[str, Any] = {
+DEFAULT_SETTINGS: dict[str, Any] = {
     "directories": {
         "source": "",
         "trash": ""
@@ -53,7 +55,7 @@ class SettingsManager:
     and self-healing backup on file corruption.
     """
 
-    def __init__(self, filepath: Optional[str] = None) -> None:
+    def __init__(self, filepath: str | None = None) -> None:
         """
         Initializes the SettingsManager.
 
@@ -66,7 +68,7 @@ class SettingsManager:
         else:
             self.filepath = str(get_settings_path())
 
-        self.settings: Dict[str, Any] = json.loads(json.dumps(DEFAULT_SETTINGS))
+        self.settings: dict[str, Any] = json.loads(json.dumps(DEFAULT_SETTINGS))
         self.load()
 
     def load(self) -> None:
@@ -145,7 +147,7 @@ class SettingsManager:
         logger.error(f"Failed to backup corrupt settings file {self.filepath} after multiple attempts.")
         return False
 
-    def _validate_and_repair(self, user_dict: Dict[str, Any]) -> tuple[Dict[str, Any], bool]:
+    def _validate_and_repair(self, user_dict: dict[str, Any]) -> tuple[dict[str, Any], bool]:
         """
         Validates user_dict against schema rules, replacing invalid sections/fields with safe defaults,
         clamping numeric values, and preserving unknown fields.
@@ -329,7 +331,7 @@ class SettingsManager:
 
         # 6. Hotkeys
         hk_user = user_dict.get("hotkeys")
-        norm_hotkeys: Dict[str, Dict[str, Any]] = {}
+        norm_hotkeys: dict[str, dict[str, Any]] = {}
         if isinstance(hk_user, dict):
             for raw_k, hk_item in hk_user.items():
                 if not isinstance(raw_k, str):
@@ -381,7 +383,7 @@ class SettingsManager:
         Saves current settings using an atomic write process (tempfile + flush + fsync + os.replace).
         """
         with self._lock:
-            temp_path: Optional[str] = None
+            temp_path: str | None = None
             try:
                 dir_name = os.path.dirname(self.filepath) or "."
                 os.makedirs(dir_name, exist_ok=True)
@@ -410,7 +412,7 @@ class SettingsManager:
                     except OSError:
                         pass
 
-    def get(self, section: str, key: Optional[str] = None) -> Any:
+    def get(self, section: str, key: str | None = None) -> Any:
         """Retrieves a setting value safely under lock."""
         with self._lock:
             if key:
@@ -426,7 +428,7 @@ class SettingsManager:
             self.settings[section][key] = value
             self.save()
 
-    def update_section(self, section: str, data: Dict[str, Any]) -> None:
+    def update_section(self, section: str, data: dict[str, Any]) -> None:
         """Replaces an entire section of settings and saves to disk."""
         with self._lock:
             if not isinstance(data, dict):

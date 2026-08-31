@@ -96,7 +96,7 @@ def test_failed_trash_restores_image_to_queue(qtbot, tmp_path):
     qtbot.addWidget(viewer)
 
     # Trigger trash operation on non-existent source file (e.g. removed right before op)
-    op_id = viewer.trigger_file_action("trash", img1, None)
+    viewer.trigger_file_action("trash", img1, None)
     os.remove(img1)
 
     viewer.worker.stop()

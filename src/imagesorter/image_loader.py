@@ -1,7 +1,8 @@
+from __future__ import annotations
+
 import os
 import queue
 import threading
-from typing import Optional
 
 from PyQt6.QtCore import QObject, QThread, pyqtSignal
 from PyQt6.QtGui import QImage
@@ -16,9 +17,9 @@ class ImageLoader(QThread):
     """
     image_loaded = pyqtSignal(str, QImage)
 
-    def __init__(self, parent: Optional[QObject] = None) -> None:
+    def __init__(self, parent: QObject | None = None) -> None:
         super().__init__(parent)
-        self._queue: queue.Queue[Optional[str]] = queue.Queue()
+        self._queue: queue.Queue[str | None] = queue.Queue()
         self.running: bool = True
         self._lock = threading.Lock()
 

@@ -39,12 +39,12 @@ def test_corrupt_backup_collision_resolution(tmp_path):
     settings_file = tmp_path / "settings.json"
     settings_file.write_text("bad data 1", encoding="utf-8")
 
-    sm1 = SettingsManager(filepath=str(settings_file))
+    SettingsManager(filepath=str(settings_file))
     bak1 = list(tmp_path.glob("settings.json.corrupt.*.bak"))
     assert len(bak1) == 1
 
     settings_file.write_text("bad data 2", encoding="utf-8")
-    sm2 = SettingsManager(filepath=str(settings_file))
+    SettingsManager(filepath=str(settings_file))
     bak2 = list(tmp_path.glob("settings.json.corrupt.*.bak"))
     assert len(bak2) == 2
 

@@ -1,5 +1,7 @@
+from __future__ import annotations
+
 import os
-from typing import Any, Dict, Optional
+from typing import Any
 
 from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import (
@@ -33,7 +35,7 @@ class SettingsWindow(QDialog):
     """
     Settings interface with WCAG AAA accessibility options and input validation.
     """
-    def __init__(self, settings_manager: SettingsManager, parent: Optional[QWidget] = None) -> None:
+    def __init__(self, settings_manager: SettingsManager, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.settings = settings_manager
         self.setWindowTitle("Image Sorter Settings")
@@ -408,7 +410,7 @@ class SettingsWindow(QDialog):
         adv_settings['worker_threads'] = self.worker_spin.value()
         self.settings.update_section('advanced', adv_settings)
 
-        hotkeys: Dict[str, Dict[str, Any]] = {}
+        hotkeys: dict[str, dict[str, Any]] = {}
         for row in range(self.hotkey_table.rowCount()):
             key_item = self.hotkey_table.item(row, 0)
             if not key_item or not key_item.text().strip():

@@ -1,9 +1,11 @@
+from __future__ import annotations
+
 import hashlib
 import os
 import shutil
 import time
 import uuid
-from typing import Any, Dict, Optional, Union
+from typing import Any
 
 from PyQt6.QtCore import QObject, QRunnable, QThreadPool, pyqtSignal, pyqtSlot
 from send2trash import TrashPermissionError, send2trash
@@ -13,7 +15,7 @@ from .logger import logger
 from .settings_manager import SettingsManager
 
 
-def _compute_provenance(filepath: str) -> Dict[str, Any]:
+def _compute_provenance(filepath: str) -> dict[str, Any]:
     """Computes file metadata and SHA-256 digest for provenance tracking."""
     st = os.stat(filepath)
     h = hashlib.sha256()
@@ -31,7 +33,7 @@ def _compute_provenance(filepath: str) -> Dict[str, Any]:
     }
 
 
-def _verify_provenance(filepath: str, provenance: Dict[str, Any]) -> None:
+def _verify_provenance(filepath: str, provenance: dict[str, Any]) -> None:
     """Verifies that the target file matches recorded provenance attributes."""
     if os.path.islink(filepath):
         raise ValueError(f"File is a symbolic link: {filepath}")
@@ -92,7 +94,7 @@ def _atomic_copy_stream(src_path: str, candidate_path: str, is_move: bool) -> No
 
         if is_move:
             os.remove(src_path)
-    except Exception as e:
+    except Exception:
         if os.path.lexists(temp_path):
             try:
                 os.remove(temp_path)
@@ -103,7 +105,7 @@ def _atomic_copy_stream(src_path: str, candidate_path: str, is_move: bool) -> No
                 os.remove(candidate_path)
             except OSError:
                 pass
-        raise e
+        raise
 
 
 class WorkerSignals(QObject):
@@ -118,14 +120,14 @@ class FileTaskRunnable(QRunnable):
     A single file operation task designed for concurrent execution in QThreadPool.
     Implements antifragile retry logic, POSIX safe moves, trash fallback, and transactional UndoTokens.
     """
-    def __init__(self, task_type: str, filepath: str, dest_folder: Optional[Union[str, Dict[str, Any]]],
-                 settings: SettingsManager, ai_tagger: Optional[AITagger], signals: WorkerSignals,
-                 undo_token: Optional[Dict[str, Any]] = None) -> None:
+    def __init__(self, task_type: str, filepath: str, dest_folder: str | dict[str, Any] | None,
+                 settings: SettingsManager, ai_tagger: AITagger | None, signals: WorkerSignals,
+                 undo_token: dict[str, Any] | None = None) -> None:
         super().__init__()
         self.task_type = task_type
         if isinstance(dest_folder, dict):
-            self.undo_token: Optional[Dict[str, Any]] = dest_folder
-            self.dest_folder: Optional[str] = self.undo_token.get("original")
+            self.undo_token: dict[str, Any] | None = dest_folder
+            self.dest_folder: str | None = self.undo_token.get("original")
         else:
             self.undo_token = undo_token
             self.dest_folder = dest_folder
@@ -166,7 +168,7 @@ class FileTaskRunnable(QRunnable):
             raise ValueError(f"Source path is not a regular file: {filepath}")
 
         final_path = filepath
-        undo_token: Optional[Dict[str, Any]] = None
+        undo_token: dict[str, Any] | None = None
 
         if self.task_type in ['move', 'copy']:
             if not self.dest_folder:
@@ -310,7 +312,7 @@ class QueueWorker(QObject):
         self.thread_pool.setMaxThreadCount(int(max_threads))
         logger.info(f"QueueWorker initialized with max {self.thread_pool.maxThreadCount()} threads.")
 
-        self.ai_tagger: Optional[AITagger] = None
+        self.ai_tagger: AITagger | None = None
         self._init_ai()
 
     def _init_ai(self) -> None:
@@ -331,7 +333,7 @@ class QueueWorker(QObject):
             self.thread_pool.setMaxThreadCount(int(new_threads))
             logger.info(f"Updated QueueWorker max threads to {new_threads}.")
 
-    def add_task(self, task_type: str, filepath: str, dest_folder: Optional[Union[str, Dict[str, Any]]] = None, undo_token: Optional[Dict[str, Any]] = None) -> None:
+    def add_task(self, task_type: str, filepath: str, dest_folder: str | dict[str, Any] | None = None, undo_token: dict[str, Any] | None = None) -> None:
         """
         Submits a new task to the thread pool for execution.
 

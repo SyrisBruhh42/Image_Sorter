@@ -1,6 +1,7 @@
+from __future__ import annotations
+
 import os
 import sys
-from typing import List
 
 try:
     from .logger import logger
@@ -39,7 +40,7 @@ def configure_linux_platform() -> None:
         logger.info("Neither WAYLAND_DISPLAY nor DISPLAY found. Leaving QT_QPA_PLATFORM unset for Qt default selection.")
 
 
-def main(argv: List[str] | None = None) -> int:
+def main(argv: list[str] | None = None) -> int:
     """Main application entry point.
 
     Returns:
