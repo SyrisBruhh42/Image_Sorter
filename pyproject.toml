@@ -67,3 +67,16 @@ pythonpath = ["src"]
 markers = [
     "packaging: marks tests related to packaging and building binaries",
 ]
+
+[tool.ruff]
+lint.ignore = [
+    "BLE001",
+    "TRY002",
+    "TRY004",
+    "SIM102",
+    "SIM115",
+    "SIM117",
+    "PLW1510",
+    "RUF059",
+    "S110",
+]
