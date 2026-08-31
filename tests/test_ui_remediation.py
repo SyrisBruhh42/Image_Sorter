@@ -1,10 +1,9 @@
-import os
-import pytest
-from PyQt6.QtCore import Qt, QEvent
-from PyQt6.QtGui import QImage, QPixmap, QKeyEvent
-from PyQt6.QtWidgets import QLineEdit, QWidget, QApplication
+from PyQt6.QtCore import Qt
+from PyQt6.QtGui import QImage, QPixmap
+from PyQt6.QtWidgets import QApplication, QLineEdit
+
 from imagesorter.settings_manager import SettingsManager
-from imagesorter.ui_main import MainViewer, ImageViewer
+from imagesorter.ui_main import ImageViewer, MainViewer
 from imagesorter.ui_settings import SettingsWindow
 
 

@@ -1,10 +1,10 @@
-import os
-import pytest
-from unittest.mock import patch, MagicMock
-from PIL import Image
-import piexif
+from unittest.mock import patch
 
-from imagesorter.ai_tagger import ModelDownloader, write_metadata, AITagger, MODEL_SHA256
+import piexif
+import pytest
+from PIL import Image
+
+from imagesorter.ai_tagger import AITagger, ModelDownloader, write_metadata
 
 
 def test_model_downloader_sha256_mismatch(qtbot, tmp_path):

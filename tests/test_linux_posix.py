@@ -1,10 +1,7 @@
-import os
-import sys
-import pytest
 from pathlib import Path
 
-from imagesorter.paths import get_config_dir, get_data_dir, get_cache_dir, get_logs_dir, is_portable_mode, get_app_dir
 import imagesorter.paths as paths_module
+from imagesorter.paths import get_config_dir, get_data_dir, is_portable_mode
 
 
 def test_xdg_validation_strict_absolute(monkeypatch, tmp_path):

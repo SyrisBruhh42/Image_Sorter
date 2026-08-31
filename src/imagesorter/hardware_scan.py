@@ -1,6 +1,8 @@
-import psutil
+from typing import Any, Dict, List
+
 import onnxruntime as ort
-from typing import Dict, Any, List
+import psutil
+
 from .logger import logger
 
 # Priority order for AI Execution Providers across platforms (Linux, Windows, macOS)

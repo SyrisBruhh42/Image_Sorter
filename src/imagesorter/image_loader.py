@@ -2,9 +2,12 @@ import os
 import queue
 import threading
 from typing import Optional
-from PyQt6.QtCore import QThread, pyqtSignal, QObject
+
+from PyQt6.QtCore import QObject, QThread, pyqtSignal
 from PyQt6.QtGui import QImage
+
 from .logger import logger
+
 
 class ImageLoader(QThread):
     """

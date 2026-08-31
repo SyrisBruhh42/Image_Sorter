@@ -58,6 +58,12 @@ imagesorter = "imagesorter.main:main"
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.setuptools.package-data]
+imagesorter = ["resources/*"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src"]
+markers = [
+    "packaging: marks tests related to packaging and building binaries",
+]

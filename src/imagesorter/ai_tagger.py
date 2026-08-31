@@ -1,23 +1,23 @@
-import os
-import json
-import ssl
-import shutil
-import urllib.request
-import urllib.error
 import hashlib
-import tempfile
 import multiprocessing as mp
+import os
+import shutil
+import ssl
+import tempfile
+import urllib.error
+import urllib.request
 from abc import ABC, abstractmethod
-from typing import List, Optional, Any
-import psutil
-import onnxruntime as ort
+from typing import List, Optional
+
 import numpy as np
-from PIL import Image
+import onnxruntime as ort
 import piexif
+import psutil
+from PIL import Image
 from PyQt6.QtCore import QThread, pyqtSignal
 
-from .logger import logger
 from .hardware_scan import get_prioritized_providers
+from .logger import logger
 from .paths import get_data_dir
 
 # Set process start method to 'spawn' for safe CUDA/multiprocessing compliance
@@ -27,9 +27,45 @@ try:
 except RuntimeError as e:
     logger.debug(f"Multiprocessing start method already set: {e}")
 
-MODEL_URL = "https://github.com/onnx/models/raw/main/vision/classification/mobilenet/model/mobilenetv2-7.onnx"
-LABELS_URL = "https://raw.githubusercontent.com/pytorch/hub/master/imagenet_classes.txt"
-MODEL_SHA256 = "c08d51ab259a4bb3af06e93d14cc9b068da6c9ea156e50e8a712cc6ee14d33a7"
+MODEL_URL = "https://huggingface.co/onnx-community/mobilenet_v2_1.0_224-ONNX/resolve/f7f884d9505b4c69f8a260d9967ff7791bafa498/onnx/model.onnx"
+MODEL_SHA256 = "2e731702ec8374128edfc9f7d344c44287e7791bb3c7ae25a628c2c2dec83ce6"
+LABELS_URL = "https://raw.githubusercontent.com/pytorch/hub/a6fc887fbbbda0dd37c440bf8a145f1da6707d6b/imagenet_classes.txt"
+LABELS_SHA256 = "1f386e0d1cb6e28b9c2dac651c3dea6801e98ad1b41a14ce6bb1a093d72069f5"
+
+
+def get_model_dir(model_dir: Optional[str] = None) -> str:
+    """Returns the resolved directory path for AI model artifacts."""
+    if model_dir is not None:
+        return model_dir
+    default_dir = str(get_data_dir() / "models")
+    model_name = "mobilenetv2.onnx"
+    labels_name = "labels.txt"
+    if not (os.path.exists(os.path.join(default_dir, model_name)) and os.path.exists(os.path.join(default_dir, labels_name))):
+        rel_dir = "models"
+        if os.path.exists(os.path.join(rel_dir, model_name)) and os.path.exists(os.path.join(rel_dir, labels_name)):
+            return rel_dir
+    return default_dir
+
+
+def is_model_and_labels_valid(model_dir: Optional[str] = None) -> bool:
+    """
+    Verifies that both the model file and labels file exist and match their expected SHA256 checksums.
+    Does not perform model loading or network access.
+    """
+    target_dir = get_model_dir(model_dir)
+    model_path = os.path.join(target_dir, "mobilenetv2.onnx")
+    labels_path = os.path.join(target_dir, "labels.txt")
+
+    if not (os.path.exists(model_path) and os.path.exists(labels_path)):
+        return False
+
+    if calculate_sha256(model_path) != MODEL_SHA256:
+        return False
+
+    if calculate_sha256(labels_path) != LABELS_SHA256:
+        return False
+
+    return True
 
 
 def calculate_sha256(filepath: str) -> str:
@@ -83,10 +119,7 @@ class ModelDownloader(QThread):
 
     def __init__(self, model_dir: Optional[str] = None) -> None:
         super().__init__()
-        if model_dir is None:
-            self.model_dir = str(get_data_dir() / "models")
-        else:
-            self.model_dir = model_dir
+        self.model_dir = get_model_dir(model_dir)
         self.model_path = os.path.join(self.model_dir, "mobilenetv2.onnx")
         self.labels_path = os.path.join(self.model_dir, "labels.txt")
 
@@ -94,22 +127,31 @@ class ModelDownloader(QThread):
         try:
             os.makedirs(self.model_dir, exist_ok=True)
 
-            if not os.path.exists(self.labels_path):
+            labels_valid = os.path.exists(self.labels_path) and calculate_sha256(self.labels_path) == LABELS_SHA256
+            if not labels_valid:
                 logger.info(f"Downloading labels to {self.labels_path}")
                 fd, temp_labels_path = tempfile.mkstemp(dir=self.model_dir, prefix="dl_labels_", suffix=".tmp")
                 os.close(fd)
                 try:
                     _download_file_secure(LABELS_URL, temp_labels_path, timeout=15.0)
+                    checksum = calculate_sha256(temp_labels_path)
+                    if checksum != LABELS_SHA256:
+                        err_msg = f"Labels Cryptographic Integrity Failure: Expected {LABELS_SHA256}, got {checksum}"
+                        logger.critical(err_msg)
+                        self.finished.emit(False, err_msg)
+                        return
                     os.replace(temp_labels_path, self.labels_path)
                 except Exception as e:
+                    raise Exception(f"Network error downloading labels: {e}")
+                finally:
                     if os.path.exists(temp_labels_path):
                         try:
                             os.remove(temp_labels_path)
                         except OSError:
                             pass
-                    raise Exception(f"Network error downloading labels: {e}")
 
-            if not os.path.exists(self.model_path):
+            model_valid = os.path.exists(self.model_path) and calculate_sha256(self.model_path) == MODEL_SHA256
+            if not model_valid:
                 logger.info(f"Downloading model to {self.model_path}")
                 fd, temp_path = tempfile.mkstemp(dir=self.model_dir, prefix="dl_model_", suffix=".tmp")
                 os.close(fd)
@@ -121,32 +163,30 @@ class ModelDownloader(QThread):
                         progress_callback=lambda p: self.progress.emit(p),
                         timeout=15.0
                     )
+                    checksum = calculate_sha256(temp_path)
+                    logger.info(f"Downloaded model SHA256: {checksum}")
+
+                    if checksum != MODEL_SHA256:
+                        err_msg = f"Model Cryptographic Integrity Failure: Expected {MODEL_SHA256}, got {checksum}"
+                        logger.critical(err_msg)
+                        self.finished.emit(False, err_msg)
+                        return
+
+                    os.replace(temp_path, self.model_path)
+                    logger.info("Model download and verification complete.")
                 except Exception as e:
-                    if os.path.exists(temp_path):
-                        try:
-                            os.remove(temp_path)
-                        except OSError:
-                            pass
                     raise Exception(f"Network error downloading model: {e}")
-
-                checksum = calculate_sha256(temp_path)
-                logger.info(f"Downloaded model SHA256: {checksum}")
-
-                if checksum != MODEL_SHA256:
+                finally:
                     if os.path.exists(temp_path):
                         try:
                             os.remove(temp_path)
                         except OSError:
                             pass
-                    err_msg = f"Cryptographic Integrity Failure: Expected {MODEL_SHA256}, got {checksum}"
-                    logger.critical(err_msg)
-                    self.finished.emit(False, err_msg)
-                    return
 
-                os.replace(temp_path, self.model_path)
-                logger.info("Model download and verification complete.")
-
-            self.finished.emit(True, "Model ready.")
+            if is_model_and_labels_valid(self.model_dir):
+                self.finished.emit(True, "Model ready.")
+            else:
+                self.finished.emit(False, "Model or labels verification failed after download.")
         except Exception as e:
             logger.error(f"Model download failed: {e}", exc_info=True)
             self.finished.emit(False, str(e))
@@ -160,12 +200,10 @@ class BaseVisionEngine(ABC):
     @abstractmethod
     def load_model(self) -> None:
         """Loads the vision model into memory."""
-        pass
 
     @abstractmethod
     def get_tags(self, image_path: str, top_k: int = 3) -> List[str]:
         """Returns tags for the specified image."""
-        pass
 
 
 class AITagger(BaseVisionEngine):
@@ -174,15 +212,7 @@ class AITagger(BaseVisionEngine):
     """
 
     def __init__(self, model_dir: Optional[str] = None) -> None:
-        if model_dir is None:
-            self.model_dir = str(get_data_dir() / "models")
-            if not os.path.exists(os.path.join(self.model_dir, "mobilenetv2.onnx")):
-                # Fallback to relative models directory if available
-                if os.path.exists(os.path.join("models", "mobilenetv2.onnx")):
-                    self.model_dir = "models"
-        else:
-            self.model_dir = model_dir
-
+        self.model_dir: str = get_model_dir(model_dir)
         self.model_path: str = os.path.join(self.model_dir, "mobilenetv2.onnx")
         self.labels_path: str = os.path.join(self.model_dir, "labels.txt")
         self.session: Optional[ort.InferenceSession] = None
@@ -192,21 +222,16 @@ class AITagger(BaseVisionEngine):
 
     def load_model(self) -> None:
         """Attempts to load ONNX model across prioritized providers with safe fallbacks."""
-        if not (os.path.exists(self.model_path) and os.path.exists(self.labels_path)):
-            logger.warning(f"AI model or labels missing at {self.model_dir}")
-            return
-
-        model_checksum = calculate_sha256(self.model_path)
-        if model_checksum != MODEL_SHA256:
-            logger.error(
-                f"Model checksum verification failed for {self.model_path}: "
-                f"expected {MODEL_SHA256}, got {model_checksum}"
-            )
+        if not is_model_and_labels_valid(self.model_dir):
+            logger.warning(f"AI model or labels missing or invalid at {self.model_dir}")
+            self.session = None
+            self.labels = []
+            self.active_provider = "None"
             return
 
         try:
             with open(self.labels_path, 'r', encoding='utf-8') as f:
-                self.labels = [line.strip() for line in f.readlines()]
+                self.labels = [line.strip() for line in f]
         except Exception as e:
             logger.error(f"Failed to load labels from {self.labels_path}: {e}")
             return
@@ -287,6 +312,12 @@ class AITagger(BaseVisionEngine):
 
             res = raw_result[0][0]
             res = np.nan_to_num(res, nan=0.0, posinf=0.0, neginf=0.0)
+            if len(res) == len(self.labels) + 1:
+                # Ignore output index 0 (background class) when model has 1,001 outputs and 1,000 labels
+                res = res[1:]
+            elif len(res) > len(self.labels):
+                res = res[1 : 1 + len(self.labels)]
+
             max_res = np.max(res)
             exp_res = np.exp(res - max_res)
             exp_res = np.nan_to_num(exp_res, nan=0.0, posinf=0.0, neginf=0.0)

@@ -1,13 +1,17 @@
-import os
 import json
-import pytest
-from pathlib import Path
 
 import imagesorter.paths as paths_module
-from imagesorter.paths import get_config_dir, get_data_dir, get_cache_dir, get_logs_dir, get_settings_path, is_portable_mode
-from imagesorter.settings_manager import SettingsManager
-from imagesorter.hardware_scan import scan_hardware, get_prioritized_providers
 from imagesorter.ai_tagger import AITagger, BaseVisionEngine, write_metadata
+from imagesorter.hardware_scan import get_prioritized_providers, scan_hardware
+from imagesorter.paths import (
+    get_cache_dir,
+    get_config_dir,
+    get_data_dir,
+    get_logs_dir,
+    get_settings_path,
+    is_portable_mode,
+)
+from imagesorter.settings_manager import SettingsManager
 
 
 def test_paths_xdg_and_portable(monkeypatch, tmp_path):

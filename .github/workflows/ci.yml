@@ -1,0 +1,108 @@
+name: CI & Packaging
+
+on:
+  push:
+    branches: [ feature/image-sorter-app-4050765199291038722, main, master ]
+  pull_request:
+    branches: [ feature/image-sorter-app-4050765199291038722, main, master ]
+
+jobs:
+  test:
+    name: Test (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.9", "3.10", "3.11", "3.12"]
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: Dependency check
+        run: |
+          pip check
+
+      - name: Lint check (Ruff)
+        run: |
+          ruff check src/ tests/
+
+      - name: Run tests with coverage
+        env:
+          QT_QPA_PLATFORM: offscreen
+          HOME: ${{ runner.temp }}/home_${{ matrix.python-version }}
+          XDG_CONFIG_HOME: ${{ runner.temp }}/config_${{ matrix.python-version }}
+          XDG_DATA_HOME: ${{ runner.temp }}/data_${{ matrix.python-version }}
+          XDG_CACHE_HOME: ${{ runner.temp }}/cache_${{ matrix.python-version }}
+          XDG_STATE_HOME: ${{ runner.temp }}/state_${{ matrix.python-version }}
+        run: |
+          mkdir -p "$HOME" "$XDG_CONFIG_HOME" "$XDG_DATA_HOME" "$XDG_CACHE_HOME" "$XDG_STATE_HOME"
+          pytest --cov=imagesorter --cov-report=term-missing tests/
+
+  package-and-build:
+    name: Package Wheel & PyInstaller Executable
+    runs-on: ubuntu-latest
+    needs: test
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install build and dev dependencies
+        run: |
+          python -m pip install --upgrade pip build wheel
+          pip install -e ".[dev]"
+
+      - name: Build wheel package
+        run: |
+          pip wheel --no-deps --wheel-dir dist .
+
+      - name: Verify package resources in wheel
+        run: |
+          python -c "
+          import zipfile, sys, glob
+          wheels = glob.glob('dist/imagesorter-*.whl')
+          if not wheels:
+              print('No wheel found!')
+              sys.exit(1)
+          with zipfile.ZipFile(wheels[0], 'r') as z:
+              files = z.namelist()
+              print('Wheel files:', files)
+              required = ['imagesorter/resources/imagesorter.png']
+              for req in required:
+                  if not any(f.endswith('imagesorter.png') for f in files):
+                      print(f'Missing required resource matching: {req}')
+                      sys.exit(1)
+          print('Package resource verification successful!')
+          "
+
+      - name: Build PyInstaller standalone executable
+        run: |
+          python3 build.py
+
+      - name: Executable smoke test (--help)
+        env:
+          QT_QPA_PLATFORM: offscreen
+          HOME: ${{ runner.temp }}/home_smoke
+          XDG_CONFIG_HOME: ${{ runner.temp }}/config_smoke
+          XDG_DATA_HOME: ${{ runner.temp }}/data_smoke
+          XDG_CACHE_HOME: ${{ runner.temp }}/cache_smoke
+          XDG_STATE_HOME: ${{ runner.temp }}/state_smoke
+        run: |
+          mkdir -p "$HOME" "$XDG_CONFIG_HOME" "$XDG_DATA_HOME" "$XDG_CACHE_HOME" "$XDG_STATE_HOME"
+          ./dist/ImageSorter/ImageSorter --help

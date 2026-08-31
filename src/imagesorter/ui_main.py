@@ -1,29 +1,54 @@
 import os
-import shutil
+import uuid
 from collections import OrderedDict
-from typing import List, Dict, Optional, Any
+from dataclasses import dataclass
+from typing import Any, Dict, List, Optional
+
 import psutil
-from PyQt6.QtWidgets import (
-    QMainWindow, QLabel, QVBoxLayout, QHBoxLayout, QWidget, QMessageBox, QMenu,
-    QApplication, QGraphicsView, QGraphicsScene, QGraphicsPixmapItem, QProgressBar,
-    QLineEdit, QTextEdit, QPlainTextEdit, QAbstractSpinBox, QComboBox, QKeySequenceEdit
-)
 from PyQt6.QtGui import (
-    QPixmap, QImageReader, QKeySequence, QAction, QPalette, QColor, QPainter,
-    QTransform, QCursor, QImage, QWheelEvent, QMouseEvent
+    QAction,
+    QColor,
+    QImage,
+    QImageReader,
+    QKeySequence,
+    QMouseEvent,
+    QPainter,
+    QPalette,
+    QPixmap,
+    QTransform,
+    QWheelEvent,
 )
+from PyQt6.QtWidgets import (
+    QAbstractSpinBox,
+    QApplication,
+    QComboBox,
+    QGraphicsPixmapItem,
+    QGraphicsScene,
+    QGraphicsView,
+    QKeySequenceEdit,
+    QLabel,
+    QLineEdit,
+    QMainWindow,
+    QPlainTextEdit,
+    QProgressBar,
+    QTextEdit,
+    QVBoxLayout,
+    QWidget,
+)
+
 try:
     from PyQt6.QtGui import QAccessible, QAccessibleEvent  # type: ignore
     HAS_QACCESSIBLE = True
 except ImportError:
     HAS_QACCESSIBLE = False
-from PyQt6.QtCore import Qt, QSize, QEvent, QObject
-from .ui_settings import SettingsWindow
+import numpy as np
+from PyQt6.QtCore import QEvent, QObject, Qt
+
+from .image_loader import ImageLoader
+from .logger import logger
 from .queue_worker import QueueWorker
 from .settings_manager import SettingsManager
-from .logger import logger
-from .image_loader import ImageLoader
-import numpy as np
+from .ui_settings import SettingsWindow
 
 
 class ImageViewer(QGraphicsView):
@@ -198,6 +223,33 @@ class ImageViewer(QGraphicsView):
             self.is_smart_zoom = True
 
 
+@dataclass
+class PendingOp:
+    op_id: str
+    action: str  # 'move', 'trash', 'undo_move', 'undo_trash', 'undo_copy'
+    src_path: str  # canonical path
+    raw_src_path: str
+    original_index: int
+    load_generation: int
+    dest_folder: Optional[str] = None
+    dest_path: Optional[str] = None
+    original_path: Optional[str] = None
+    raw_original_path: Optional[str] = None
+    state: str = "pending"  # 'pending', 'finished', 'error'
+    undo_token: Optional[Dict[str, Any]] = None
+    finished_received: bool = False
+    undo_record_received: bool = False
+
+
+def _canonical_path(path: str) -> str:
+    if not path:
+        return ""
+    try:
+        return os.path.realpath(os.path.abspath(os.path.normpath(path)))
+    except Exception:
+        return os.path.normpath(path)
+
+
 class MainViewer(QMainWindow):
     """
     Main application window for displaying and sorting images.
@@ -211,6 +263,7 @@ class MainViewer(QMainWindow):
 
         self.worker = QueueWorker(self.settings)
         self.worker.signals.progress.connect(self.on_worker_progress)
+        self.worker.signals.finished.connect(self.on_worker_finished)
         self.worker.signals.error.connect(self.on_worker_error)
         self.worker.signals.undo_record.connect(self.on_undo_record_received)
 
@@ -218,6 +271,9 @@ class MainViewer(QMainWindow):
         self.current_index: int = -1
         self.history: List[Dict[str, Any]] = []
         self.zen_mode: bool = False
+
+        self.load_generation: int = 0
+        self.pending_ops: Dict[str, PendingOp] = {}
 
         self.pixmap_cache: OrderedDict[str, QPixmap] = OrderedDict()
         self.cache_bytes: int = 0
@@ -231,6 +287,11 @@ class MainViewer(QMainWindow):
         self.apply_theme()
         self.init_ui()
         self.load_images()
+
+    def clear_pixmap_cache(self) -> None:
+        """Clears the pixmap cache and resets byte counter."""
+        self.pixmap_cache.clear()
+        self.cache_bytes = 0
 
     def _update_max_cache_bytes(self) -> None:
         custom_mb = self.settings.get('advanced', 'cache_size_mb')
@@ -481,7 +542,9 @@ class MainViewer(QMainWindow):
         """Loads supported image files from configured source directory."""
         if hasattr(self, 'loader'):
             self.loader.clear_tasks()
-        self.pixmap_cache.clear()
+        self.clear_pixmap_cache()
+        self.load_generation += 1
+        self.pending_ops.clear()
 
         src_dir = self.settings.get('directories', 'source')
         if not src_dir or not os.path.isdir(src_dir):
@@ -490,7 +553,7 @@ class MainViewer(QMainWindow):
             self.empty_label.setText("Source directory not configured or invalid.")
             return
 
-        supported_formats = [fmt.data().decode().lower() for fmt in QImageReader.supportedImageFormats()]
+        supported_formats = {fmt.data().decode().lower() for fmt in QImageReader.supportedImageFormats()}
         self.images = []
 
         try:
@@ -557,6 +620,81 @@ class MainViewer(QMainWindow):
         self.announce_accessibility_event(self.viewer, accessible_desc)
 
         self.preload_adjacent_images()
+
+    def _is_path_pending(self, filepath: str) -> bool:
+        can_p = _canonical_path(filepath)
+        for op in self.pending_ops.values():
+            if op.load_generation == self.load_generation and op.state == "pending":
+                if op.src_path == can_p:
+                    return True
+        return False
+
+    def _find_next_non_pending_index(self, start_idx: int, direction: int = 1) -> int:
+        if not self.images:
+            return -1
+        if direction >= 0:
+            for i in range(max(0, start_idx), len(self.images)):
+                if not self._is_path_pending(self.images[i]):
+                    return i
+        else:
+            for i in range(min(start_idx, len(self.images) - 1), -1, -1):
+                if not self._is_path_pending(self.images[i]):
+                    return i
+        return -1
+
+    def advance_ui_after_pending_action(self) -> None:
+        """Advances to nearest non-pending image after initiating an action."""
+        next_idx = self._find_next_non_pending_index(self.current_index, direction=1)
+        if next_idx == -1:
+            next_idx = self._find_next_non_pending_index(self.current_index, direction=-1)
+
+        if next_idx != -1:
+            self.current_index = next_idx
+        self.show_image()
+
+    def trigger_file_action(self, action: str, filepath: str, dest_folder: Optional[str] = None) -> Optional[str]:
+        """Submits a move or trash action with transactional pending op tracking and advances UI."""
+        if not filepath:
+            return None
+
+        can_target = _canonical_path(filepath)
+        orig_idx = -1
+        for idx, img in enumerate(self.images):
+            if _canonical_path(img) == can_target:
+                orig_idx = idx
+                break
+
+        if orig_idx == -1:
+            return None
+
+        op_id = str(uuid.uuid4())
+        pending_op = PendingOp(
+            op_id=op_id,
+            action=action,
+            src_path=can_target,
+            raw_src_path=filepath,
+            original_index=orig_idx,
+            load_generation=self.load_generation,
+            dest_folder=_canonical_path(dest_folder) if dest_folder else None,
+            state="pending"
+        )
+        self.pending_ops[op_id] = pending_op
+
+        self.worker.add_task(action, filepath, dest_folder)
+
+        if action == 'trash':
+            trash_folder = self.settings.get('directories', 'trash')
+            if not trash_folder or not os.path.isdir(trash_folder):
+                msg = "Moved to system trash. Image Sorter Undo is unavailable for this item."
+                self.statusBar().showMessage(msg, 4000)
+                self.announce_accessibility_event(self.central_widget, msg)
+            else:
+                self.announce_accessibility_event(self.central_widget, f"Moved {os.path.basename(filepath)} to trash folder.")
+        elif action == 'move':
+            self.announce_accessibility_event(self.central_widget, f"Executed move for {os.path.basename(filepath)} to {dest_folder}.")
+
+        self.advance_ui_after_pending_action()
+        return op_id
 
     def is_input_focused(self) -> bool:
         """Determines if any input or editor widget currently has keyboard focus."""
@@ -626,9 +764,7 @@ class MainViewer(QMainWindow):
         if key == Qt.Key.Key_Delete:
             if 0 <= self.current_index < len(self.images):
                 filepath = self.images[self.current_index]
-                self.worker.add_task('trash', filepath)
-                self.announce_accessibility_event(self.central_widget, f"Moved {os.path.basename(filepath)} to trash.")
-                self.next_image_after_action()
+                self.trigger_file_action('trash', filepath)
             return
 
         # Level 2 (Custom User Hotkeys - evaluated ONLY when NoModifier)
@@ -641,19 +777,17 @@ class MainViewer(QMainWindow):
                     action = config.get('action', 'move')
                     folder = config.get('folder')
 
-                    if not folder:
-                        msg = f"Warning: No destination folder set for hotkey '{key_str}'"
-                        self.statusBar().showMessage(msg, 4000)
-                        self.announce_accessibility_event(self.central_widget, msg)
-                        return
-
-                    self.worker.add_task(action, filepath, folder)
-                    self.announce_accessibility_event(self.central_widget, f"Executed {action} for {os.path.basename(filepath)} to {folder}.")
-
-                    if config.get('auto_advance', True):
-                        if action in ('move', 'trash'):
-                            self.next_image_after_action()
-                        else:
+                    if action in ('move', 'trash'):
+                        if action == 'move' and not folder:
+                            msg = f"Warning: No destination folder set for hotkey '{key_str}'"
+                            self.statusBar().showMessage(msg, 4000)
+                            self.announce_accessibility_event(self.central_widget, msg)
+                            return
+                        self.trigger_file_action(action, filepath, folder)
+                    else:
+                        self.worker.add_task(action, filepath, folder)
+                        self.announce_accessibility_event(self.central_widget, f"Executed {action} for {os.path.basename(filepath)} to {folder}.")
+                        if config.get('auto_advance', True):
                             self.current_index += 1
                             self.show_image()
                 return
@@ -681,16 +815,161 @@ class MainViewer(QMainWindow):
                 return
 
     def next_image_after_action(self) -> None:
-        """Advances to next image after action."""
-        if 0 <= self.current_index < len(self.images):
-            self.images.pop(self.current_index)
-        self.show_image()
+        """Deprecated legacy helper retained for backward compatibility."""
+        self.advance_ui_after_pending_action()
+
+    def _find_matching_pending_op(self, path: str, action_types: Optional[List[str]] = None) -> Optional[PendingOp]:
+        can_p = _canonical_path(path)
+        for op in self.pending_ops.values():
+            if op.load_generation == self.load_generation and op.state == "pending":
+                if action_types and op.action not in action_types:
+                    continue
+                if op.src_path == can_p or (op.dest_path and _canonical_path(op.dest_path) == can_p):
+                    return op
+        return None
+
+    def _match_pending_op(self, path: str) -> Optional[PendingOp]:
+        can_p = _canonical_path(path)
+        for op in self.pending_ops.values():
+            if op.load_generation != self.load_generation or op.state != "pending":
+                continue
+            if op.src_path == can_p:
+                return op
+            if op.dest_path and _canonical_path(op.dest_path) == can_p:
+                return op
+            if op.original_path and _canonical_path(op.original_path) == can_p:
+                return op
+            if op.dest_folder and _canonical_path(os.path.dirname(can_p)) == op.dest_folder:
+                base_src = os.path.splitext(os.path.basename(op.src_path))[0]
+                base_fin = os.path.splitext(os.path.basename(can_p))[0]
+                if base_fin == base_src or base_fin.startswith(f"{base_src}_"):
+                    return op
+        return None
 
     def on_undo_record_received(self, data: Dict[str, Any]) -> None:
-        """Receives UndoToken from background worker."""
-        self.history.append(data)
-        if len(self.history) > 50:
-            self.history.pop(0)
+        """Receives UndoToken from background worker and correlates with pending op."""
+        orig_p = data.get('original') or ''
+        curr_p = data.get('current') or data.get('new') or ''
+        can_orig = _canonical_path(orig_p)
+        can_curr = _canonical_path(curr_p)
+
+        target_op = self._match_pending_op(can_orig) or self._match_pending_op(can_curr)
+
+        if target_op:
+            if target_op.undo_record_received:
+                return  # Duplicate signal ignored
+            target_op.undo_record_received = True
+            target_op.undo_token = data
+            if target_op.action in ('move', 'trash'):
+                target_op.dest_path = can_curr
+            if target_op.finished_received and target_op.state == "pending":
+                target_op.state = "finished"
+                if not any(t.get('token_id') == data.get('token_id') for t in self.history if 'token_id' in t):
+                    self.history.append(data)
+                    if len(self.history) > 50:
+                        self.history.pop(0)
+        else:
+            # Uncorrelated token
+            if not any(t.get('token_id') == data.get('token_id') for t in self.history if 'token_id' in t):
+                self.history.append(data)
+                if len(self.history) > 50:
+                    self.history.pop(0)
+
+    def on_worker_finished(self, finished_path: str) -> None:
+        """Handles worker task completion with transactional queue updates."""
+        can_finished = _canonical_path(finished_path)
+
+        target_op = self._match_pending_op(can_finished)
+
+        if target_op:
+            if target_op.finished_received:
+                return  # Duplicate finished signal ignored
+            target_op.finished_received = True
+            if target_op.action in ('move', 'trash'):
+                target_op.dest_path = can_finished
+                trash_folder = self.settings.get('directories', 'trash')
+                is_system_trash = (target_op.action == 'trash' and (not trash_folder or not os.path.isdir(trash_folder)))
+
+                if target_op.undo_record_received or is_system_trash:
+                    target_op.state = "finished"
+                    if target_op.undo_token and not any(t.get('token_id') == target_op.undo_token.get('token_id') for t in self.history if 'token_id' in t):
+                        self.history.append(target_op.undo_token)
+                        if len(self.history) > 50:
+                            self.history.pop(0)
+                # Remove source image from visible queue exactly once
+                self.remove_image_from_queue(target_op.src_path)
+
+            elif target_op.action in ('undo_move', 'undo_trash'):
+                target_op.state = "finished"
+                # Reinsert restored image at original recorded index without duplicates
+                restored_path = target_op.raw_original_path or finished_path
+                self.reinsert_image_at_index(restored_path, target_op.original_index)
+
+            elif target_op.action == 'undo_copy':
+                target_op.state = "finished"
+
+    def on_worker_error(self, filepath: str, error: str) -> None:
+        """Displays error messages, restores state on operation failures."""
+        msg = f"Error processing {os.path.basename(filepath)}: {error}"
+        self.statusBar().showMessage(msg, 5000)
+        self.announce_accessibility_event(self.central_widget, msg)
+
+        target_op = self._match_pending_op(filepath)
+
+        if target_op:
+            target_op.state = "error"
+
+            if target_op.action in ('move', 'trash'):
+                # Ensure the image is present in self.images and clear pending state
+                self.reinsert_image_at_index(target_op.raw_src_path, target_op.original_index)
+                self.show_image()
+
+            elif target_op.action in ('undo_move', 'undo_trash', 'undo_copy'):
+                # Restore failed undo token back to history stack
+                if target_op.undo_token:
+                    # Restore token at original history position (pop returned token to top if not present)
+                    if not any(t.get('token_id') == target_op.undo_token.get('token_id') for t in self.history if 'token_id' in t):
+                        self.history.append(target_op.undo_token)
+
+    def remove_image_from_queue(self, canonical_path: str) -> None:
+        """Removes an image matching canonical_path from self.images exactly once."""
+        found_idx = -1
+        for idx, img in enumerate(self.images):
+            if _canonical_path(img) == canonical_path:
+                found_idx = idx
+                break
+
+        if found_idx != -1:
+            curr_img = self.images[self.current_index] if 0 <= self.current_index < len(self.images) else None
+            self.images.pop(found_idx)
+            if curr_img:
+                can_curr = _canonical_path(curr_img)
+                new_idx = -1
+                for idx, img in enumerate(self.images):
+                    if _canonical_path(img) == can_curr:
+                        new_idx = idx
+                        break
+                if new_idx != -1:
+                    self.current_index = new_idx
+                else:
+                    self.current_index = min(found_idx, len(self.images) - 1)
+            else:
+                self.current_index = min(self.current_index, len(self.images) - 1)
+            self.show_image()
+
+    def reinsert_image_at_index(self, filepath: str, original_index: int) -> None:
+        """Reinserts filepath at original_index (clamped) without introducing duplicate entries."""
+        can_p = _canonical_path(filepath)
+        for img in self.images:
+            if _canonical_path(img) == can_p:
+                return  # Duplicate detected, do not reinsert
+
+        clamped_idx = max(0, min(original_index, len(self.images)))
+        self.images.insert(clamped_idx, filepath)
+
+        if self.current_index >= clamped_idx:
+            self.current_index += 1
+        self.show_image()
 
     def undo_last_action(self) -> None:
         """Reverts last move, copy, or trash operation using UndoToken."""
@@ -703,8 +982,32 @@ class MainViewer(QMainWindow):
         current_path = last_action.get('current') or last_action.get('new')
         original_path = last_action.get('original')
 
+        can_orig = _canonical_path(original_path) if original_path else ""
+        orig_idx = 0
+        # Determine original index from pending ops if recorded previously
+        for op in self.pending_ops.values():
+            if op.src_path == can_orig:
+                orig_idx = op.original_index
+                break
+
+        op_id = str(uuid.uuid4())
+
         if action_type in ('move', 'trash'):
             if current_path and original_path:
+                pending_op = PendingOp(
+                    op_id=op_id,
+                    action=f"undo_{action_type}",
+                    src_path=_canonical_path(current_path),
+                    raw_src_path=current_path,
+                    original_index=orig_idx,
+                    load_generation=self.load_generation,
+                    dest_folder=_canonical_path(original_path),
+                    original_path=can_orig,
+                    raw_original_path=original_path,
+                    state="pending",
+                    undo_token=last_action
+                )
+                self.pending_ops[op_id] = pending_op
                 self.worker.add_task('undo_move', current_path, original_path)
                 msg = f"Restoring {os.path.basename(original_path)} to original location..."
                 self.statusBar().showMessage(msg, 3000)
@@ -712,6 +1015,17 @@ class MainViewer(QMainWindow):
 
         elif action_type == 'copy':
             if current_path:
+                pending_op = PendingOp(
+                    op_id=op_id,
+                    action="undo_copy",
+                    src_path=_canonical_path(current_path),
+                    raw_src_path=current_path,
+                    original_index=orig_idx,
+                    load_generation=self.load_generation,
+                    state="pending",
+                    undo_token=last_action
+                )
+                self.pending_ops[op_id] = pending_op
                 self.worker.add_task('undo_copy', current_path)
                 msg = f"Undoing copy of {os.path.basename(current_path)}..."
                 self.statusBar().showMessage(msg, 3000)
@@ -735,12 +1049,6 @@ class MainViewer(QMainWindow):
     def on_worker_progress(self, msg: str) -> None:
         """Displays progress messages in status bar."""
         self.statusBar().showMessage(msg, 3000)
-
-    def on_worker_error(self, filepath: str, error: str) -> None:
-        """Displays error messages in status bar and announces via screen reader."""
-        msg = f"Error processing {os.path.basename(filepath)}: {error}"
-        self.statusBar().showMessage(msg, 5000)
-        self.announce_accessibility_event(self.central_widget, msg)
 
     def closeEvent(self, event: QEvent) -> None:
         """Ensures background threads are safely stopped upon window close."""
