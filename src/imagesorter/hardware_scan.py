@@ -1,10 +1,12 @@
-import psutil
+from typing import Any
+
 import onnxruntime as ort
-from typing import Dict, Any, List
+import psutil
+
 from .logger import logger
 
 # Priority order for AI Execution Providers across platforms (Linux, Windows, macOS)
-PROVIDER_PRIORITY: List[str] = [
+PROVIDER_PRIORITY: list[str] = [
     "TensorrtExecutionProvider",
     "CUDAExecutionProvider",
     "ROCMExecutionProvider",
@@ -16,7 +18,7 @@ PROVIDER_PRIORITY: List[str] = [
 ]
 
 
-def get_prioritized_providers() -> List[str]:
+def get_prioritized_providers() -> list[str]:
     """
     Scans available ONNX Runtime execution providers and ranks them
     according to hardware performance priority.
@@ -42,7 +44,7 @@ def get_prioritized_providers() -> List[str]:
     return prioritized
 
 
-def scan_hardware() -> Dict[str, Any]:
+def scan_hardware() -> dict[str, Any]:
     """
     Scans hardware and returns detailed system metrics along with optimization suggestions.
 
@@ -66,7 +68,7 @@ def scan_hardware() -> Dict[str, Any]:
     # Thread calculation based on physical vs logical cores
     recommended_threads = max(1, min(physical_cores, 8))
 
-    info: Dict[str, Any] = {
+    info: dict[str, Any] = {
         "physical_cores": physical_cores,
         "logical_cores": logical_cores,
         "memory_total_gb": ram_gb,

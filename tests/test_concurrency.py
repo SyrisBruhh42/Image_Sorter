@@ -1,12 +1,8 @@
-import os
-import shutil
 import errno
-import pytest
 from unittest.mock import patch
-from PyQt6.QtCore import QCoreApplication
 
-from imagesorter.settings_manager import SettingsManager
 from imagesorter.queue_worker import QueueWorker
+from imagesorter.settings_manager import SettingsManager
 
 
 def test_queue_worker_concurrent_moves_and_undo(qtbot, tmp_path):
@@ -90,9 +86,9 @@ def test_queue_worker_enospc_disk_full(qtbot, tmp_path):
     errors = []
     worker.signals.error.connect(lambda f, err: errors.append((f, err)))
 
-    # Simulate ENOSPC disk full error during shutil.move
+    # Simulate ENOSPC disk full error during streaming write in _atomic_copy_stream
     enospc_error = OSError(errno.ENOSPC, "No space left on device")
-    with patch("shutil.move", side_effect=enospc_error):
+    with patch("shutil.copyfileobj", side_effect=enospc_error):
         worker.add_task("move", str(test_file), str(dst_dir))
         qtbot.waitUntil(lambda: len(errors) == 1, timeout=5000)
         worker.stop()

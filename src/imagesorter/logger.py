@@ -1,14 +1,16 @@
+from __future__ import annotations
+
 import logging
-import sys
 import os
+import sys
 from logging.handlers import RotatingFileHandler
-from typing import Optional
+
 from .paths import get_logs_dir
 
 
 def setup_logger(
     name: str = "ImageSorter",
-    log_file: Optional[str] = None,
+    log_file: str | None = None,
     level: int = logging.INFO
 ) -> logging.Logger:
     """
@@ -40,12 +42,14 @@ def setup_logger(
         logger.addHandler(ch)
 
         # File Handler using RotatingFileHandler (10MB max, 5 backups)
-        if log_file is None:
-            log_path = get_logs_dir() / "imagesorter.log"
-        else:
-            log_path = get_logs_dir() / os.path.basename(log_file)
-
         try:
+            if log_file is None:
+                log_dir = get_logs_dir()
+                log_path = log_dir / "imagesorter.log"
+            else:
+                log_dir = get_logs_dir()
+                log_path = log_dir / os.path.basename(log_file)
+
             rfh = RotatingFileHandler(
                 str(log_path),
                 maxBytes=10 * 1024 * 1024,  # 10 MB
@@ -55,8 +59,8 @@ def setup_logger(
             rfh.setLevel(level)
             rfh.setFormatter(formatter)
             logger.addHandler(rfh)
-        except OSError as e:
-            logger.warning(f"Failed to create RotatingFileHandler at {log_path}: {e}")
+        except Exception as e:
+            logger.warning(f"Failed to initialize file logger: {e}. Falling back to console-only logging.")
 
     return logger
 

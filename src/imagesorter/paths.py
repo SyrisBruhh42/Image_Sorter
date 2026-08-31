@@ -1,7 +1,10 @@
+from __future__ import annotations
+
 import os
 import sys
+import tempfile
+import warnings
 from pathlib import Path
-from typing import Optional
 
 
 def get_app_dir() -> Path:
@@ -48,7 +51,7 @@ def is_portable_mode() -> bool:
     return (get_app_dir() / "portable.flag").exists()
 
 
-def _get_valid_env_path(var_name: str) -> Optional[Path]:
+def _get_valid_env_path(var_name: str) -> Path | None:
     """
     Retrieves an environment variable value only if set, non-empty, and an absolute path.
 
@@ -62,6 +65,40 @@ def _get_valid_env_path(var_name: str) -> Optional[Path]:
     if val and os.path.isabs(val):
         return Path(val)
     return None
+
+
+def _ensure_dir_or_fallback(target_dir: Path, category: str) -> Path:
+    """
+    Ensures that target_dir exists. If an OSError occurs, falls back to
+    <tempdir>/ImageSorter/<category>. Emits a warning if preferred directory fails.
+
+    Args:
+        target_dir (Path): The preferred directory path.
+        category (str): Category name ("config", "data", "cache", "logs").
+
+    Returns:
+        Path: Created directory path or fallback path.
+    """
+    try:
+        target_dir.mkdir(parents=True, exist_ok=True)
+        return target_dir
+    except OSError as e:
+        warnings.warn(
+            f"Failed to create preferred directory {target_dir}: {e}. "
+            f"Falling back to temporary directory for category '{category}'.",
+            RuntimeWarning,
+            stacklevel=2,
+        )
+        fallback_dir = Path(tempfile.gettempdir()) / "ImageSorter" / category
+        try:
+            fallback_dir.mkdir(parents=True, exist_ok=True)
+        except OSError as fallback_err:
+            warnings.warn(
+                f"Failed to create fallback directory {fallback_dir}: {fallback_err}.",
+                RuntimeWarning,
+                stacklevel=2,
+            )
+        return fallback_dir
 
 
 def get_config_dir() -> Path:
@@ -90,8 +127,7 @@ def get_config_dir() -> Path:
         else:
             config_dir = Path.home() / ".config" / "ImageSorter"
 
-    config_dir.mkdir(parents=True, exist_ok=True)
-    return config_dir
+    return _ensure_dir_or_fallback(config_dir, "config")
 
 
 def get_data_dir() -> Path:
@@ -120,8 +156,7 @@ def get_data_dir() -> Path:
         else:
             data_dir = Path.home() / ".local" / "share" / "ImageSorter"
 
-    data_dir.mkdir(parents=True, exist_ok=True)
-    return data_dir
+    return _ensure_dir_or_fallback(data_dir, "data")
 
 
 def get_cache_dir() -> Path:
@@ -150,8 +185,7 @@ def get_cache_dir() -> Path:
         else:
             cache_dir = Path.home() / ".cache" / "ImageSorter"
 
-    cache_dir.mkdir(parents=True, exist_ok=True)
-    return cache_dir
+    return _ensure_dir_or_fallback(cache_dir, "cache")
 
 
 def get_logs_dir() -> Path:
@@ -180,8 +214,7 @@ def get_logs_dir() -> Path:
         else:
             logs_dir = Path.home() / ".local" / "state" / "ImageSorter" / "logs"
 
-    logs_dir.mkdir(parents=True, exist_ok=True)
-    return logs_dir
+    return _ensure_dir_or_fallback(logs_dir, "logs")
 
 
 def get_settings_path() -> Path:

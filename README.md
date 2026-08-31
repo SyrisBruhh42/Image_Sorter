@@ -82,8 +82,8 @@ Launch the application using either the CLI command or module execution:
 # Direct CLI entry point
 imagesorter
 
-# Python module invocation
-python3 -m imagesorter.main
+# Python module invocation (run headless offscreen or standard)
+QT_QPA_PLATFORM=offscreen python3 -m imagesorter.main --help
 ```
 
 ---
@@ -111,7 +111,7 @@ Image Sorter features a comprehensive, keyboard-driven UI designed for high-spee
 
 1. Open the **Settings Window** (`S`).
 2. Enable **AI Auto-Tagging Engine**.
-3. Select or download the desired ONNX tagging model (e.g., MobileNetV2 tagger). Model weights are downloaded directly to your OS application data directory (`~/.local/share/ImageSorter/models` on Linux).
+3. Select or download the desired ONNX tagging model (e.g., MobileNetV2 tagger). Model weights are optional; when downloaded, artifacts are validated via SHA-256 checksums before target placement. Model weights are saved directly to your OS application data directory (`~/.local/share/ImageSorter/models` on Linux).
 4. Configure tag confidence thresholds (`0.0 - 1.0`).
 5. Hardware execution acceleration is dynamically probed:
    * **NVIDIA GPU**: TensorRT / CUDA
@@ -132,6 +132,12 @@ The project includes an automated `build.py` script powered by PyInstaller and F
 python3 build.py
 ```
 Outputs are stored in `dist/ImageSorter/`.
+
+### 2. Testing and Coverage Verification
+To run unit tests headlessly with coverage report:
+```bash
+QT_QPA_PLATFORM=offscreen pytest --cov=imagesorter --cov-report=term-missing tests/
+```
 
 ### 2. Linux AppImage Generation
 After running `python3 build.py` on Linux, execute the generated setup script:
