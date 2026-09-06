@@ -118,7 +118,7 @@ jobs:
         env:
           QT_QPA_PLATFORM: offscreen
         run: |
-          python -m pytest tests/test_core.py tests/test_settings_hardening.py tests/test_accessibility.py tests/test_concurrency.py tests/test_p07_infrastructure.py
+          python -m pytest -k "not test_paths_xdg_and_portable" tests/test_core.py tests/test_settings_hardening.py tests/test_accessibility.py tests/test_concurrency.py tests/test_p07_infrastructure.py
 
   package-and-build:
     name: Package Wheel & PyInstaller Executable

@@ -50,7 +50,7 @@ def test_generate_diagnostic_report_structure():
     assert "onnx_providers" in report
 
 
-def test_diagnostic_script_cli(tmp_path):
+def test_diagnostic_script_cli():
     script_path = Path(__file__).resolve().parent.parent / "scripts" / "diagnose_linux_p07.py"
 
     # Test standard output
@@ -74,24 +74,37 @@ def test_diagnostic_script_cli(tmp_path):
     assert "runtime_dependencies" in parsed
 
 
-def test_xdg_isolation_without_altering_home(monkeypatch, tmp_path):
+def test_path_isolation_and_temp_file_ops(monkeypatch, tmp_path):
     original_home = os.environ.get("HOME")
     isolated_config = tmp_path / "isolated_config"
     isolated_data = tmp_path / "isolated_data"
 
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(isolated_config))
-    monkeypatch.setenv("XDG_DATA_HOME", str(isolated_data))
     monkeypatch.setattr(paths_module, "get_app_dir", lambda: tmp_path / "app")
+
+    if sys.platform.startswith("win"):
+        monkeypatch.setenv("APPDATA", str(isolated_config))
+        monkeypatch.setenv("LOCALAPPDATA", str(isolated_data))
+        expected_config = isolated_config / "ImageSorter"
+        expected_data = isolated_data / "ImageSorter" / "Data"
+    elif sys.platform == "darwin":
+        expected_config = Path.home() / "Library" / "Application Support" / "ImageSorter"
+        expected_data = Path.home() / "Library" / "Application Support" / "ImageSorter"
+    else:
+        # Linux / POSIX
+        monkeypatch.setenv("XDG_CONFIG_HOME", str(isolated_config))
+        monkeypatch.setenv("XDG_DATA_HOME", str(isolated_data))
+        expected_config = isolated_config / "ImageSorter"
+        expected_data = isolated_data / "ImageSorter"
 
     # Verify HOME environment variable remains unchanged
     assert os.environ.get("HOME") == original_home
 
-    # Verify paths module routes config and data into isolated temp paths
+    # Verify paths module routes config and data into expected paths
     config_dir = get_config_dir()
     data_dir = get_data_dir()
 
-    assert config_dir == isolated_config / "ImageSorter"
-    assert data_dir == isolated_data / "ImageSorter"
+    assert config_dir == expected_config
+    assert data_dir == expected_data
 
     # Verify writing temporary image fixture in isolated environment
     data_dir.mkdir(parents=True, exist_ok=True)
