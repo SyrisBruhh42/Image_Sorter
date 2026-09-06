@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import json
 import math
 import os
@@ -11,6 +12,13 @@ from typing import Any
 
 from .logger import logger
 from .paths import get_settings_path
+
+RESERVED_HOTKEYS: set[str] = set()
+
+
+class SettingsPersistenceError(Exception):
+    """Raised when settings fail to persist atomically to disk."""
+
 
 DEFAULT_SETTINGS: dict[str, Any] = {
     "directories": {
@@ -161,6 +169,15 @@ class SettingsManager:
             if key not in DEFAULT_SETTINGS:
                 result[key] = val
 
+        # Helper to check if a path points to an existing regular file (not directory)
+        def _is_file_path(p: str) -> bool:
+            if not p:
+                return False
+            try:
+                return os.path.isfile(p)
+            except OSError:
+                return False
+
         # 1. Directories
         dirs_user = user_dict.get("directories")
         if isinstance(dirs_user, dict):
@@ -169,7 +186,7 @@ class SettingsManager:
                     result["directories"][k] = v
             # source
             src_val = dirs_user.get("source")
-            if _is_valid_path_str(src_val):
+            if _is_valid_path_str(src_val) and not _is_file_path(src_val):
                 norm_src = os.path.normpath(src_val) if src_val else ""
                 result["directories"]["source"] = norm_src
                 if norm_src != src_val:
@@ -180,7 +197,7 @@ class SettingsManager:
                 result["directories"]["source"] = ""
             # trash
             tr_val = dirs_user.get("trash")
-            if _is_valid_path_str(tr_val):
+            if _is_valid_path_str(tr_val) and not _is_file_path(tr_val):
                 norm_tr = os.path.normpath(tr_val) if tr_val else ""
                 result["directories"]["trash"] = norm_tr
                 if norm_tr != tr_val:
@@ -337,8 +354,9 @@ class SettingsManager:
                 if not isinstance(raw_k, str):
                     was_modified = True
                     continue
-                k_clean = raw_k.strip()
-                if not k_clean or k_clean in norm_hotkeys:
+                k_clean = raw_k.strip().upper()
+                # Enforce single-character custom key, reject multi-char, empty, duplicate, or reserved keys
+                if len(k_clean) != 1 or k_clean in norm_hotkeys or k_clean in RESERVED_HOTKEYS:
                     was_modified = True
                     continue
 
@@ -349,12 +367,12 @@ class SettingsManager:
                 item_dict = dict(hk_item)
                 # action
                 act = item_dict.get("action")
-                if not isinstance(act, str):
+                if not isinstance(act, str) or act not in ("move", "copy"):
                     item_dict["action"] = "move"
                     was_modified = True
                 # folder
                 fld = item_dict.get("folder")
-                if _is_valid_path_str(fld):
+                if _is_valid_path_str(fld) and not _is_file_path(fld):
                     norm_fld = os.path.normpath(fld) if fld else ""
                     item_dict["folder"] = norm_fld
                     if norm_fld != fld:
@@ -378,55 +396,102 @@ class SettingsManager:
 
         return result, was_modified
 
-    def save(self) -> None:
+    def snapshot(self) -> dict[str, Any]:
         """
-        Saves current settings using an atomic write process (tempfile + flush + fsync + os.replace).
+        Returns a thread-safe deep copy of the complete current settings state.
         """
         with self._lock:
-            temp_path: str | None = None
-            try:
-                dir_name = os.path.dirname(self.filepath) or "."
-                os.makedirs(dir_name, exist_ok=True)
+            return copy.deepcopy(self.settings)
 
-                fd, temp_path = tempfile.mkstemp(dir=dir_name, prefix="settings_", suffix=".tmp")
-                with os.fdopen(fd, 'w', encoding='utf-8') as f:
-                    json.dump(self.settings, f, indent=4)
-                    f.flush()
-                    os.fsync(f.fileno())
+    def _persist_dict(self, data: dict[str, Any]) -> None:
+        """
+        Writes data dictionary to disk atomically.
+        Raises SettingsPersistenceError if file write fails.
+        """
+        temp_path: str | None = None
+        try:
+            dir_name = os.path.dirname(self.filepath) or "."
+            os.makedirs(dir_name, exist_ok=True)
 
-                os.replace(temp_path, self.filepath)
-                logger.debug(f"Settings saved atomically to {self.filepath}")
+            fd, temp_path = tempfile.mkstemp(dir=dir_name, prefix="settings_", suffix=".tmp")
+            with os.fdopen(fd, 'w', encoding='utf-8') as f:
+                json.dump(data, f, indent=4)
+                f.flush()
+                os.fsync(f.fileno())
 
-            except OSError as e:
-                logger.error(f"File system error saving settings to {self.filepath}: {e}")
-                if temp_path and os.path.exists(temp_path):
-                    try:
-                        os.remove(temp_path)
-                    except OSError:
-                        pass
-            except Exception as e:
-                logger.error(f"Unexpected error saving settings: {e}")
-                if temp_path and os.path.exists(temp_path):
-                    try:
-                        os.remove(temp_path)
-                    except OSError:
-                        pass
+            os.replace(temp_path, self.filepath)
+            logger.debug(f"Settings persisted atomically to {self.filepath}")
+        except OSError as e:
+            logger.error(f"File system error saving settings to {self.filepath}: {e}")
+            if temp_path and os.path.exists(temp_path):
+                try:
+                    os.remove(temp_path)
+                except OSError:
+                    pass
+            raise SettingsPersistenceError(f"Failed to persist settings to {self.filepath}: {e}") from e
+        except Exception as e:
+            logger.error(f"Unexpected error saving settings: {e}")
+            if temp_path and os.path.exists(temp_path):
+                try:
+                    os.remove(temp_path)
+                except OSError:
+                    pass
+            raise SettingsPersistenceError(f"Unexpected error persisting settings: {e}") from e
+
+    def save(self) -> None:
+        """
+        Saves current settings using an atomic write process.
+        """
+        with self._lock:
+            self._persist_dict(self.settings)
+
+    def apply_changes(self, changes: dict[str, dict[str, Any]]) -> None:
+        """
+        Validates and commits a complete set of section changes atomically.
+        Raises SettingsPersistenceError on persistence failure.
+        Publishes the new in-memory state ONLY AFTER persistence succeeds.
+        """
+        with self._lock:
+            if not isinstance(changes, dict):
+                raise ValueError("Changes must be provided as a dictionary of section changes.")
+
+            candidate = copy.deepcopy(self.settings)
+            for section, sec_data in changes.items():
+                if isinstance(sec_data, dict):
+                    candidate[section] = sec_data
+
+            repaired_candidate, _ = self._validate_and_repair(candidate)
+
+            # Persist first; only update in-memory state upon successful persistence
+            self._persist_dict(repaired_candidate)
+            self.settings = repaired_candidate
 
     def get(self, section: str, key: str | None = None) -> Any:
-        """Retrieves a setting value safely under lock."""
+        """
+        Retrieves a setting value safely under lock.
+        Returns a deep copy if the retrieved value is a mutable container.
+        """
         with self._lock:
             if key:
                 sec = self.settings.get(section, {})
-                return sec.get(key) if isinstance(sec, dict) else None
-            return self.settings.get(section)
+                val = sec.get(key) if isinstance(sec, dict) else None
+            else:
+                val = self.settings.get(section)
+
+            if isinstance(val, (dict, list)):
+                return copy.deepcopy(val)
+            return val
 
     def set(self, section: str, key: str, value: Any) -> None:
         """Sets a setting value under lock and saves to disk."""
         with self._lock:
-            if section not in self.settings or not isinstance(self.settings[section], dict):
-                self.settings[section] = {}
-            self.settings[section][key] = value
-            self.save()
+            candidate = copy.deepcopy(self.settings)
+            if section not in candidate or not isinstance(candidate[section], dict):
+                candidate[section] = {}
+            candidate[section][key] = value
+            repaired, _ = self._validate_and_repair(candidate)
+            self._persist_dict(repaired)
+            self.settings = repaired
 
     def update_section(self, section: str, data: dict[str, Any]) -> None:
         """Replaces an entire section of settings and saves to disk."""
@@ -434,5 +499,8 @@ class SettingsManager:
             if not isinstance(data, dict):
                 logger.warning(f"Attempted to update section {section} with non-dictionary data.")
                 return
-            self.settings[section] = data
-            self.save()
+            candidate = copy.deepcopy(self.settings)
+            candidate[section] = data
+            repaired, _ = self._validate_and_repair(candidate)
+            self._persist_dict(repaired)
+            self.settings = repaired

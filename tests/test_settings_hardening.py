@@ -121,7 +121,7 @@ def test_hotkeys_dictionary_validation(tmp_path):
                 "auto_advance": False
             },
             "B": "invalid_item_type",
-            "C": {
+            "X": {
                 "action": 123,                 # Non-string action -> fallback "move"
                 "folder": "path\x00with_ctrl",  # Control char -> empty string ""
                 "auto_advance": "not_bool"     # Non-bool auto_advance -> True
@@ -142,10 +142,10 @@ def test_hotkeys_dictionary_validation(tmp_path):
     assert "B" not in hotkeys
     assert "" not in hotkeys
 
-    assert "C" in hotkeys
-    assert hotkeys["C"]["action"] == "move"
-    assert hotkeys["C"]["folder"] == ""
-    assert hotkeys["C"]["auto_advance"] is True
+    assert "X" in hotkeys
+    assert hotkeys["X"]["action"] == "move"
+    assert hotkeys["X"]["folder"] == ""
+    assert hotkeys["X"]["auto_advance"] is True
 
 
 def test_directory_validation_and_unreachable_preservation(tmp_path):
@@ -203,8 +203,10 @@ def test_paths_unwritable_directory_fallback(tmp_path, monkeypatch):
         cache_dir = get_cache_dir()
         logs_dir = get_logs_dir()
 
-        # Should fall back to tempdir/ImageSorter/<category>
-        assert "ImageSorter" in str(config_dir)
+        # Should fall back to tempdir/imagesorter-<uid>/<category>
+        uid = os.getuid() if hasattr(os, "getuid") else os.getlogin()
+        expected_part = f"imagesorter-{uid}"
+        assert expected_part in str(config_dir)
         assert "config" in str(config_dir)
         assert "data" in str(data_dir)
         assert "cache" in str(cache_dir)
