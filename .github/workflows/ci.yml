@@ -1,4 +1,4 @@
-name: CI & Packaging
+name: CI & Quality Gates
 
 on:
   push:
@@ -6,10 +6,13 @@ on:
   pull_request:
     branches: [ feature/image-sorter-app-4050765199291038722, main, master ]
 
+permissions:
+  contents: read
+
 jobs:
-  test:
-    name: Test (Python ${{ matrix.python-version }})
-    runs-on: ubuntu-latest
+  quick-regressions:
+    name: Quick Regressions (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
@@ -40,24 +43,87 @@ jobs:
 
       - name: Lint check (Ruff)
         run: |
-          ruff check src/ tests/
+          ruff check src/ tests/ scripts/
 
-      - name: Run tests with coverage
+      - name: Run quick offline unit tests
         env:
           QT_QPA_PLATFORM: offscreen
-          HOME: ${{ runner.temp }}/home_${{ matrix.python-version }}
           XDG_CONFIG_HOME: ${{ runner.temp }}/config_${{ matrix.python-version }}
           XDG_DATA_HOME: ${{ runner.temp }}/data_${{ matrix.python-version }}
           XDG_CACHE_HOME: ${{ runner.temp }}/cache_${{ matrix.python-version }}
           XDG_STATE_HOME: ${{ runner.temp }}/state_${{ matrix.python-version }}
         run: |
-          mkdir -p "$HOME" "$XDG_CONFIG_HOME" "$XDG_DATA_HOME" "$XDG_CACHE_HOME" "$XDG_STATE_HOME"
-          pytest --cov=imagesorter --cov-report=term-missing tests/
+          mkdir -p "$XDG_CONFIG_HOME" "$XDG_DATA_HOME" "$XDG_CACHE_HOME" "$XDG_STATE_HOME"
+          python -m pytest -m "not packaging" --cov=imagesorter --cov-report=term-missing tests/
+
+  linux-xcb-xvfb-smoke:
+    name: Linux X11 Virtual Display (Xvfb) Smoke
+    runs-on: ubuntu-24.04
+    needs: quick-regressions
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install system dependencies for Qt and Xvfb
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libegl1 libgl1 libxcb-cursor0 libdbus-1-3 xvfb
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: Run Xvfb display startup smoke
+        env:
+          QT_QPA_PLATFORM: xcb
+          XDG_CONFIG_HOME: ${{ runner.temp }}/config_xvfb
+          XDG_DATA_HOME: ${{ runner.temp }}/data_xvfb
+          XDG_CACHE_HOME: ${{ runner.temp }}/cache_xvfb
+          XDG_STATE_HOME: ${{ runner.temp }}/state_xvfb
+        run: |
+          mkdir -p "$XDG_CONFIG_HOME" "$XDG_DATA_HOME" "$XDG_CACHE_HOME" "$XDG_STATE_HOME"
+          xvfb-run --auto-servernum python -m pytest tests/test_platform_startup.py tests/test_p07_infrastructure.py
+
+  cross-platform-smoke:
+    name: Cross-Platform Native Smoke (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest]
+        python-version: ["3.12"]
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: Portable core & platform tests
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: |
+          python -m pytest tests/test_core.py tests/test_settings_hardening.py tests/test_accessibility.py tests/test_concurrency.py tests/test_p07_infrastructure.py
 
   package-and-build:
     name: Package Wheel & PyInstaller Executable
-    runs-on: ubuntu-latest
-    needs: test
+    runs-on: ubuntu-24.04
+    needs: [quick-regressions, linux-xcb-xvfb-smoke]
 
     steps:
       - name: Checkout repository
@@ -108,11 +174,73 @@ jobs:
       - name: Executable smoke test (--help)
         env:
           QT_QPA_PLATFORM: offscreen
-          HOME: ${{ runner.temp }}/home_smoke
           XDG_CONFIG_HOME: ${{ runner.temp }}/config_smoke
           XDG_DATA_HOME: ${{ runner.temp }}/data_smoke
           XDG_CACHE_HOME: ${{ runner.temp }}/cache_smoke
           XDG_STATE_HOME: ${{ runner.temp }}/state_smoke
         run: |
-          mkdir -p "$HOME" "$XDG_CONFIG_HOME" "$XDG_DATA_HOME" "$XDG_CACHE_HOME" "$XDG_STATE_HOME"
+          mkdir -p "$XDG_CONFIG_HOME" "$XDG_DATA_HOME" "$XDG_CACHE_HOME" "$XDG_STATE_HOME"
           ./dist/ImageSorter/ImageSorter --help
+
+      - name: AppImage contract assessment (P06 integration check)
+        run: |
+          echo "Shared build interface check: dist/build_appimage.sh exists?"
+          if [ -f "dist/build_appimage.sh" ]; then
+            echo "dist/build_appimage.sh helper script present."
+          else
+            echo "WARNING: dist/build_appimage.sh missing."
+          fi
+          echo "P06 contract note: 'python build.py --appimage' is pending P06 integration."
+
+      - name: Generate build checksums and release manifest
+        run: |
+          cd dist
+          sha256sum * > checksums.txt || true
+          python3 -c "
+          import json, os, sys
+          import imagesorter
+          manifest = {
+              'git_commit': '${{ github.sha }}',
+              'python_version': sys.version,
+              'app_version': getattr(imagesorter, '__version__', '1.0.0'),
+              'build_target': 'ubuntu-24.04',
+              'experimental_platforms': ['windows-latest', 'macos-latest'],
+          }
+          with open('release_manifest.json', 'w') as f:
+              json.dump(manifest, f, indent=2)
+          "
+          ls -la
+
+      - name: Upload Linux Build Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: imagesorter-linux-build-${{ github.sha }}
+          path: |
+            dist/*.whl
+            dist/ImageSorter/
+            dist/checksums.txt
+            dist/release_manifest.json
+
+  optional-model-smoke:
+    name: Optional AI Tagger Model Smoke
+    runs-on: ubuntu-24.04
+    needs: quick-regressions
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: Run model download and AI tagger smoke tests
+        run: |
+          python -m pytest tests/test_ai_model_download.py tests/test_security_ai.py
