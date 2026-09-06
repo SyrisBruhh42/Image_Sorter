@@ -34,7 +34,7 @@ def test_fresh_download_success_path(qtbot, tmp_path):
     results = []
     downloader.finished.connect(lambda success, msg: results.append((success, msg)))
 
-    def mock_download(url, dest_temp_path, progress_callback=None, timeout=15.0):
+    def mock_download(url, dest_temp_path, progress_callback=None, timeout=15.0, cancellation_check=None):
         with open(dest_temp_path, "wb") as f:
             if "model" in url:
                 f.write(VALID_MODEL_CONTENT)
@@ -60,7 +60,7 @@ def test_download_http_failure_path(qtbot, tmp_path):
     results = []
     downloader.finished.connect(lambda success, msg: results.append((success, msg)))
 
-    def mock_download_fail(url, dest_temp_path, progress_callback=None, timeout=15.0):
+    def mock_download_fail(url, dest_temp_path, progress_callback=None, timeout=15.0, cancellation_check=None):
         raise OSError("Connection refused / 404 Not Found")
 
     with patch("imagesorter.ai_tagger._download_file_secure", side_effect=mock_download_fail):
@@ -81,7 +81,7 @@ def test_model_checksum_mismatch_path(qtbot, tmp_path):
     results = []
     downloader.finished.connect(lambda success, msg: results.append((success, msg)))
 
-    def mock_download_corrupt_model(url, dest_temp_path, progress_callback=None, timeout=15.0):
+    def mock_download_corrupt_model(url, dest_temp_path, progress_callback=None, timeout=15.0, cancellation_check=None):
         with open(dest_temp_path, "wb") as f:
             if "model" in url:
                 f.write(b"CORRUPTED_MODEL_BYTES")
@@ -107,7 +107,7 @@ def test_labels_checksum_mismatch_path(qtbot, tmp_path):
     results = []
     downloader.finished.connect(lambda success, msg: results.append((success, msg)))
 
-    def mock_download_corrupt_labels(url, dest_temp_path, progress_callback=None, timeout=15.0):
+    def mock_download_corrupt_labels(url, dest_temp_path, progress_callback=None, timeout=15.0, cancellation_check=None):
         with open(dest_temp_path, "wb") as f:
             f.write(b"CORRUPTED_LABELS_CONTENT")
 
@@ -139,7 +139,7 @@ def test_corrupt_existing_model_path_revalidation_and_cleanup(qtbot, tmp_path):
     results = []
     downloader.finished.connect(lambda success, msg: results.append((success, msg)))
 
-    def mock_download_success(url, dest_temp_path, progress_callback=None, timeout=15.0):
+    def mock_download_success(url, dest_temp_path, progress_callback=None, timeout=15.0, cancellation_check=None):
         with open(dest_temp_path, "wb") as f:
             f.write(VALID_MODEL_CONTENT)
 
@@ -166,7 +166,7 @@ def test_missing_labels_path(qtbot, tmp_path):
     results = []
     downloader.finished.connect(lambda success, msg: results.append((success, msg)))
 
-    def mock_download_labels_only(url, dest_temp_path, progress_callback=None, timeout=15.0):
+    def mock_download_labels_only(url, dest_temp_path, progress_callback=None, timeout=15.0, cancellation_check=None):
         with open(dest_temp_path, "wb") as f:
             f.write(VALID_LABELS_CONTENT)
 
@@ -243,7 +243,7 @@ def test_background_class_index_zero_mapping(tmp_path):
         tagger.session.get_inputs.return_value = [MagicMock(name="input_tensor")]
 
         with patch.object(tagger, "preprocess", return_value=np.zeros((1, 3, 224, 224), dtype=np.float32)):
-            tags = tagger.get_tags("dummy_path.jpg", top_k=2)
+            tags = tagger.get_tags("dummy_path.jpg", top_k=2, threshold=0.1)
 
         # Background class (index 0) must be ignored; top tag must be label_1
         assert tags[0] == "label_1"
