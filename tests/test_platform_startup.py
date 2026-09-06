@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import os
 import sys
 from unittest.mock import patch
@@ -69,7 +71,8 @@ def test_non_linux_platform_no_op(monkeypatch):
 
 def test_qt_init_failure_exit_and_stderr(capsys, monkeypatch):
     monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
-    with patch("PyQt6.QtWidgets.QApplication", side_effect=RuntimeError("Cannot connect to server")):
+    with patch("PyQt6.QtWidgets.QApplication.instance", return_value=None), \
+         patch("PyQt6.QtWidgets.QApplication", side_effect=RuntimeError("Cannot connect to server")):
         exit_code = main(["imagesorter"])
         assert exit_code == 1
 
@@ -77,3 +80,29 @@ def test_qt_init_failure_exit_and_stderr(capsys, monkeypatch):
     assert "Error: Qt application initialization failed" in captured.err
     assert "QT_QPA_PLATFORM=offscreen" in captured.err
     assert "DISPLAY or WAYLAND_DISPLAY" in captured.err
+
+
+def test_desktop_file_name_and_icon_wiring(monkeypatch):
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    captured = {}
+
+    class MockViewer:
+        def __init__(self, settings, initial_paths=None):
+            from PyQt6.QtWidgets import QApplication
+            app = QApplication.instance()
+            if app:
+                captured["desktop_name"] = app.desktopFileName()
+                captured["app_name"] = app.applicationName()
+            captured["initial_paths"] = initial_paths
+
+        def show(self):
+            captured["show_called"] = True
+
+    monkeypatch.setattr("imagesorter.main.MainViewer", MockViewer)
+    monkeypatch.setattr("PyQt6.QtWidgets.QApplication.exec", lambda self: 0)
+
+    exit_code = main(["imagesorter"])
+    assert exit_code == 0
+    assert captured.get("desktop_name") == "imagesorter"
+    assert captured.get("app_name") == "Image Sorter"
+    assert captured.get("show_called") is True

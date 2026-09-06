@@ -1,9 +1,14 @@
+from __future__ import annotations
+
+import hashlib
 import importlib.util
+import os
+import platform
+import shutil
 import subprocess
 import sys
-import os
+import urllib.request
 from pathlib import Path
-
 
 DESKTOP_ENTRY = """[Desktop Entry]
 Version=1.0
@@ -23,10 +28,13 @@ MIME_XML = """<?xml version="1.0" encoding="UTF-8"?>
 <mime-info xmlns="http://www.freedesktop.org/standards/shared-mime-info">
   <mime-type type="application/x-imagesorter-project">
     <comment>Image Sorter Project File</comment>
-    <glob pattern="*.isp"/>
   </mime-type>
 </mime-info>
 """
+
+# Pinned appimagetool x86_64 SHA-256 checksum (AppImageKit Continuous Release)
+APPIMAGETOOL_X86_64_URL = "https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-x86_64.AppImage"
+APPIMAGETOOL_X86_64_SHA256 = "b90f4a8b18967545fda78a445b27680a1642f1ef9488ced28b65398f2be7add2"
 
 
 def check_pyinstaller_installed() -> bool:
@@ -57,23 +65,21 @@ def ensure_icon_assets(root_dir: Path) -> Path:
                 radius=size // 8,
                 fill=(30, 30, 35, 255),
                 outline=(42, 130, 218, 255),
-                width=max(2, size // 32)
+                width=max(2, size // 32),
             )
-            # Inner stylized photo frame symbol
             inner_pad = size // 4
             draw.rectangle(
                 [inner_pad, inner_pad, size - inner_pad, size - inner_pad],
                 outline=(255, 255, 255, 220),
-                width=max(2, size // 32)
+                width=max(2, size // 32),
             )
-            # Mountain/triangle visual element inside frame
             draw.polygon(
                 [
                     (inner_pad + size // 16, size - inner_pad - size // 16),
                     (size // 2, inner_pad + size // 8),
-                    (size - inner_pad - size // 16, size - inner_pad - size // 16)
+                    (size - inner_pad - size // 16, size - inner_pad - size // 16),
                 ],
-                fill=(42, 130, 218, 255)
+                fill=(42, 130, 218, 255),
             )
             return img
 
@@ -82,11 +88,8 @@ def ensure_icon_assets(root_dir: Path) -> Path:
 
         img_256 = img_512.resize((256, 256), Image.Resampling.LANCZOS)
         img_256.save(img_256_path)
-
-        # Main default png icon
         img_256.save(img_default_path)
 
-        # Save multi-resolution ICO file
         ico_sizes = [(16, 16), (32, 32), (48, 48), (64, 64), (128, 128), (256, 256)]
         img_512.save(ico_path, format="ICO", sizes=ico_sizes)
         print(f"Generated icons in {resources_dir}")
@@ -95,7 +98,7 @@ def ensure_icon_assets(root_dir: Path) -> Path:
 
 
 def generate_freedesktop_artifacts(output_dir: Path) -> None:
-    """Generates standard Freedesktop .desktop and MIME integration files."""
+    """Generates standard Freedesktop .desktop and MIME spec files."""
     desktop_path = output_dir / "imagesorter.desktop"
     mime_path = output_dir / "imagesorter-mime.xml"
 
@@ -106,6 +109,55 @@ def generate_freedesktop_artifacts(output_dir: Path) -> None:
     with open(mime_path, "w", encoding="utf-8") as f:
         f.write(MIME_XML)
     print(f"Generated Freedesktop MIME spec: {mime_path}")
+
+
+def prepare_appdir(dist_dir: Path, root_dir: Path) -> Path:
+    """Prepares standard AppDir filesystem hierarchy for AppImage packaging."""
+    app_dir = dist_dir / "ImageSorter.AppDir"
+    if app_dir.exists():
+        shutil.rmtree(app_dir)
+
+    bin_dir = app_dir / "usr" / "bin"
+    apps_dir = app_dir / "usr" / "share" / "applications"
+    icons_dir = app_dir / "usr" / "share" / "icons" / "hicolor" / "256x256" / "apps"
+
+    bin_dir.mkdir(parents=True, exist_ok=True)
+    apps_dir.mkdir(parents=True, exist_ok=True)
+    icons_dir.mkdir(parents=True, exist_ok=True)
+
+    exe_dir = dist_dir / "ImageSorter"
+    if exe_dir.exists():
+        for item in exe_dir.iterdir():
+            target = bin_dir / item.name
+            if item.is_dir():
+                shutil.copytree(item, target)
+            else:
+                shutil.copy2(item, target)
+
+    desktop_src = dist_dir / "imagesorter.desktop"
+    if desktop_src.exists():
+        shutil.copy2(desktop_src, apps_dir / "imagesorter.desktop")
+        shutil.copy2(desktop_src, app_dir / "imagesorter.desktop")
+
+    icon_src = root_dir / "src" / "imagesorter" / "resources" / "imagesorter.png"
+    if icon_src.exists():
+        shutil.copy2(icon_src, app_dir / "imagesorter.png")
+        shutil.copy2(icon_src, app_dir / ".DirIcon")
+        shutil.copy2(icon_src, icons_dir / "imagesorter.png")
+
+    app_run_content = """#!/usr/bin/env bash
+HERE="$(dirname "$(readlink -f "${0}")")"
+export PATH="$HERE/usr/bin:$PATH"
+export LD_LIBRARY_PATH="$HERE/usr/bin:$LD_LIBRARY_PATH"
+export QT_QPA_PLATFORM="${QT_QPA_PLATFORM:-wayland;xcb}"
+exec "$HERE/usr/bin/ImageSorter" "$@"
+"""
+    app_run_path = app_dir / "AppRun"
+    with open(app_run_path, "w", encoding="utf-8") as f:
+        f.write(app_run_content)
+    os.chmod(app_run_path, 0o755)
+
+    return app_dir
 
 
 def generate_appimage_builder_script(output_dir: Path) -> None:
@@ -136,19 +188,24 @@ cat << 'EOF' > "$APP_DIR/AppRun"
 HERE="$(dirname "$(readlink -f "${0}")")"
 export PATH="$HERE/usr/bin:$PATH"
 export LD_LIBRARY_PATH="$HERE/usr/bin:$LD_LIBRARY_PATH"
-export QT_PLUGIN_PATH="$HERE/usr/bin/PyQt6/Qt6/plugins:$HERE/usr/bin/PyQt6/Qt/plugins:$QT_PLUGIN_PATH"
-export QT_QPA_PLATFORM_PLUGIN_PATH="$HERE/usr/bin/PyQt6/Qt6/plugins/platforms:$HERE/usr/bin/PyQt6/Qt/plugins/platforms:$QT_QPA_PLATFORM_PLUGIN_PATH"
 export QT_QPA_PLATFORM="${QT_QPA_PLATFORM:-wayland;xcb}"
 exec "$HERE/usr/bin/ImageSorter" "$@"
 EOF
 
 chmod +x "$APP_DIR/AppRun"
 
-if command -v appimagetool >/dev/null 2>&1; then
-    appimagetool "$APP_DIR" "$SCRIPT_DIR/ImageSorter-x86_64.AppImage"
-    echo "AppImage created successfully: $SCRIPT_DIR/ImageSorter-x86_64.AppImage"
+ARCH="$(uname -m)"
+if [ "$ARCH" = "x86_64" ] || [ "$ARCH" = "amd64" ]; then
+    APPIMAGE_NAME="ImageSorter-x86_64.AppImage"
 else
-    echo "AppDir prepared at $APP_DIR. Install 'appimagetool' to package into .AppImage binary."
+    APPIMAGE_NAME="ImageSorter-${ARCH}.AppImage"
+fi
+
+if command -v appimagetool >/dev/null 2>&1; then
+    appimagetool "$APP_DIR" "$SCRIPT_DIR/$APPIMAGE_NAME"
+    echo "AppImage created successfully: $SCRIPT_DIR/$APPIMAGE_NAME"
+else
+    echo "AppDir prepared at $APP_DIR. Run 'python3 build.py --appimage' to build the binary."
 fi
 """
     with open(script_path, "w", encoding="utf-8") as f:
@@ -157,16 +214,92 @@ fi
     print(f"Generated AppImage helper script: {script_path}")
 
 
-def build_executable() -> None:
+def get_appimagetool_executable(root_dir: Path) -> Path | None:
+    """Locates or downloads a checksum-verified appimagetool binary."""
+    tool_bin = shutil.which("appimagetool")
+    if tool_bin:
+        return Path(tool_bin)
+
+    cache_dir = root_dir / ".cache" / "build_tools"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+
+    arch = platform.machine().lower()
+    if arch not in ("x86_64", "amd64"):
+        print(f"Warning: Automatic appimagetool download only supported on x86_64, got '{arch}'.")
+        return None
+
+    local_tool = cache_dir / "appimagetool-x86_64.AppImage"
+
+    def is_valid_tool(path: Path) -> bool:
+        if not path.exists():
+            return False
+        hasher = hashlib.sha256()
+        with open(path, "rb") as f:
+            while chunk := f.read(65536):
+                hasher.update(chunk)
+        return hasher.hexdigest() == APPIMAGETOOL_X86_64_SHA256
+
+    if is_valid_tool(local_tool):
+        return local_tool
+
+    print(f"Downloading checksum-verified appimagetool from {APPIMAGETOOL_X86_64_URL}...")
+    try:
+        tmp_tool = local_tool.with_suffix(".tmp")
+        urllib.request.urlretrieve(APPIMAGETOOL_X86_64_URL, tmp_tool)
+        os.chmod(tmp_tool, 0o755)
+        if is_valid_tool(tmp_tool):
+            tmp_tool.replace(local_tool)
+            return local_tool
+        else:
+            print("Error: SHA-256 verification failed for downloaded appimagetool!")
+            if tmp_tool.exists():
+                tmp_tool.unlink()
+            return None
+    except Exception as e:
+        print(f"Failed to download appimagetool: {e}")
+        return None
+
+
+def build_appimage(root_dir: Path, dist_dir: Path) -> None:
+    """Builds a standalone Linux AppImage from prepared AppDir."""
+    arch = platform.machine().lower()
+    if arch in ("x86_64", "amd64"):
+        appimage_filename = "ImageSorter-x86_64.AppImage"
+    else:
+        appimage_filename = f"ImageSorter-{arch}.AppImage"
+
+    app_dir = prepare_appdir(dist_dir, root_dir)
+    appimage_output = dist_dir / appimage_filename
+
+    tool_path = get_appimagetool_executable(root_dir)
+    if not tool_path:
+        print(
+            "Error: 'appimagetool' was not found on PATH and could not be fetched.\n"
+            "An AppDir has been prepared at dist/ImageSorter.AppDir."
+        )
+        return
+
+    cmd = [str(tool_path), str(app_dir), str(appimage_output)]
+    env = os.environ.copy()
+    env["ARCH"] = "x86_64" if arch in ("x86_64", "amd64") else arch
+    env["APPIMAGE_EXTRACT_AND_RUN"] = "1"
+
+    print(f"Running appimagetool: {' '.join(cmd)}")
+    try:
+        subprocess.run(cmd, check=True, cwd=dist_dir, env=env)
+        print(f"\nAppImage successfully created at: {appimage_output}")
+    except subprocess.CalledProcessError as e:
+        print(f"\nAppImage build failed with exit code {e.returncode}")
+
+
+def build_executable(build_appimage_flag: bool = False) -> None:
     print("Starting build process for Image Sorter Enterprise...")
 
-    # Root detection: locate repository root relative to build.py file location
     root_dir = Path(__file__).resolve().parent
     if not (root_dir / "src" / "imagesorter" / "main.py").exists():
         print(f"Error: Could not locate src/imagesorter/main.py under {root_dir}.")
         sys.exit(1)
 
-    # Preflight check for PyInstaller
     if not check_pyinstaller_installed():
         print(
             "Error: PyInstaller is not installed in the active Python environment.\n"
@@ -178,14 +311,7 @@ def build_executable() -> None:
     ensure_icon_assets(root_dir)
 
     spec_path = root_dir / "ImageSorter.spec"
-
-    cmd = [
-        sys.executable,
-        "-m",
-        "PyInstaller",
-        "--noconfirm",
-        str(spec_path)
-    ]
+    cmd = [sys.executable, "-m", "PyInstaller", "--noconfirm", str(spec_path)]
 
     print(f"Running PyInstaller: {' '.join(cmd)}")
 
@@ -194,6 +320,13 @@ def build_executable() -> None:
         dist_dir = root_dir / "dist"
         generate_freedesktop_artifacts(dist_dir)
         generate_appimage_builder_script(dist_dir)
+
+        if build_appimage_flag:
+            if not sys.platform.startswith("linux"):
+                print("Warning: --appimage build flag requested on non-Linux platform; skipping AppImage generation.")
+            else:
+                build_appimage(root_dir, dist_dir)
+
         print("\nBuild successful! Outputs located in the 'dist' directory.")
     except subprocess.CalledProcessError as e:
         print(f"\nBuild failed with error code {e.returncode}")
@@ -201,4 +334,5 @@ def build_executable() -> None:
 
 
 if __name__ == "__main__":
-    build_executable()
+    appimage_requested = "--appimage" in sys.argv
+    build_executable(build_appimage_flag=appimage_requested)

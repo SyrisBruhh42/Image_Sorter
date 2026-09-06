@@ -64,6 +64,7 @@ venv.bak/
 
 # AppImage & Models
 ImageSorter.AppDir/
+squashfs-root/
 *.AppImage
 models/*
 !models/.gitkeep
