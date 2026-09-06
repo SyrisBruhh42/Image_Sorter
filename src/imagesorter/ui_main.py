@@ -44,7 +44,7 @@ try:
 except ImportError:
     HAS_QACCESSIBLE = False
 import numpy as np
-from PyQt6.QtCore import QEvent, QObject, Qt
+from PyQt6.QtCore import QEvent, QObject, Qt, pyqtSlot
 
 from .image_loader import ImageLoader
 from .logger import logger
@@ -228,7 +228,7 @@ class ImageViewer(QGraphicsView):
 @dataclass
 class PendingOp:
     op_id: str
-    action: str  # 'move', 'trash', 'undo_move', 'undo_trash', 'undo_copy'
+    action: str  # 'move', 'copy', 'trash', 'undo_move', 'undo_trash', 'undo_copy'
     src_path: str  # canonical path
     raw_src_path: str
     original_index: int
@@ -257,9 +257,10 @@ class MainViewer(QMainWindow):
     Main application window for displaying and sorting images.
     Features WCAG AAA accessibility, focus isolation, theming, and an undo stack.
     """
-    def __init__(self, settings_manager: SettingsManager) -> None:
+    def __init__(self, settings_manager: SettingsManager, initial_paths: list[str] | None = None) -> None:
         super().__init__()
         self.settings = settings_manager
+        self.transient_paths: list[str] | None = None
 
         QApplication.instance().installEventFilter(self)
 
@@ -268,6 +269,8 @@ class MainViewer(QMainWindow):
         self.worker.signals.finished.connect(self.on_worker_finished)
         self.worker.signals.error.connect(self.on_worker_error)
         self.worker.signals.undo_record.connect(self.on_undo_record_received)
+        if hasattr(self.worker.signals, 'operation_result'):
+            self.worker.signals.operation_result.connect(self.on_operation_result)
 
         self.images: list[str] = []
         self.current_index: int = -1
@@ -276,6 +279,7 @@ class MainViewer(QMainWindow):
 
         self.load_generation: int = 0
         self.pending_ops: dict[str, PendingOp] = {}
+        self.pending_decoder_requests: dict[str, tuple[str, int]] = {}  # req_id -> (filepath, load_generation)
 
         self.pixmap_cache: OrderedDict[str, QPixmap] = OrderedDict()
         self.cache_bytes: int = 0
@@ -284,10 +288,25 @@ class MainViewer(QMainWindow):
 
         self.loader = ImageLoader()
         self.loader.image_loaded.connect(self.on_image_preloaded)
+        if hasattr(self.loader, 'image_ready'):
+            self.loader.image_ready.connect(self.on_image_ready)
         self.loader.start()
 
         self.apply_theme()
         self.init_ui()
+
+        if initial_paths is not None:
+            self.open_paths(initial_paths)
+        else:
+            self.load_images()
+
+    def open_paths(self, paths: list[str]) -> None:
+        """
+        SHARED LAUNCH CONTRACT v1:
+        Sets transient input view of image paths without updating persistent settings.
+        """
+        valid_paths = [os.path.abspath(p) for p in paths if os.path.isfile(p)]
+        self.transient_paths = valid_paths
         self.load_images()
 
     def clear_pixmap_cache(self) -> None:
@@ -300,7 +319,10 @@ class MainViewer(QMainWindow):
         if custom_mb and str(custom_mb).isdigit():
             self.max_cache_bytes = int(custom_mb) * 1024 * 1024
         else:
-            total_ram = psutil.virtual_memory().total
+            try:
+                total_ram = psutil.virtual_memory().total
+            except Exception:
+                total_ram = 8 * 1024 * 1024 * 1024
             self.max_cache_bytes = min(256 * 1024 * 1024, int(0.20 * total_ram))
 
     def _add_pixmap_to_cache(self, filepath: str, pixmap: QPixmap) -> None:
@@ -343,18 +365,55 @@ class MainViewer(QMainWindow):
             except Exception:
                 pass
 
+    @pyqtSlot(str, QImage)
     def on_image_preloaded(self, filepath: str, img: QImage) -> None:
-        if filepath not in self.pixmap_cache:
+        """Legacy ImageLoader signal handler: creates QPixmap strictly on GUI thread."""
+        if not img.isNull() and filepath not in self.pixmap_cache:
             pixmap = QPixmap.fromImage(img)
             if not pixmap.isNull():
                 self._add_pixmap_to_cache(filepath, pixmap)
+                if (0 <= self.current_index < len(self.images) and
+                        _canonical_path(self.images[self.current_index]) == _canonical_path(filepath)):
+                    self.show_image()
+
+    @pyqtSlot(dict)
+    def on_image_ready(self, result: dict[str, Any]) -> None:
+        """
+        SHARED DECODER CONTRACT v1 signal handler:
+        Creates QPixmap exclusively on GUI thread from QImage.
+        """
+        req_id = result.get('request_id')
+        gen = result.get('generation', 0)
+        filepath = result.get('filepath')
+        qimg = result.get('image')
+
+        if gen < self.load_generation:
+            return  # Discard stale decoder results
+
+        if req_id in self.pending_decoder_requests:
+            req_fp, req_gen = self.pending_decoder_requests.pop(req_id)
+            if req_gen < self.load_generation:
+                return
+
+        if qimg is not None and isinstance(qimg, QImage) and not qimg.isNull() and filepath:
+            pixmap = QPixmap.fromImage(qimg)
+            if not pixmap.isNull():
+                self._add_pixmap_to_cache(filepath, pixmap)
+                if (0 <= self.current_index < len(self.images) and
+                        _canonical_path(self.images[self.current_index]) == _canonical_path(filepath)):
+                    self.show_image()
 
     def preload_adjacent_images(self) -> None:
-        if self.current_index + 1 < len(self.images):
-            self.loader.add_task(self.images[self.current_index + 1])
-
-        if self.current_index - 1 >= 0:
-            self.loader.add_task(self.images[self.current_index - 1])
+        """Preloads adjacent images using extended or legacy ImageLoader contract."""
+        for offset, prio in [(1, 1), (-1, 2), (2, 3)]:
+            idx = self.current_index + offset
+            if 0 <= idx < len(self.images):
+                fp = self.images[idx]
+                if fp not in self.pixmap_cache and not self._is_path_pending(fp):
+                    try:
+                        self.loader.add_task(fp, generation=self.load_generation, priority=prio)
+                    except TypeError:
+                        self.loader.add_task(fp)
 
     def init_ui(self) -> None:
         """Initializes main UI with WCAG AAA accessibility properties."""
@@ -372,27 +431,22 @@ class MainViewer(QMainWindow):
 
         # Enterprise HUD overlay
         self.hud_widget = QWidget(self.central_widget)
-        self.hud_widget.setStyleSheet("background-color: rgba(0, 0, 0, 180); color: white; border-radius: 5px; padding: 5px;")
+        self.hud_widget.setStyleSheet("background-color: rgba(0, 0, 0, 180); color: white; border-radius: 5px; padding: 6px;")
         hud_layout = QVBoxLayout(self.hud_widget)
-        hud_layout.setContentsMargins(10, 5, 10, 5)
+        hud_layout.setContentsMargins(10, 6, 10, 6)
 
         self.hud_filename = QLabel("No File")
         self.hud_filename.setStyleSheet("font-weight: bold; font-size: 14px;")
         self.hud_filename.setAccessibleName("Current Image Filename")
-        self.hud_filename.setAccessibleDescription("Displays the current image file name and index.")
-        self.hud_filename.setToolTip("Current file name and index in the directory.")
+        self.hud_filename.setAccessibleDescription("Displays current image file name and index.")
 
-        self.hud_filepath = QLabel("")
-        self.hud_filepath.setStyleSheet("font-size: 10px; color: #aaaaaa;")
-        self.hud_filepath.setAccessibleName("Current Image Filepath")
-        self.hud_filepath.setAccessibleDescription("Displays the full absolute path of the loaded image.")
-        self.hud_filepath.setToolTip("Full absolute path to the current image.")
+        self.hud_details = QLabel("")
+        self.hud_details.setStyleSheet("font-size: 11px; color: #dddddd;")
+        self.hud_details.setAccessibleName("Current Image Details")
 
         self.hud_status = QLabel("Ready")
         self.hud_status.setStyleSheet("font-size: 12px; color: #55ff55;")
         self.hud_status.setAccessibleName("Background Task Status")
-        self.hud_status.setAccessibleDescription("Displays real-time background processing operations.")
-        self.hud_status.setToolTip("Current background operation status.")
 
         self.hud_progress = QProgressBar()
         self.hud_progress.setTextVisible(False)
@@ -401,7 +455,7 @@ class MainViewer(QMainWindow):
         self.hud_progress.setAccessibleName("Background Task Progress")
 
         hud_layout.addWidget(self.hud_filename)
-        hud_layout.addWidget(self.hud_filepath)
+        hud_layout.addWidget(self.hud_details)
         hud_layout.addWidget(self.hud_status)
         hud_layout.addWidget(self.hud_progress)
         self.hud_widget.hide()
@@ -423,6 +477,21 @@ class MainViewer(QMainWindow):
 
         self.setup_menu()
         self.statusBar().showMessage("Ready", 3000)
+
+    def position_hud(self) -> None:
+        """Positions HUD overlay anchored at top-right corner of the window."""
+        if not hasattr(self, 'hud_widget') or not self.hud_widget.isVisible():
+            return
+        margin = 15
+        self.hud_widget.adjustSize()
+        w = self.hud_widget.width()
+        self.hud_widget.move(self.central_widget.width() - w - margin, margin + self.menuBar().height())
+        self.hud_widget.raise_()
+
+    def resizeEvent(self, event: QEvent) -> None:
+        """Handles main window resize events."""
+        super().resizeEvent(event)
+        self.position_hud()
 
     def apply_theme(self) -> None:
         """Applies visual theme palette with WCAG AAA contrast compliance."""
@@ -484,20 +553,18 @@ class MainViewer(QMainWindow):
         file_menu = menu.addMenu("&File")
 
         settings_action = QAction("&Settings", self)
-        settings_action.setShortcut(QKeySequence("S"))
-        settings_action.setToolTip("Open the configuration menu to adjust directories, AI settings, and hotkeys. (Shortcut: S)")
+        settings_action.setToolTip("Open configuration menu. (Shortcut: S)")
         settings_action.triggered.connect(self.open_settings)
         file_menu.addAction(settings_action)
 
         reload_action = QAction("&Reload Images", self)
-        reload_action.setShortcut(QKeySequence("R"))
-        reload_action.setToolTip("Refresh the current directory to discover new images or update the queue. (Shortcut: R)")
+        reload_action.setToolTip("Refresh current directory. (Shortcut: R)")
         reload_action.triggered.connect(self.load_images)
         file_menu.addAction(reload_action)
 
         undo_action = QAction("&Undo Last Action", self)
         undo_action.setShortcut(QKeySequence("Ctrl+Z"))
-        undo_action.setToolTip("Revert the last file move, copy, or trash operation. (Shortcut: Ctrl+Z)")
+        undo_action.setToolTip("Revert last file action. (Shortcut: Ctrl+Z)")
         undo_action.triggered.connect(self.undo_last_action)
         file_menu.addAction(undo_action)
 
@@ -505,33 +572,71 @@ class MainViewer(QMainWindow):
 
         exit_action = QAction("E&xit", self)
         exit_action.setShortcut(QKeySequence("Esc"))
-        exit_action.setToolTip("Safely close the application and stop background workers. (Shortcut: Esc)")
+        exit_action.setToolTip("Safely close application. (Shortcut: Esc)")
         exit_action.triggered.connect(self.close)
         file_menu.addAction(exit_action)
 
         view_menu = menu.addMenu("&View")
 
         self.locked_zoom_action = QAction("&Lock Pan/Zoom", self, checkable=True)
-        self.locked_zoom_action.setShortcut(QKeySequence("L"))
-        self.locked_zoom_action.setToolTip("Keep current zoom level and pan position when navigating between images. (Shortcut: L)")
+        self.locked_zoom_action.setToolTip("Keep current zoom level. (Shortcut: L)")
         self.locked_zoom_action.triggered.connect(self.toggle_locked_zoom)
         view_menu.addAction(self.locked_zoom_action)
 
         zen_action = QAction("&Zen Mode", self)
-        zen_action.setShortcut(QKeySequence("Z"))
-        zen_action.setToolTip("Hide all UI elements for immersive viewing. (Shortcut: Z)")
+        zen_action.setToolTip("Hide UI elements. (Shortcut: Z)")
         zen_action.triggered.connect(self.toggle_zen_mode)
         view_menu.addAction(zen_action)
+
+        nav_menu = menu.addMenu("&Navigate")
+
+        next_action = QAction("&Next Image", self)
+        next_action.setToolTip("Navigate to next image. (Shortcut: D / Right / Space)")
+        next_action.triggered.connect(self.navigate_next)
+        nav_menu.addAction(next_action)
+
+        prev_action = QAction("&Previous Image", self)
+        prev_action.setToolTip("Navigate to previous image. (Shortcut: A / Left / Backspace)")
+        prev_action.triggered.connect(self.navigate_prev)
+        nav_menu.addAction(prev_action)
+
+        trash_action = QAction("&Trash Image", self)
+        trash_action.setToolTip("Trash current image. (Shortcut: X / Delete)")
+        trash_action.triggered.connect(self.action_trash_current)
+        nav_menu.addAction(trash_action)
+
+    def navigate_next(self) -> None:
+        if not self.images:
+            return
+        next_idx = self._find_next_non_pending_index(self.current_index + 1, direction=1)
+        if next_idx != -1:
+            self.current_index = next_idx
+            self.show_image()
+
+    def navigate_prev(self) -> None:
+        if not self.images:
+            return
+        prev_idx = self._find_next_non_pending_index(self.current_index - 1, direction=-1)
+        if prev_idx != -1:
+            self.current_index = prev_idx
+            self.show_image()
+
+    def action_trash_current(self) -> None:
+        if 0 <= self.current_index < len(self.images):
+            filepath = self.images[self.current_index]
+            self.trigger_file_action('trash', filepath)
 
     def toggle_zen_mode(self) -> None:
         self.zen_mode = not self.zen_mode
         if self.zen_mode:
             self.menuBar().hide()
             self.statusBar().hide()
+            self.hud_widget.hide()
             self.showFullScreen()
         else:
             self.menuBar().show()
             self.statusBar().show()
+            self.update_hud()
             if not self.settings.get('ui', 'fullscreen'):
                 self.showMaximized()
 
@@ -541,21 +646,38 @@ class MainViewer(QMainWindow):
             self.viewer.fit_to_window()
 
     def load_images(self) -> None:
-        """Loads supported image files from configured source directory."""
+        """Loads supported image files from transient launch paths or configured source directory."""
         if hasattr(self, 'loader'):
             self.loader.clear_tasks()
         self.clear_pixmap_cache()
         self.load_generation += 1
-        self.pending_ops.clear()
+
+        supported_formats = {fmt.data().decode().lower() for fmt in QImageReader.supportedImageFormats()}
+
+        if self.transient_paths is not None:
+            self.images = [p for p in self.transient_paths if os.path.isfile(p) and os.path.splitext(p)[1][1:].lower() in supported_formats]
+            if self.images:
+                self.current_index = 0
+                self.show_image()
+            else:
+                self.current_index = -1
+                self.images = []
+                self.viewer.hide()
+                self.hud_widget.hide()
+                self.empty_label.show()
+                self.empty_label.setText("No valid images in transient input paths.")
+            return
 
         src_dir = self.settings.get('directories', 'source')
         if not src_dir or not os.path.isdir(src_dir):
+            self.images = []
+            self.current_index = -1
             self.viewer.hide()
+            self.hud_widget.hide()
             self.empty_label.show()
             self.empty_label.setText("Source directory not configured or invalid.")
             return
 
-        supported_formats = {fmt.data().decode().lower() for fmt in QImageReader.supportedImageFormats()}
         self.images = []
 
         try:
@@ -572,56 +694,107 @@ class MainViewer(QMainWindow):
                 self.show_image()
             else:
                 self.current_index = -1
+                self.images = []
                 self.viewer.hide()
+                self.hud_widget.hide()
                 self.empty_label.show()
                 self.empty_label.setText("No images found in the source directory.")
 
         except OSError as e:
             logger.error(f"Failed to load images from {src_dir}: {e}")
-            self.viewer.hide()
-            self.empty_label.show()
-            self.empty_label.setText(f"Error reading source directory:\n{e}")
-
-    def show_image(self) -> None:
-        """Displays image at current index."""
-        if not self.images or self.current_index < 0 or self.current_index >= len(self.images):
+            self.images = []
+            self.current_index = -1
             self.viewer.hide()
             self.hud_widget.hide()
             self.empty_label.show()
-            self.empty_label.setText("All done!")
-            self.setWindowTitle("Image Sorter - Enterprise")
-            self.announce_accessibility_event(self.empty_label, "All done! No remaining images in queue.")
+            self.empty_label.setText(f"Error reading source directory:\n{e}")
+
+    def update_hud(self) -> None:
+        """Updates and renders HUD overlay status, dimensions, tags, and pending ops."""
+        if self.zen_mode or not self.images or self.current_index < 0 or self.current_index >= len(self.images):
+            self.hud_widget.hide()
             return
 
+        filepath = self.images[self.current_index]
+        filename = os.path.basename(filepath)
+        total_count = len(self.images)
+        self.hud_filename.setText(f"{filename} ({self.current_index + 1}/{total_count})")
+
+        pixmap = self._get_pixmap_from_cache(filepath)
+        dims_str = f"{pixmap.width()}x{pixmap.height()} px" if pixmap and not pixmap.isNull() else "Loading..."
+
+        pending_count = sum(1 for op in self.pending_ops.values() if op.load_generation == self.load_generation and op.state == "pending")
+        pending_str = f" | Pending: {pending_count}" if pending_count > 0 else ""
+
+        ai_enabled = self.settings.get('ai_tagger', 'enabled')
+        show_tags = self.settings.get('ui', 'show_tags')
+        ai_str = ""
+        if ai_enabled and show_tags:
+            ai_str = " | AI Tagging Active"
+
+        self.hud_details.setText(f"{dims_str}{pending_str}{ai_str}")
+
+        if pending_count > 0:
+            self.hud_status.setText("Processing background operations...")
+            self.hud_status.setStyleSheet("font-size: 12px; color: #ffaa00;")
+        else:
+            self.hud_status.setText("Ready")
+            self.hud_status.setStyleSheet("font-size: 12px; color: #55ff55;")
+
+        self.hud_widget.show()
+        self.position_hud()
+
+    def show_image(self) -> None:
+        """Displays image at current index or triggers asynchronous load."""
+        non_pending_idx = self._find_next_non_pending_index(self.current_index, direction=1)
+        if non_pending_idx == -1:
+            non_pending_idx = self._find_next_non_pending_index(self.current_index, direction=-1)
+
+        if non_pending_idx == -1:
+            # All items in queue are pending or queue is empty
+            self.viewer.hide()
+            self.hud_widget.hide()
+            self.empty_label.show()
+            pending_count = sum(1 for op in self.pending_ops.values() if op.load_generation == self.load_generation and op.state == "pending")
+            if pending_count > 0:
+                msg = f"Processing remaining background operations ({pending_count} pending)..."
+            else:
+                msg = "All done! No remaining images in queue."
+            self.empty_label.setText(msg)
+            self.setWindowTitle("Image Sorter - Enterprise")
+            self.announce_accessibility_event(self.empty_label, msg)
+            return
+
+        self.current_index = non_pending_idx
         filepath = self.images[self.current_index]
 
         pixmap = self._get_pixmap_from_cache(filepath)
         if pixmap is None:
+            # Asynchronous load via ImageLoader
+            req_id = str(uuid.uuid4())
+            self.pending_decoder_requests[req_id] = (filepath, self.load_generation)
+            try:
+                self.loader.add_task(filepath, request_id=req_id, generation=self.load_generation, priority=0)
+            except TypeError:
+                self.loader.add_task(filepath)
+
+            # Try direct fallback load if local file read is instant
             pixmap = QPixmap(filepath)
             if not pixmap.isNull():
                 self._add_pixmap_to_cache(filepath, pixmap)
 
-        if pixmap is None or pixmap.isNull():
-            self.viewer.hide()
-            self.empty_label.show()
-            err_msg = f"Failed to load image: {os.path.basename(filepath)}"
-            self.empty_label.setText(err_msg)
-            self.announce_accessibility_event(self.empty_label, err_msg)
-            logger.warning(f"QPixmap failed to load valid image data from {filepath}")
-            return
-
-        self.empty_label.hide()
-        self.viewer.show()
-        self.viewer.set_image(pixmap)
-
-        filename = os.path.basename(filepath)
-        accessible_desc = f"Image {self.current_index + 1} of {len(self.images)}: {filename}"
-        self.viewer.setAccessibleName(accessible_desc)
-        self.empty_label.setAccessibleName(accessible_desc)
-        self.setWindowTitle(f"Image Sorter - {filename} ({self.current_index + 1}/{len(self.images)})")
-        self.announce_accessibility_event(self.viewer, accessible_desc)
-
-        self.preload_adjacent_images()
+        if pixmap is not None and not pixmap.isNull():
+            self.empty_label.hide()
+            self.viewer.show()
+            self.viewer.set_image(pixmap)
+            filename = os.path.basename(filepath)
+            accessible_desc = f"Image {self.current_index + 1} of {len(self.images)}: {filename}"
+            self.viewer.setAccessibleName(accessible_desc)
+            self.empty_label.setAccessibleName(accessible_desc)
+            self.setWindowTitle(f"Image Sorter - {filename} ({self.current_index + 1}/{len(self.images)})")
+            self.announce_accessibility_event(self.viewer, accessible_desc)
+            self.update_hud()
+            self.preload_adjacent_images()
 
     def _is_path_pending(self, filepath: str) -> bool:
         can_p = _canonical_path(filepath)
@@ -646,17 +819,14 @@ class MainViewer(QMainWindow):
 
     def advance_ui_after_pending_action(self) -> None:
         """Advances to nearest non-pending image after initiating an action."""
-        next_idx = self._find_next_non_pending_index(self.current_index, direction=1)
-        if next_idx == -1:
-            next_idx = self._find_next_non_pending_index(self.current_index, direction=-1)
-
-        if next_idx != -1:
-            self.current_index = next_idx
         self.show_image()
 
     def trigger_file_action(self, action: str, filepath: str, dest_folder: str | None = None) -> str | None:
-        """Submits a move or trash action with transactional pending op tracking and advances UI."""
-        if not filepath:
+        """
+        Submits a move or trash action with transactional pending op tracking and advances UI.
+        Prevents duplicate dispatches on already pending files.
+        """
+        if not filepath or self._is_path_pending(filepath):
             return None
 
         can_target = _canonical_path(filepath)
@@ -682,7 +852,13 @@ class MainViewer(QMainWindow):
         )
         self.pending_ops[op_id] = pending_op
 
-        self.worker.add_task(action, filepath, dest_folder)
+        # Invoke worker add_task with operation contract parameters
+        try:
+            res_id = self.worker.add_task(action, filepath, dest_folder, operation_id=op_id)
+            if res_id:
+                pending_op.op_id = res_id
+        except TypeError:
+            self.worker.add_task(action, filepath, dest_folder)
 
         if action == 'trash':
             trash_folder = self.settings.get('directories', 'trash')
@@ -696,7 +872,7 @@ class MainViewer(QMainWindow):
             self.announce_accessibility_event(self.central_widget, f"Executed move for {os.path.basename(filepath)} to {dest_folder}.")
 
         self.advance_ui_after_pending_action()
-        return op_id
+        return pending_op.op_id
 
     def is_input_focused(self) -> bool:
         """Determines if any input or editor widget currently has keyboard focus."""
@@ -708,7 +884,7 @@ class MainViewer(QMainWindow):
         return bool(hasattr(focus_widget, "isReadOnly") and not focus_widget.isReadOnly())
 
     def keyPressEvent(self, event: QEvent) -> None:
-        """Handles keyboard navigation and sorting adhering strictly to the Precedence Matrix."""
+        """Handles keyboard navigation and sorting adhering strictly to Precedence Matrix."""
         if self.is_input_focused():
             super().keyPressEvent(event)
             return
@@ -750,21 +926,15 @@ class MainViewer(QMainWindow):
 
         # Level 1 (Direct Navigation without Modifiers)
         if key in (Qt.Key.Key_Space, Qt.Key.Key_Right):
-            if 0 <= self.current_index < len(self.images):
-                self.current_index += 1
-                self.show_image()
+            self.navigate_next()
             return
 
         if key in (Qt.Key.Key_Left, Qt.Key.Key_Backspace):
-            if self.current_index > 0:
-                self.current_index -= 1
-                self.show_image()
+            self.navigate_prev()
             return
 
         if key == Qt.Key.Key_Delete:
-            if 0 <= self.current_index < len(self.images):
-                filepath = self.images[self.current_index]
-                self.trigger_file_action('trash', filepath)
+            self.action_trash_current()
             return
 
         # Level 2 (Custom User Hotkeys - evaluated ONLY when NoModifier)
@@ -788,11 +958,22 @@ class MainViewer(QMainWindow):
                         self.worker.add_task(action, filepath, folder)
                         self.announce_accessibility_event(self.central_widget, f"Executed {action} for {os.path.basename(filepath)} to {folder}.")
                         if config.get('auto_advance', True):
-                            self.current_index += 1
-                            self.show_image()
+                            self.navigate_next()
                 return
 
             # Level 3 (Fallback Letters)
+            if key == Qt.Key.Key_A:
+                self.navigate_prev()
+                return
+
+            if key == Qt.Key.Key_D:
+                self.navigate_next()
+                return
+
+            if key == Qt.Key.Key_X:
+                self.action_trash_current()
+                return
+
             if key == Qt.Key.Key_Z:
                 self.toggle_zen_mode()
                 return
@@ -818,20 +999,16 @@ class MainViewer(QMainWindow):
         """Deprecated legacy helper retained for backward compatibility."""
         self.advance_ui_after_pending_action()
 
-    def _find_matching_pending_op(self, path: str, action_types: list[str] | None = None) -> PendingOp | None:
-        can_p = _canonical_path(path)
-        for op in self.pending_ops.values():
-            if op.load_generation == self.load_generation and op.state == "pending":
-                if action_types and op.action not in action_types:
-                    continue
-                if op.src_path == can_p or (op.dest_path and _canonical_path(op.dest_path) == can_p):
-                    return op
-        return None
+    def _match_pending_op_by_id_or_path(self, op_id: str | None, path: str | None) -> PendingOp | None:
+        if op_id and op_id in self.pending_ops:
+            return self.pending_ops[op_id]
 
-    def _match_pending_op(self, path: str) -> PendingOp | None:
+        if not path:
+            return None
+
         can_p = _canonical_path(path)
         for op in self.pending_ops.values():
-            if op.load_generation != self.load_generation or op.state != "pending":
+            if op.state != "pending":
                 continue
             if op.src_path == can_p:
                 return op
@@ -846,6 +1023,54 @@ class MainViewer(QMainWindow):
                     return op
         return None
 
+    @pyqtSlot(dict)
+    def on_operation_result(self, result: dict[str, Any]) -> None:
+        """
+        SHARED OPERATION CONTRACT v1 signal handler:
+        Settles operations exactly once by operation_id or path matching.
+        """
+        op_id = result.get('operation_id')
+        action = result.get('action')
+        source_path = result.get('source_path')
+        dest_path = result.get('destination_path')
+        state = result.get('state')
+        undo_token = result.get('undo_token')
+        error = result.get('error')
+
+        op = self._match_pending_op_by_id_or_path(op_id, source_path or dest_path)
+
+        if op and op.state == "pending":
+            if state in ("completed", "completed_with_warning"):
+                op.state = "finished"
+                if undo_token and isinstance(undo_token, dict):
+                    op.undo_token = undo_token
+                    if not any(t.get('token_id') == undo_token.get('token_id') for t in self.history if 'token_id' in t):
+                        self.history.append(undo_token)
+                        if len(self.history) > 50:
+                            self.history.pop(0)
+
+                if action in ('move', 'trash'):
+                    self.remove_image_from_queue(op.src_path)
+                elif action in ('undo_move', 'undo_trash'):
+                    restored_path = dest_path or op.raw_original_path or source_path
+                    if restored_path:
+                        self.reinsert_image_at_index(restored_path, op.original_index)
+
+            elif state in ("failed", "recovery_required"):
+                op.state = "error"
+                if error:
+                    msg = f"Error processing {os.path.basename(source_path or '')}: {error}"
+                    self.statusBar().showMessage(msg, 5000)
+
+                if action in ('move', 'trash'):
+                    self.reinsert_image_at_index(op.raw_src_path, op.original_index)
+                elif action in ('undo_move', 'undo_trash', 'undo_copy'):
+                    if op.undo_token and not any(t.get('token_id') == op.undo_token.get('token_id') for t in self.history if 'token_id' in t):
+                        self.history.append(op.undo_token)
+
+            self.update_hud()
+            self.show_image()
+
     def on_undo_record_received(self, data: dict[str, Any]) -> None:
         """Receives UndoToken from background worker and correlates with pending op."""
         orig_p = data.get('original') or ''
@@ -853,7 +1078,7 @@ class MainViewer(QMainWindow):
         can_orig = _canonical_path(orig_p)
         can_curr = _canonical_path(curr_p)
 
-        target_op = self._match_pending_op(can_orig) or self._match_pending_op(can_curr)
+        target_op = self._match_pending_op_by_id_or_path(None, can_orig) or self._match_pending_op_by_id_or_path(None, can_curr)
 
         if target_op:
             if target_op.undo_record_received:
@@ -879,7 +1104,7 @@ class MainViewer(QMainWindow):
         """Handles worker task completion with transactional queue updates."""
         can_finished = _canonical_path(finished_path)
 
-        target_op = self._match_pending_op(can_finished)
+        target_op = self._match_pending_op_by_id_or_path(None, can_finished)
 
         if target_op:
             if target_op.finished_received:
@@ -908,13 +1133,15 @@ class MainViewer(QMainWindow):
             elif target_op.action == 'undo_copy':
                 target_op.state = "finished"
 
+        self.update_hud()
+
     def on_worker_error(self, filepath: str, error: str) -> None:
         """Displays error messages, restores state on operation failures."""
         msg = f"Error processing {os.path.basename(filepath)}: {error}"
         self.statusBar().showMessage(msg, 5000)
         self.announce_accessibility_event(self.central_widget, msg)
 
-        target_op = self._match_pending_op(filepath)
+        target_op = self._match_pending_op_by_id_or_path(None, filepath)
 
         if target_op:
             target_op.state = "error"
@@ -922,14 +1149,15 @@ class MainViewer(QMainWindow):
             if target_op.action in ('move', 'trash'):
                 # Ensure the image is present in self.images and clear pending state
                 self.reinsert_image_at_index(target_op.raw_src_path, target_op.original_index)
-                self.show_image()
 
             elif target_op.action in ('undo_move', 'undo_trash', 'undo_copy'):
                 # Restore failed undo token back to history stack
                 if target_op.undo_token:
-                    # Restore token at original history position (pop returned token to top if not present)
                     if not any(t.get('token_id') == target_op.undo_token.get('token_id') for t in self.history if 'token_id' in t):
                         self.history.append(target_op.undo_token)
+
+        self.update_hud()
+        self.show_image()
 
     def remove_image_from_queue(self, canonical_path: str) -> None:
         """Removes an image matching canonical_path from self.images exactly once."""
@@ -972,7 +1200,10 @@ class MainViewer(QMainWindow):
         self.show_image()
 
     def undo_last_action(self) -> None:
-        """Reverts last move, copy, or trash operation using UndoToken."""
+        """
+        Reverts last move, copy, or trash operation.
+        FORWARDS THE ENTIRE Undo token to worker.add_task(..., undo_token=last_action).
+        """
         if not self.history:
             self.statusBar().showMessage("Nothing to undo.", 3000)
             return
@@ -984,7 +1215,6 @@ class MainViewer(QMainWindow):
 
         can_orig = _canonical_path(original_path) if original_path else ""
         orig_idx = 0
-        # Determine original index from pending ops if recorded previously
         for op in self.pending_ops.values():
             if op.src_path == can_orig:
                 orig_idx = op.original_index
@@ -1008,7 +1238,15 @@ class MainViewer(QMainWindow):
                     undo_token=last_action
                 )
                 self.pending_ops[op_id] = pending_op
-                self.worker.add_task('undo_move', current_path, original_path)
+
+                # Forward full last_action undo_token to worker
+                try:
+                    res_id = self.worker.add_task('undo_move', current_path, original_path, undo_token=last_action, operation_id=op_id)
+                    if res_id:
+                        pending_op.op_id = res_id
+                except TypeError:
+                    self.worker.add_task('undo_move', current_path, original_path, undo_token=last_action)
+
                 msg = f"Restoring {os.path.basename(original_path)} to original location..."
                 self.statusBar().showMessage(msg, 3000)
                 self.announce_accessibility_event(self.central_widget, msg)
@@ -1025,7 +1263,14 @@ class MainViewer(QMainWindow):
                 undo_token=last_action
             )
             self.pending_ops[op_id] = pending_op
-            self.worker.add_task('undo_copy', current_path)
+
+            try:
+                res_id = self.worker.add_task('undo_copy', current_path, undo_token=last_action, operation_id=op_id)
+                if res_id:
+                    pending_op.op_id = res_id
+            except TypeError:
+                self.worker.add_task('undo_copy', current_path, undo_token=last_action)
+
             msg = f"Undoing copy of {os.path.basename(current_path)}..."
             self.statusBar().showMessage(msg, 3000)
             self.announce_accessibility_event(self.central_widget, msg)
