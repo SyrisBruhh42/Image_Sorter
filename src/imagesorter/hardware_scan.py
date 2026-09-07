@@ -32,14 +32,17 @@ def get_prioritized_providers() -> list[str]:
         logger.warning(f"Failed to query ONNX available providers: {e}")
         available = {"CPUExecutionProvider"}
 
-    prioritized = [p for p in PROVIDER_PRIORITY if p in available]
-    # Include any unexpected available providers at the end before CPU
-    for p in available:
-        if p not in prioritized:
-            prioritized.insert(-1 if "CPUExecutionProvider" in prioritized else len(prioritized), p)
+    # Known accelerated providers in PROVIDER_PRIORITY order (excluding CPU)
+    prioritized = [p for p in PROVIDER_PRIORITY if p != "CPUExecutionProvider" and p in available]
 
-    if "CPUExecutionProvider" not in prioritized:
+    # CPUExecutionProvider always comes after known accelerated providers
+    if "CPUExecutionProvider" in available or not prioritized:
         prioritized.append("CPUExecutionProvider")
+
+    # Any unknown/unexpected providers available in runtime come after CPU
+    for p in available:
+        if p not in PROVIDER_PRIORITY and p not in prioritized:
+            prioritized.append(p)
 
     return prioritized
 

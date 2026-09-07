@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import hashlib
-import multiprocessing as mp
 import os
 import shutil
 import ssl
@@ -14,19 +13,12 @@ import numpy as np
 import onnxruntime as ort
 import piexif
 import psutil
-from PIL import Image
+from PIL import Image, ImageOps
 from PyQt6.QtCore import QThread, pyqtSignal
 
 from .hardware_scan import get_prioritized_providers
 from .logger import logger
 from .paths import get_data_dir
-
-# Set process start method to 'spawn' for safe CUDA/multiprocessing compliance
-try:
-    if mp.get_start_method(allow_none=True) != "spawn":
-        mp.set_start_method("spawn", force=True)
-except RuntimeError as e:
-    logger.debug(f"Multiprocessing start method already set: {e}")
 
 MODEL_URL = "https://huggingface.co/onnx-community/mobilenet_v2_1.0_224-ONNX/resolve/f7f884d9505b4c69f8a260d9967ff7791bafa498/onnx/model.onnx"
 MODEL_SHA256 = "2e731702ec8374128edfc9f7d344c44287e7791bb3c7ae25a628c2c2dec83ce6"
@@ -83,9 +75,10 @@ def _download_file_secure(
     url: str,
     dest_temp_path: str,
     progress_callback=None,
-    timeout: float = 15.0
+    timeout: float = 15.0,
+    cancellation_check=None
 ) -> None:
-    """Downloads a file using secure TLS 1.2+ HTTPS streaming context in 64KB chunks."""
+    """Downloads a file using secure TLS 1.2+ HTTPS streaming context in 64KB chunks with interruption checks."""
     ctx = ssl.create_default_context(ssl.Purpose.SERVER_AUTH)
     if hasattr(ctx, "minimum_version"):
         ctx.minimum_version = ssl.TLSVersion.TLSv1_2
@@ -98,6 +91,8 @@ def _download_file_secure(
         total_size = int(response.headers.get("Content-Length", 0))
         read_so_far = 0
         while True:
+            if cancellation_check and cancellation_check():
+                raise InterruptedError("Download canceled by request.")
             chunk = response.read(64 * 1024)
             if not chunk:
                 break
@@ -110,7 +105,7 @@ def _download_file_secure(
 
 class ModelDownloader(QThread):
     """
-    Downloads AI models in a background thread with zero-trust SHA256 verification.
+    Downloads AI models in a background thread with zero-trust SHA256 verification and interruption handling.
     """
     progress = pyqtSignal(int)
     finished = pyqtSignal(bool, str)
@@ -127,11 +122,25 @@ class ModelDownloader(QThread):
 
             labels_valid = os.path.exists(self.labels_path) and calculate_sha256(self.labels_path) == LABELS_SHA256
             if not labels_valid:
+                if self.isInterruptionRequested():
+                    self.finished.emit(False, "Download canceled.")
+                    return
                 logger.info(f"Downloading labels to {self.labels_path}")
                 fd, temp_labels_path = tempfile.mkstemp(dir=self.model_dir, prefix="dl_labels_", suffix=".tmp")
                 os.close(fd)
                 try:
-                    _download_file_secure(LABELS_URL, temp_labels_path, timeout=15.0)
+                    if self.isInterruptionRequested():
+                        self.finished.emit(False, "Download canceled.")
+                        return
+                    _download_file_secure(
+                        LABELS_URL,
+                        temp_labels_path,
+                        timeout=15.0,
+                        cancellation_check=self.isInterruptionRequested
+                    )
+                    if self.isInterruptionRequested():
+                        self.finished.emit(False, "Download canceled.")
+                        return
                     checksum = calculate_sha256(temp_labels_path)
                     if checksum != LABELS_SHA256:
                         err_msg = f"Labels Cryptographic Integrity Failure: Expected {LABELS_SHA256}, got {checksum}"
@@ -139,6 +148,9 @@ class ModelDownloader(QThread):
                         self.finished.emit(False, err_msg)
                         return
                     os.replace(temp_labels_path, self.labels_path)
+                except InterruptedError:
+                    self.finished.emit(False, "Download canceled.")
+                    return
                 except Exception as e:
                     raise Exception(f"Network error downloading labels: {e}")
                 finally:
@@ -150,17 +162,27 @@ class ModelDownloader(QThread):
 
             model_valid = os.path.exists(self.model_path) and calculate_sha256(self.model_path) == MODEL_SHA256
             if not model_valid:
+                if self.isInterruptionRequested():
+                    self.finished.emit(False, "Download canceled.")
+                    return
                 logger.info(f"Downloading model to {self.model_path}")
                 fd, temp_path = tempfile.mkstemp(dir=self.model_dir, prefix="dl_model_", suffix=".tmp")
                 os.close(fd)
 
                 try:
+                    if self.isInterruptionRequested():
+                        self.finished.emit(False, "Download canceled.")
+                        return
                     _download_file_secure(
                         MODEL_URL,
                         temp_path,
                         progress_callback=lambda p: self.progress.emit(p),
-                        timeout=15.0
+                        timeout=15.0,
+                        cancellation_check=self.isInterruptionRequested
                     )
+                    if self.isInterruptionRequested():
+                        self.finished.emit(False, "Download canceled.")
+                        return
                     checksum = calculate_sha256(temp_path)
                     logger.info(f"Downloaded model SHA256: {checksum}")
 
@@ -172,6 +194,9 @@ class ModelDownloader(QThread):
 
                     os.replace(temp_path, self.model_path)
                     logger.info("Model download and verification complete.")
+                except InterruptedError:
+                    self.finished.emit(False, "Download canceled.")
+                    return
                 except Exception as e:
                     raise Exception(f"Network error downloading model: {e}")
                 finally:
@@ -180,6 +205,10 @@ class ModelDownloader(QThread):
                             os.remove(temp_path)
                         except OSError:
                             pass
+
+            if self.isInterruptionRequested():
+                self.finished.emit(False, "Download canceled.")
+                return
 
             if is_model_and_labels_valid(self.model_dir):
                 self.finished.emit(True, "Model ready.")
@@ -200,7 +229,7 @@ class BaseVisionEngine(ABC):
         """Loads the vision model into memory."""
 
     @abstractmethod
-    def get_tags(self, image_path: str, top_k: int = 3) -> list[str]:
+    def get_tags(self, image_path: str, top_k: int = 3, *, threshold: float = 0.5) -> list[str]:
         """Returns tags for the specified image."""
 
 
@@ -208,9 +237,11 @@ class AITagger(BaseVisionEngine):
     """
     Implementation of MobileNetV2 ONNX tagger supporting dynamic multi-provider acceleration.
     """
+    API_VERSION: int = 1
 
-    def __init__(self, model_dir: str | None = None) -> None:
+    def __init__(self, model_dir: str | None = None, *, hardware_acceleration: bool = True) -> None:
         self.model_dir: str = get_model_dir(model_dir)
+        self.hardware_acceleration: bool = hardware_acceleration
         self.model_path: str = os.path.join(self.model_dir, "mobilenetv2.onnx")
         self.labels_path: str = os.path.join(self.model_dir, "labels.txt")
         self.session: ort.InferenceSession | None = None
@@ -234,10 +265,6 @@ class AITagger(BaseVisionEngine):
             logger.error(f"Failed to load labels from {self.labels_path}: {e}")
             return
 
-        prioritized_providers = get_prioritized_providers()
-        top_provider = prioritized_providers[0] if prioritized_providers else "CPUExecutionProvider"
-        providers = [top_provider, 'CPUExecutionProvider'] if top_provider != 'CPUExecutionProvider' else ['CPUExecutionProvider']
-
         physical_cores = psutil.cpu_count(logical=False) or 1
         intra_threads = max(1, min(physical_cores, 4))
 
@@ -248,10 +275,17 @@ class AITagger(BaseVisionEngine):
         sess_options.enable_cpu_mem_arena = True
         sess_options.enable_mem_pattern = True
 
+        if not self.hardware_acceleration:
+            providers = ['CPUExecutionProvider']
+        else:
+            prioritized_providers = get_prioritized_providers()
+            top_provider = prioritized_providers[0] if prioritized_providers else "CPUExecutionProvider"
+            providers = [top_provider, 'CPUExecutionProvider'] if top_provider != 'CPUExecutionProvider' else ['CPUExecutionProvider']
+
         try:
             self.session = ort.InferenceSession(self.model_path, sess_options, providers=providers)
-            self.active_provider = self.session.get_providers()[0] if self.session.get_providers() else top_provider
-            logger.info(f"Loaded AI model from {self.model_path} with providers: {providers}")
+            self.active_provider = self.session.get_providers()[0] if self.session.get_providers() else "CPUExecutionProvider"
+            logger.info(f"Loaded AI model from {self.model_path} with active provider {self.active_provider}")
             return
         except Exception as e:
             logger.warning(f"Failed to initialize ONNX session with providers {providers}: {e}")
@@ -267,17 +301,44 @@ class AITagger(BaseVisionEngine):
             self.active_provider = "None"
 
     def preprocess(self, image_path: str) -> np.ndarray | None:
-        """Preprocesses an image tensor for MobileNetV2 inference."""
+        """
+        Preprocesses an image tensor for MobileNetV2 inference using HuggingFace pinned spec:
+        - EXIF transpose orientation
+        - Shortest-edge resize to 256 using bilinear resampling
+        - Center crop 224x224
+        - Pixel rescale [0.0, 1.0] (/ 255.0)
+        - Mean/std normalization [0.5, 0.5, 0.5]
+        - Output float32 contiguous tensor layout [1, 3, 224, 224]
+        """
         Image.MAX_IMAGE_PIXELS = 50_000_000
         try:
-            with Image.open(image_path) as img:
+            with Image.open(image_path) as raw_img:
+                img = ImageOps.exif_transpose(raw_img)
                 img_rgb = img.convert('RGB')
-                img_resized = img_rgb.resize((224, 224))
-                arr = np.array(img_resized, dtype=np.float32)
+
+                # Rescale shortest edge to 256 preserving aspect ratio
+                width, height = img_rgb.size
+                if width < height:
+                    new_w = 256
+                    new_h = round(height * (256.0 / width))
+                else:
+                    new_h = 256
+                    new_w = round(width * (256.0 / height))
+
+                img_resized = img_rgb.resize((new_w, new_h), resample=Image.Resampling.BILINEAR)
+
+                # Center crop 224x224
+                left = (new_w - 224) // 2
+                top = (new_h - 224) // 2
+                right = left + 224
+                bottom = top + 224
+                img_cropped = img_resized.crop((left, top, right, bottom))
+
+                arr = np.array(img_cropped, dtype=np.float32)
 
             arr /= 255.0
-            mean = np.array([0.485, 0.456, 0.406], dtype=np.float32)
-            std = np.array([0.229, 0.224, 0.225], dtype=np.float32)
+            mean = np.array([0.5, 0.5, 0.5], dtype=np.float32)
+            std = np.array([0.5, 0.5, 0.5], dtype=np.float32)
             arr -= mean
             arr /= std
 
@@ -294,8 +355,8 @@ class AITagger(BaseVisionEngine):
             logger.error(f"Unexpected error preprocessing {image_path}: {e}")
             return None
 
-    def get_tags(self, image_path: str, top_k: int = 3) -> list[str]:
-        """Runs inference on an image and returns top_k tags."""
+    def get_tags(self, image_path: str, top_k: int = 3, *, threshold: float = 0.5) -> list[str]:
+        """Runs inference on an image and returns top_k tags above confidence threshold."""
         if not self.session or not self.labels:
             logger.warning("Attempted to get tags, but model/labels are not loaded.")
             return []
@@ -309,9 +370,10 @@ class AITagger(BaseVisionEngine):
             raw_result = self.session.run(None, {input_name: input_data})
 
             res = raw_result[0][0]
-            res = np.nan_to_num(res, nan=0.0, posinf=0.0, neginf=0.0)
+            res = np.nan_to_num(res, nan=-1e9, posinf=-1e9, neginf=-1e9)
+
             if len(res) == len(self.labels) + 1:
-                # Ignore output index 0 (background class) when model has 1,001 outputs and 1,000 labels
+                # Explicitly strip background class at index 0
                 res = res[1:]
             elif len(res) > len(self.labels):
                 res = res[1 : 1 + len(self.labels)]
@@ -324,8 +386,9 @@ class AITagger(BaseVisionEngine):
                 return []
             probs = exp_res / sum_exp
 
-            top_indices = np.argsort(probs)[-top_k:][::-1]
-            tags = [self.labels[i] for i in top_indices if probs[i] > 0.1]
+            k = max(1, min(top_k, len(self.labels)))
+            top_indices = np.argsort(probs)[-k:][::-1]
+            tags = [self.labels[i] for i in top_indices if probs[i] >= threshold]
             return tags
         except Exception as e:
             logger.error(f"Error during AI inference for {image_path}: {e}")
