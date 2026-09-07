@@ -287,9 +287,7 @@ class MainViewer(QMainWindow):
         self._update_max_cache_bytes()
 
         self.loader = ImageLoader()
-        self.loader.image_loaded.connect(self.on_image_preloaded)
-        if hasattr(self.loader, 'image_ready'):
-            self.loader.image_ready.connect(self.on_image_ready)
+        self.loader.image_ready.connect(self.on_image_ready)
         self.loader.start()
 
         self.apply_theme()
@@ -365,17 +363,6 @@ class MainViewer(QMainWindow):
             except Exception:
                 pass
 
-    @pyqtSlot(str, QImage)
-    def on_image_preloaded(self, filepath: str, img: QImage) -> None:
-        """Legacy ImageLoader signal handler: creates QPixmap strictly on GUI thread."""
-        if not img.isNull() and filepath not in self.pixmap_cache:
-            pixmap = QPixmap.fromImage(img)
-            if not pixmap.isNull():
-                self._add_pixmap_to_cache(filepath, pixmap)
-                if (0 <= self.current_index < len(self.images) and
-                        _canonical_path(self.images[self.current_index]) == _canonical_path(filepath)):
-                    self.show_image()
-
     @pyqtSlot(dict)
     def on_image_ready(self, result: dict[str, Any]) -> None:
         """
@@ -387,12 +374,12 @@ class MainViewer(QMainWindow):
         filepath = result.get('filepath')
         qimg = result.get('image')
 
-        if gen < self.load_generation:
+        if gen != self.load_generation:
             return  # Discard stale decoder results
 
         if req_id in self.pending_decoder_requests:
-            req_fp, req_gen = self.pending_decoder_requests.pop(req_id)
-            if req_gen < self.load_generation:
+            _req_fp, req_gen = self.pending_decoder_requests.pop(req_id)
+            if req_gen != self.load_generation:
                 return
 
         if qimg is not None and isinstance(qimg, QImage) and not qimg.isNull() and filepath:
@@ -409,11 +396,15 @@ class MainViewer(QMainWindow):
             idx = self.current_index + offset
             if 0 <= idx < len(self.images):
                 fp = self.images[idx]
-                if fp not in self.pixmap_cache and not self._is_path_pending(fp):
-                    try:
-                        self.loader.add_task(fp, generation=self.load_generation, priority=prio)
-                    except TypeError:
-                        self.loader.add_task(fp)
+                if (fp not in self.pixmap_cache and not self._is_path_pending(fp)
+                        and not self._has_pending_decode(fp)):
+                    req_id = self.loader.add_task(
+                        fp, generation=self.load_generation, priority=prio
+                    )
+                    if req_id:
+                        self.pending_decoder_requests[req_id] = (
+                            fp, self.load_generation
+                        )
 
     def init_ui(self) -> None:
         """Initializes main UI with WCAG AAA accessibility properties."""
@@ -647,10 +638,11 @@ class MainViewer(QMainWindow):
 
     def load_images(self) -> None:
         """Loads supported image files from transient launch paths or configured source directory."""
-        if hasattr(self, 'loader'):
-            self.loader.clear_tasks()
-        self.clear_pixmap_cache()
         self.load_generation += 1
+        self.pending_decoder_requests.clear()
+        if hasattr(self, 'loader'):
+            self.loader.clear_tasks(new_generation=self.load_generation)
+        self.clear_pixmap_cache()
 
         supported_formats = {fmt.data().decode().lower() for fmt in QImageReader.supportedImageFormats()}
 
@@ -771,17 +763,18 @@ class MainViewer(QMainWindow):
         pixmap = self._get_pixmap_from_cache(filepath)
         if pixmap is None:
             # Asynchronous load via ImageLoader
-            req_id = str(uuid.uuid4())
-            self.pending_decoder_requests[req_id] = (filepath, self.load_generation)
-            try:
-                self.loader.add_task(filepath, request_id=req_id, generation=self.load_generation, priority=0)
-            except TypeError:
-                self.loader.add_task(filepath)
-
-            # Try direct fallback load if local file read is instant
-            pixmap = QPixmap(filepath)
-            if not pixmap.isNull():
-                self._add_pixmap_to_cache(filepath, pixmap)
+            if not self._has_pending_decode(filepath):
+                requested_id = str(uuid.uuid4())
+                req_id = self.loader.add_task(
+                    filepath,
+                    request_id=requested_id,
+                    generation=self.load_generation,
+                    priority=0,
+                )
+                if req_id:
+                    self.pending_decoder_requests[req_id] = (
+                        filepath, self.load_generation
+                    )
 
         if pixmap is not None and not pixmap.isNull():
             self.empty_label.hide()
@@ -803,6 +796,14 @@ class MainViewer(QMainWindow):
                 if op.src_path == can_p:
                     return True
         return False
+
+    def _has_pending_decode(self, filepath: str) -> bool:
+        """Return whether the current generation already owns a decode request."""
+        canonical = _canonical_path(filepath)
+        return any(
+            generation == self.load_generation and _canonical_path(path) == canonical
+            for path, generation in self.pending_decoder_requests.values()
+        )
 
     def _find_next_non_pending_index(self, start_idx: int, direction: int = 1) -> int:
         if not self.images:

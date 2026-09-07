@@ -44,9 +44,6 @@ class ImageLoader(QThread):
     and bounded memory/queue accounting.
     """
 
-    # Legacy signal emitted when an image is decoded successfully
-    image_loaded = pyqtSignal(str, QImage)
-
     # SHARED DECODER CONTRACT v1 signal emitting result dictionary:
     # {"request_id": str, "generation": int, "filepath": str, "image": QImage | None, "error": str | None}
     image_ready = pyqtSignal(dict)
@@ -58,6 +55,7 @@ class ImageLoader(QThread):
         super().__init__(parent)
         self._queue: list[DecodeRequest] = []
         self._requests_by_id: dict[str, DecodeRequest] = {}
+        self._active_requests: dict[str, DecodeRequest] = {}
         self._running: bool = True
         self._current_generation: int = 0
         self._seq_counter: int = 0
@@ -90,6 +88,7 @@ class ImageLoader(QThread):
 
         req_id: str = request_id if request_id else f"req_{uuid.uuid4().hex}"
 
+        dropped: DecodeRequest | None = None
         with self._cond:
             if not self._running:
                 return req_id
@@ -123,26 +122,32 @@ class ImageLoader(QThread):
             heapq.heappush(self._queue, req)
             self._requests_by_id[req_id] = req
 
-            # Enforce bounded backlog: drop lowest-priority (largest priority number)
-            # pending preloads if queue exceeds capacity
+            # Keep the pending queue strictly bounded. Prefer discarding a low-priority
+            # preload; if every request is foreground work, discard the oldest request
+            # so rapid navigation cannot grow memory without limit.
             if len(self._queue) > self.MAX_QUEUE_CAPACITY:
-                candidates = [
-                    r for r in self._queue if r.priority > 0 and not r.cancelled
-                ]
-                if candidates:
-                    worst_req = max(candidates, key=lambda r: (r.priority, r.seq_num))
-                    worst_req.cancelled = True
-                    self._queue = [r for r in self._queue if not r.cancelled]
-                    heapq.heapify(self._queue)
-                    self._requests_by_id.pop(worst_req.request_id, None)
+                dropped = max(self._queue, key=lambda r: (r.priority, -r.seq_num))
+                dropped.cancelled = True
+                self._queue.remove(dropped)
+                heapq.heapify(self._queue)
+                self._requests_by_id.pop(dropped.request_id, None)
 
             self._cond.notify_all()
-            return req_id
+
+        if dropped is not None:
+            self._emit_result(
+                request_id=dropped.request_id,
+                generation=dropped.generation,
+                filepath=dropped.filepath,
+                image=None,
+                error="Request dropped because the decode queue is full",
+            )
+        return req_id
 
     def cancel_request(self, request_id: str) -> None:
         """Cancels a pending decode request by ID."""
         with self._cond:
-            req = self._requests_by_id.pop(request_id, None)
+            req = self._requests_by_id.get(request_id)
             if req:
                 req.cancelled = True
 
@@ -158,7 +163,12 @@ class ImageLoader(QThread):
             for req in self._queue:
                 req.cancelled = True
             self._queue.clear()
-            self._requests_by_id.clear()
+            for request_id in list(self._requests_by_id):
+                if request_id not in self._active_requests:
+                    self._requests_by_id.pop(request_id, None)
+            for req in self._active_requests.values():
+                if new_generation is None or req.generation < self._current_generation:
+                    req.cancelled = True
             self._cond.notify_all()
 
     def request_stop(self) -> None:
@@ -167,14 +177,19 @@ class ImageLoader(QThread):
             self._running = False
             for req in self._queue:
                 req.cancelled = True
+            for req in self._active_requests.values():
+                req.cancelled = True
             self._queue.clear()
-            self._requests_by_id.clear()
+            for request_id in list(self._requests_by_id):
+                if request_id not in self._active_requests:
+                    self._requests_by_id.pop(request_id, None)
             self._cond.notify_all()
 
     def stop(self) -> None:
         """Legacy synchronous thread stop method."""
         self.request_stop()
-        self.wait()
+        if not self.wait(5_000):
+            logger.warning("Image decoder did not stop within five seconds")
 
     def run(self) -> None:
         """Main processing loop executing on the worker thread."""
@@ -190,7 +205,7 @@ class ImageLoader(QThread):
                     continue
 
                 req: DecodeRequest = heapq.heappop(self._queue)
-                self._requests_by_id.pop(req.request_id, None)
+                self._active_requests[req.request_id] = req
 
             # Check if request was cancelled or belongs to an obsolete generation
             if req.cancelled or req.generation < self._current_generation:
@@ -201,6 +216,7 @@ class ImageLoader(QThread):
                     image=None,
                     error="Request cancelled",
                 )
+                self._finish_request(req.request_id)
                 continue
 
             try:
@@ -215,6 +231,7 @@ class ImageLoader(QThread):
                         image=None,
                         error="Request cancelled during decode",
                     )
+                    self._finish_request(req.request_id)
                     continue
 
                 self._emit_result(
@@ -224,6 +241,7 @@ class ImageLoader(QThread):
                     image=qimg,
                     error=error,
                 )
+                self._finish_request(req.request_id)
 
             except Exception as exc:
                 logger.error(
@@ -237,6 +255,13 @@ class ImageLoader(QThread):
                     image=None,
                     error=str(exc),
                 )
+                self._finish_request(req.request_id)
+
+    def _finish_request(self, request_id: str) -> None:
+        """Remove terminal request bookkeeping without touching another request."""
+        with self._cond:
+            self._active_requests.pop(request_id, None)
+            self._requests_by_id.pop(request_id, None)
 
     def _emit_result(
         self,
@@ -246,7 +271,7 @@ class ImageLoader(QThread):
         image: QImage | None,
         error: str | None,
     ) -> None:
-        """Helper to emit image_ready dict and legacy image_loaded signal."""
+        """Emit the sole public decoder result contract."""
         res: dict[str, Any] = {
             "request_id": request_id,
             "generation": generation,
@@ -255,5 +280,3 @@ class ImageLoader(QThread):
             "error": error,
         }
         self.image_ready.emit(res)
-        if image is not None:
-            self.image_loaded.emit(filepath, image)

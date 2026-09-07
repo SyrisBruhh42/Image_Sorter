@@ -13,7 +13,7 @@ def test_image_loader_queue(qtbot, tmp_path):
     img.save(str(img_path))
 
     received = []
-    loader.image_loaded.connect(lambda p, i: received.append(p))
+    loader.image_ready.connect(lambda result: received.append(result["filepath"]))
 
     loader.start()
     loader.add_task(str(img_path))

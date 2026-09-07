@@ -14,10 +14,7 @@ def test_image_loader_contract_v1_signals(qtbot, tmp_path):
 
     loader = ImageLoader()
     results = []
-    legacy_results = []
-
     loader.image_ready.connect(lambda res: results.append(res))
-    loader.image_loaded.connect(lambda p, i: legacy_results.append((p, i)))
 
     loader.start()
     req_id = loader.add_task(
@@ -35,9 +32,7 @@ def test_image_loader_contract_v1_signals(qtbot, tmp_path):
     assert isinstance(res["image"], QImage)
     assert res["error"] is None
 
-    # Check legacy signal was also emitted
-    assert len(legacy_results) == 1
-    assert legacy_results[0][0] == str(img_path)
+    assert not hasattr(loader, "image_loaded")
 
 
 def test_priority_scheduling_and_duplicate_coalescing(qtbot, tmp_path):
@@ -118,6 +113,16 @@ def test_bounded_backlog_capacity(qtbot, tmp_path):
     p0_req = loader._requests_by_id.get(req_ids[0])
     assert p0_req is not None
     assert p0_req.priority == 0
+
+
+def test_bounded_backlog_with_foreground_only(tmp_path):
+    """Rapid foreground navigation is bounded even without preload candidates."""
+    loader = ImageLoader()
+    for i in range(loader.MAX_QUEUE_CAPACITY + 10):
+        loader.add_task(str(tmp_path / f"foreground_{i}.jpg"), priority=0)
+
+    assert len(loader._queue) == loader.MAX_QUEUE_CAPACITY
+    assert len(loader._requests_by_id) == loader.MAX_QUEUE_CAPACITY
 
 
 def test_nonblocking_request_stop(qtbot, tmp_path):
