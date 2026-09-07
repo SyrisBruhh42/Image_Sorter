@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import os
 import py_compile
 import subprocess
@@ -19,6 +21,7 @@ def test_run_app_compiles():
 def test_imagesorter_main_importable():
     """Verify imagesorter.main:main remains importable and runnable module-wise."""
     from imagesorter.main import main
+
     assert callable(main)
 
 
@@ -29,9 +32,34 @@ def test_module_execution():
     assert res.returncode == 0, f"Failed module execution check: {res.stderr}"
 
 
-def test_build_pyinstaller_preflight(monkeypatch):
+def test_build_pyinstaller_preflight():
     """Verify check_pyinstaller_installed returns boolean correctly."""
     assert build.check_pyinstaller_installed() in (True, False)
+
+
+def test_appdir_preparation(tmp_path):
+    """Verify AppDir structure, desktop integration, and AppRun permissions."""
+    root_dir = Path(__file__).resolve().parent.parent
+    dist_dir = tmp_path / "dist"
+    exe_dir = dist_dir / "ImageSorter"
+    exe_dir.mkdir(parents=True)
+    (exe_dir / "ImageSorter").write_bytes(b"binary")
+
+    build.generate_freedesktop_artifacts(dist_dir)
+    app_dir = build.prepare_appdir(dist_dir, root_dir)
+
+    assert (app_dir / "usr" / "bin" / "ImageSorter").exists()
+    assert (app_dir / "usr" / "share" / "applications" / "imagesorter.desktop").exists()
+    assert (app_dir / "imagesorter.desktop").exists()
+
+    app_run = app_dir / "AppRun"
+    assert app_run.exists()
+    assert os.access(app_run, os.X_OK)
+
+    desktop_content = (app_dir / "imagesorter.desktop").read_text(encoding="utf-8")
+    assert "Icon=imagesorter" in desktop_content
+    assert "Exec=ImageSorter %F" in desktop_content
+    assert ".isp" not in desktop_content
 
 
 @pytest.mark.packaging
@@ -40,30 +68,24 @@ def test_pyinstaller_executable_smoke():
     root_dir = Path(__file__).resolve().parent.parent
     build_script = root_dir / "build.py"
 
-    # 1. Run build.py
     build_res = subprocess.run([sys.executable, str(build_script)], capture_output=True, text=True, cwd=root_dir)
     assert build_res.returncode == 0, f"build.py failed:\nSTDOUT:\n{build_res.stdout}\nSTDERR:\n{build_res.stderr}"
 
-    # 2. Locate built executable
     exe_name = "ImageSorter.exe" if sys.platform == "win32" else "ImageSorter"
     exe_path = root_dir / "dist" / "ImageSorter" / exe_name
     assert exe_path.exists(), f"Executable not found at {exe_path}"
 
-    # 3. Launch built binary with QT_QPA_PLATFORM=offscreen and monitor startup
     env = os.environ.copy()
     env["QT_QPA_PLATFORM"] = "offscreen"
 
     proc = subprocess.Popen([str(exe_path)], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env)
 
     try:
-        # Wait for 3 seconds to ensure process initializes Qt without immediate crash/ImportError
         stdout, stderr = proc.communicate(timeout=3.0)
     except subprocess.TimeoutExpired:
-        # Process stayed alive as expected for GUI app under offscreen mode
         proc.kill()
         _stdout, stderr = proc.communicate()
     else:
-        # If process exited within timeout, check returncode and ensure it was not due to ImportError
         assert proc.returncode == 0, f"Executable crashed on startup with code {proc.returncode}.\nStderr:\n{stderr}"
 
     assert "ImportError: attempted relative import with no known parent package" not in stderr

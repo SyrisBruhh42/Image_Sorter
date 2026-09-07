@@ -75,6 +75,7 @@ a = Analysis(
         'PyQt6.QtSvg',
         'imagesorter',
         'imagesorter.main',
+        'imagesorter.launch_requests',
     ],
     hookspath=[],
     hooksconfig={},

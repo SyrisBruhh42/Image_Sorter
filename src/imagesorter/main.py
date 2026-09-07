@@ -4,11 +4,15 @@ import os
 import sys
 
 try:
+    from .launch_requests import parse_launch_paths
     from .logger import logger
+    from .paths import get_resource_dir
     from .settings_manager import SettingsManager
     from .ui_main import MainViewer
 except ImportError:
+    from imagesorter.launch_requests import parse_launch_paths  # type: ignore
     from imagesorter.logger import logger  # type: ignore
+    from imagesorter.paths import get_resource_dir  # type: ignore
     from imagesorter.settings_manager import SettingsManager  # type: ignore
     from imagesorter.ui_main import MainViewer  # type: ignore
 
@@ -49,20 +53,43 @@ def main(argv: list[str] | None = None) -> int:
     args = sys.argv if argv is None else argv
 
     if any(arg in args[1:] for arg in ("-h", "--help")):
-        print("Usage: imagesorter [options]\n\nOptions:\n  -h, --help  Show this help message and exit")
+        print("Usage: imagesorter [options] [file_or_directory ...]\n\nOptions:\n  -h, --help  Show this help message and exit")
         return 0
 
     configure_linux_platform()
 
     try:
+        from PyQt6.QtGui import QIcon
         from PyQt6.QtWidgets import QApplication
 
-        app = QApplication(args)
+        app = QApplication.instance()
+        if app is None:
+            app = QApplication(args)
+
         app.setApplicationName("Image Sorter")
         app.setOrganizationName("SyrisBruhh42")
 
+        # Desktop ID wiring according to Freedesktop spec (imagesorter.desktop)
+        app.setDesktopFileName("imagesorter")
+
+        # Set Application Window Icon
+        res_dir = get_resource_dir()
+        icon_path = res_dir / "imagesorter.png"
+        if not icon_path.exists():
+            icon_path = res_dir / "imagesorter.ico"
+        if icon_path.exists():
+            app.setWindowIcon(QIcon(str(icon_path)))
+
         settings = SettingsManager()
-        viewer = MainViewer(settings)
+
+        # Parse positional launch arguments (files and folders)
+        initial_paths = parse_launch_paths(args[1:])
+
+        if initial_paths:
+            viewer = MainViewer(settings, initial_paths=initial_paths)
+        else:
+            viewer = MainViewer(settings)
+
         viewer.show()
 
         return int(app.exec())

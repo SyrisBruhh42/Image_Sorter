@@ -4,12 +4,13 @@ High-Throughput Image Triage & AI Tagging Suite built with Python and PyQt6.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Python 3.9+](https://img.shields.io/badge/python-3.9+-blue.svg)](https://www.python.org/downloads/)
+[![Status: Beta](https://img.shields.io/badge/Status-Beta-blue.svg)](https://github.com/SyrisBruhh42/Image_Sorter)
 
 ---
 
 ## 🚀 Overview
 
-**Image Sorter Enterprise** is a zero-latency, cross-platform desktop application designed for high-quantity image generators, professional photographers, and digital archivists. Built on PyQt6 and ONNX Runtime, it delivers non-destructive file operations, multi-threaded image preloading, exposure clipping diagnostic tools, and AI-powered auto-tagging.
+**Image Sorter Enterprise** is a high-throughput, cross-platform desktop application designed for high-quantity image generators, professional photographers, and digital archivists. Built on PyQt6 and ONNX Runtime, it delivers non-destructive file operations, multi-threaded image preloading, exposure clipping diagnostic tools, and AI auto-tagging.
 
 ---
 
@@ -23,6 +24,7 @@ High-Throughput Image Triage & AI Tagging Suite built with Python and PyQt6.
 | **EXIF Metadata Synergy** | Non-destructive, atomic EXIF tag writing (`piexif`) with safe temp-file swapping. |
 | **Diagnostic Tools** | Real-time exposure clipping inspector highlights blown-out highlights (`>250`) and crushed shadows (`<5`). |
 | **Cross-Platform Path Resolution** | Strict compliance with XDG Base Directory specs on POSIX/Linux, `%APPDATA%` on Windows, and `Application Support` on macOS, with optional `portable.flag` override. |
+| **Desktop Launch Integration** | Opens specific image files or folders directly from command-line invocation (`imagesorter /path/to/file.jpg` or `imagesorter /path/to/folder`). |
 
 ---
 
@@ -76,11 +78,14 @@ pip install -e ".[dev]"
 
 ## ⚡ Quick Start & Execution
 
-Launch the application using either the CLI command or module execution:
+Launch the application using either the CLI command, positional arguments, or module execution:
 
 ```bash
-# Direct CLI entry point
+# Direct CLI entry point (opens default configured source directory)
 imagesorter
+
+# Launch with explicit image files or directory
+imagesorter /path/to/photo.jpg /path/to/folder
 
 # Python module invocation (run headless offscreen or standard)
 QT_QPA_PLATFORM=offscreen python3 -m imagesorter.main --help
@@ -133,18 +138,29 @@ python3 build.py
 ```
 Outputs are stored in `dist/ImageSorter/`.
 
-### 2. Testing and Coverage Verification
-To run unit tests headlessly with coverage report:
+### 2. Standalone Linux AppImage Build
+To build a standalone Linux AppImage binary using a checksum-verified `appimagetool`:
 ```bash
-QT_QPA_PLATFORM=offscreen pytest --cov=imagesorter --cov-report=term-missing tests/
+python3 build.py --appimage
+```
+On x86_64 systems, this generates `dist/ImageSorter-x86_64.AppImage`.
+
+#### Ubuntu 24.04 LTS FUSE Requirements & Fallback
+Ubuntu 24.04 LTS does not include `libfuse2` by default (it defaults to `fuse3`). To run `.AppImage` files natively on Ubuntu 24.04:
+```bash
+sudo apt update && sudo apt install -y libfuse2t64
+```
+Alternatively, extract and run without FUSE:
+```bash
+./dist/ImageSorter-x86_64.AppImage --appimage-extract
+./squashfs-root/AppRun
 ```
 
-### 2. Linux AppImage Generation
-After running `python3 build.py` on Linux, execute the generated setup script:
+### 3. Testing and Coverage Verification
+To run unit tests headlessly with coverage report:
 ```bash
-./dist/build_appimage.sh
+QT_QPA_PLATFORM=offscreen python3 -m pytest --cov=imagesorter --cov-report=term-missing tests/
 ```
-If `appimagetool` is installed on your PATH, it compiles `ImageSorter-x86_64.AppImage`.
 
 ---
 
