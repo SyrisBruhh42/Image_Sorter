@@ -67,29 +67,44 @@ def _get_valid_env_path(var_name: str) -> Path | None:
     return None
 
 
+def _test_directory_writable(d: Path) -> bool:
+    """Tests actual writability of directory d using a temporary test file."""
+    try:
+        test_file = d / f".write_test_{os.getpid()}_{tempfile.mktemp(dir='')}"
+        test_file.touch(exist_ok=False)
+        test_file.unlink(missing_ok=True)
+        return True
+    except (OSError, PermissionError):
+        return False
+
+
 def _ensure_dir_or_fallback(target_dir: Path, category: str) -> Path:
     """
-    Ensures that target_dir exists. If an OSError occurs, falls back to
-    <tempdir>/ImageSorter/<category>. Emits a warning if preferred directory fails.
+    Ensures that target_dir exists and is writable. If an OSError occurs or directory
+    is unwritable, falls back to a user-isolated temporary directory:
+    <tempdir>/imagesorter-<uid>/<category>. Emits a warning if preferred directory fails.
 
     Args:
         target_dir (Path): The preferred directory path.
         category (str): Category name ("config", "data", "cache", "logs").
 
     Returns:
-        Path: Created directory path or fallback path.
+        Path: Created and verified directory path or fallback path.
     """
     try:
         target_dir.mkdir(parents=True, exist_ok=True)
-        return target_dir
+        if _test_directory_writable(target_dir):
+            return target_dir
+        raise OSError(f"Directory {target_dir} is not writable.")
     except OSError as e:
         warnings.warn(
-            f"Failed to create preferred directory {target_dir}: {e}. "
+            f"Failed to verify or write to preferred directory {target_dir}: {e}. "
             f"Falling back to temporary directory for category '{category}'.",
             RuntimeWarning,
             stacklevel=2,
         )
-        fallback_dir = Path(tempfile.gettempdir()) / "ImageSorter" / category
+        uid = os.getuid() if hasattr(os, "getuid") else os.getlogin()
+        fallback_dir = Path(tempfile.gettempdir()) / f"imagesorter-{uid}" / category
         try:
             fallback_dir.mkdir(parents=True, exist_ok=True)
         except OSError as fallback_err:
