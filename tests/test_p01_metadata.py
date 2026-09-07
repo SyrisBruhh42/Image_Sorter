@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 
 import piexif
+import pytest
 from PIL import Image
 
 from imagesorter.metadata_io import merge_sidecar_content, sanitize_tags, write_metadata
@@ -52,7 +53,6 @@ def test_write_metadata_sidecar_path_traversal_defense(tmp_path, monkeypatch):
 
     monkeypatch.setattr(os.path, "realpath", mock_realpath)
 
-    import pytest
     with pytest.raises(ValueError, match="Path traversal detected"):
         write_metadata(str(img_path), ["tag"], write_exif=False, write_sidecar=True)
 
@@ -84,7 +84,7 @@ def test_exif_tagging_and_final_provenance_integrity(tmp_path):
     assert prov_after["size"] == os.path.getsize(str(img_path))
 
 
-def test_malformed_exif_header_fallback(tmp_path):
+def test_malformed_exif_header_is_preserved_and_refused(tmp_path):
     img_path = tmp_path / "corrupt_header.jpg"
     img = Image.new("RGB", (50, 50), color="red")
     img.save(str(img_path), "JPEG")
@@ -94,6 +94,34 @@ def test_malformed_exif_header_fallback(tmp_path):
         f.seek(2)
         f.write(b"\xff\xe1\x00\x10CorruptExifHeader!!")
 
-    # Should handle malformed header gracefully without crash
-    write_metadata(str(img_path), ["tag1", "tag2"], write_exif=True, write_sidecar=False)
-    assert img_path.exists()
+    original_bytes = img_path.read_bytes()
+
+    with pytest.raises(OSError, match="image was not modified|transaction failed"):
+        write_metadata(
+            str(img_path), ["tag1", "tag2"], write_exif=True, write_sidecar=False
+        )
+    assert img_path.read_bytes() == original_bytes
+
+
+def test_exif_keywords_merge_without_losing_other_fields(tmp_path):
+    img_path = tmp_path / "metadata.jpg"
+    Image.new("RGB", (20, 20), color="blue").save(img_path, "JPEG")
+    initial = {
+        "0th": {
+            piexif.ImageIFD.Artist: b"Photographer",
+            piexif.ImageIFD.XPKeywords: ("existing\x00").encode("utf-16le"),
+        },
+        "Exif": {},
+        "GPS": {},
+        "Interop": {},
+        "1st": {},
+        "thumbnail": None,
+    }
+    piexif.insert(piexif.dump(initial), str(img_path))
+
+    write_metadata(str(img_path), ["existing", "new"], True, False)
+
+    result = piexif.load(str(img_path))
+    assert result["0th"][piexif.ImageIFD.Artist] == b"Photographer"
+    keywords = bytes(result["0th"][piexif.ImageIFD.XPKeywords])
+    assert keywords.decode("utf-16le").rstrip("\x00") == "existing;new"

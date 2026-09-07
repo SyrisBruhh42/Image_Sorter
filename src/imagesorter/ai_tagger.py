@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import hashlib
 import os
-import shutil
 import ssl
 import tempfile
 import urllib.error
@@ -11,14 +10,16 @@ from abc import ABC, abstractmethod
 
 import numpy as np
 import onnxruntime as ort
-import piexif
 import psutil
 from PIL import Image, ImageOps
 from PyQt6.QtCore import QThread, pyqtSignal
 
 from .hardware_scan import get_prioritized_providers
 from .logger import logger
+from .metadata_io import write_metadata
 from .paths import get_data_dir
+
+__all__ = ["AITagger", "BaseVisionEngine", "ModelDownloader", "write_metadata"]
 
 MODEL_URL = "https://huggingface.co/onnx-community/mobilenet_v2_1.0_224-ONNX/resolve/f7f884d9505b4c69f8a260d9967ff7791bafa498/onnx/model.onnx"
 MODEL_SHA256 = "2e731702ec8374128edfc9f7d344c44287e7791bb3c7ae25a628c2c2dec83ce6"
@@ -393,143 +394,3 @@ class AITagger(BaseVisionEngine):
         except Exception as e:
             logger.error(f"Error during AI inference for {image_path}: {e}")
             return []
-
-
-def _sanitize_tags(tags: list[str]) -> list[str]:
-    """Sanitizes metadata tags: strips control chars, restricts to printable chars, limits to 64 chars per tag and max 30 tags."""
-    sanitized: list[str] = []
-    for tag in tags:
-        if not isinstance(tag, str):
-            continue
-        cleaned = "".join(ch for ch in tag if ch.isprintable() and ch not in ("\r", "\n", "\x00"))
-        cleaned = cleaned.strip()
-        if cleaned:
-            sanitized.append(cleaned[:64])
-        if len(sanitized) >= 30:
-            break
-    return sanitized
-
-
-def write_metadata(
-    filepath: str,
-    tags: list[str],
-    write_exif: bool = True,
-    write_sidecar: bool = False
-) -> None:
-    """
-    Writes metadata tags to EXIF (via atomic temp-file swap) or a sidecar .txt file.
-
-    Args:
-        filepath (str): Target image path.
-        tags (List[str]): List of tag strings.
-        write_exif (bool): Whether to embed tags in EXIF XPKeywords.
-        write_sidecar (bool): Whether to create a sidecar file.
-    """
-    sanitized_tags = _sanitize_tags(tags)
-    if not sanitized_tags:
-        return
-
-    # Write Sidecar (Atomic Write with Path Traversal Boundary Check)
-    if write_sidecar:
-        real_image_path = os.path.realpath(filepath)
-        parent_dir = os.path.dirname(real_image_path)
-        sidecar_path = os.path.join(parent_dir, os.path.basename(real_image_path) + ".txt")
-        real_sidecar = os.path.realpath(sidecar_path)
-
-        if os.path.commonpath([parent_dir, real_sidecar]) != parent_dir:
-            err_msg = f"Path traversal detected: {sidecar_path} escapes {parent_dir}"
-            logger.error(err_msg)
-            raise ValueError(err_msg)
-
-        temp_path: str | None = None
-        try:
-            fd, temp_path = tempfile.mkstemp(dir=parent_dir, prefix="sidecar_", suffix=".tmp")
-            with os.fdopen(fd, 'w', encoding='utf-8') as f:
-                f.write(", ".join(sanitized_tags))
-                f.flush()
-                os.fsync(f.fileno())
-
-            os.replace(temp_path, sidecar_path)
-            logger.debug(f"Wrote sidecar metadata atomically to {sidecar_path}")
-        except OSError as e:
-            logger.error(f"OS error writing sidecar for {filepath}: {e}")
-            if temp_path and os.path.exists(temp_path):
-                try:
-                    os.remove(temp_path)
-                except OSError:
-                    pass
-        except Exception as e:
-            logger.error(f"Unexpected error writing sidecar for {filepath}: {e}")
-            if temp_path and os.path.exists(temp_path):
-                try:
-                    os.remove(temp_path)
-                except OSError:
-                    pass
-
-    # Write EXIF (Atomic piexif insertion via temp file in target directory)
-    if write_exif and filepath.lower().endswith(('.jpg', '.jpeg')):
-        temp_img_path: str | None = None
-        try:
-            tag_string = ";".join(sanitized_tags)
-            xp_keywords = (tag_string + "\x00").encode('utf-16le')
-
-            exif_dict = None
-            try:
-                exif_dict = piexif.load(filepath)
-                if "0th" not in exif_dict:
-                    exif_dict["0th"] = {}
-                exif_dict["0th"][piexif.ImageIFD.XPKeywords] = xp_keywords
-                exif_bytes = piexif.dump(exif_dict)
-            except Exception as load_or_dump_err:
-                logger.warning(
-                    f"Malformed camera EXIF header in {filepath} ({load_or_dump_err}); "
-                    "falling back to pristine 0th IFD."
-                )
-                pristine_exif = {
-                    "0th": {
-                        piexif.ImageIFD.XPKeywords: xp_keywords
-                    },
-                    "Exif": {},
-                    "GPS": {},
-                    "Interop": {},
-                    "1st": {},
-                    "thumbnail": None
-                }
-                exif_bytes = piexif.dump(pristine_exif)
-
-            if len(exif_bytes) > 32768:
-                logger.error(f"EXIF payload ({len(exif_bytes)} bytes) exceeds 32KB limit for {filepath}")
-                return
-
-            dir_name = os.path.dirname(os.path.realpath(filepath)) or "."
-            fd, temp_img_path = tempfile.mkstemp(dir=dir_name, prefix="exif_", suffix=".tmp")
-            os.close(fd)
-
-            # Copy original image to temp file
-            with open(filepath, 'rb') as src, open(temp_img_path, 'wb') as dst:
-                dst.write(src.read())
-
-            piexif.insert(exif_bytes, temp_img_path)
-
-            # Preserve POSIX permissions and mtime before atomic swap
-            try:
-                shutil.copystat(filepath, temp_img_path)
-            except OSError as cs_err:
-                logger.warning(f"Could not copy file stat for {filepath}: {cs_err}")
-
-            os.replace(temp_img_path, filepath)
-            logger.debug(f"Wrote EXIF metadata atomically to {filepath}")
-        except piexif.InvalidImageDataError as e:
-            logger.error(f"Invalid image data for EXIF injection in {filepath}: {e}")
-            if temp_img_path and os.path.exists(temp_img_path):
-                try:
-                    os.remove(temp_img_path)
-                except OSError:
-                    pass
-        except Exception as e:
-            logger.error(f"Unexpected error writing EXIF for {filepath}: {e}")
-            if temp_img_path and os.path.exists(temp_img_path):
-                try:
-                    os.remove(temp_img_path)
-                except OSError:
-                    pass

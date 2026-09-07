@@ -19,6 +19,7 @@ from .operation_contracts import (
     OperationState,
     TaskOptions,
     create_undo_token,
+    validate_undo_token,
 )
 from .operation_journal import JournalState, OperationJournal
 from .settings_manager import SettingsManager
@@ -65,33 +66,60 @@ def _verify_provenance(filepath: str, provenance: dict[str, Any]) -> None:
             raise ValueError(f"SHA-256 digest mismatch for {filepath}: file contents altered.")
 
 
-def _reserve_candidate_path(dest_folder: str, filename: str) -> str:
+def _reserve_candidate_paths(
+    dest_folder: str, filename: str, *, include_sidecar: bool
+) -> tuple[str, str | None]:
     """
-    Atomically creates and reserves an unpopulated destination file path using incrementing suffixes.
-    e.g. photo.jpg, photo_1.jpg, photo_2.jpg
+    Reserve an image and, when needed, its exact sidecar name without overwriting.
     """
     base, ext = os.path.splitext(filename)
     counter = 0
     while True:
         candidate_name = filename if counter == 0 else f"{base}_{counter}{ext}"
         candidate_path = os.path.join(dest_folder, candidate_name)
+        paths = [candidate_path]
+        if include_sidecar:
+            paths.append(candidate_path + ".txt")
+        reserved: list[str] = []
         try:
-            fd = os.open(candidate_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o666)
-            os.close(fd)
-            return candidate_path
+            for path in paths:
+                fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o666)
+                os.close(fd)
+                reserved.append(path)
+            return candidate_path, paths[1] if include_sidecar else None
         except FileExistsError:
+            for path in reserved:
+                try:
+                    os.remove(path)
+                except OSError:
+                    pass
             counter += 1
 
 
+def _reserve_candidate_path(dest_folder: str, filename: str) -> str:
+    """Backward-compatible single-file destination reservation."""
+    candidate, _sidecar = _reserve_candidate_paths(
+        dest_folder, filename, include_sidecar=False
+    )
+    return candidate
+
+
 def _atomic_copy_stream(
-    src_path: str, candidate_path: str, is_move: bool
+    src_path: str,
+    candidate_path: str,
+    is_move: bool,
+    *,
+    temp_path: str | None = None,
 ) -> str:
     """
     Streams content to a temporary file in destination directory, flushes and fsyncs,
     verifies stream integrity, atomically replaces candidate path, and conditionally unlinks source.
     """
     dest_dir = os.path.dirname(candidate_path)
-    temp_path = os.path.join(dest_dir, f".tmp_{uuid.uuid4().hex}")
+    temp_path = temp_path or os.path.join(
+        dest_dir, f".imagesorter-copy-{uuid.uuid4().hex}.tmp"
+    )
+    replaced = False
     try:
         src_size = os.path.getsize(src_path)
         with open(src_path, "rb") as f_src, open(temp_path, "wb") as f_dst:
@@ -112,6 +140,7 @@ def _atomic_copy_stream(
             pass
 
         os.replace(temp_path, candidate_path)
+        replaced = True
 
         if is_move:
             os.remove(src_path)
@@ -123,7 +152,10 @@ def _atomic_copy_stream(
                 os.remove(temp_path)
             except OSError:
                 pass
-        if os.path.lexists(candidate_path):
+        # If a move removed the source, the destination is now the only copy and
+        # must be preserved for truthful recovery rather than cleaned as staging.
+        source_was_removed = is_move and not os.path.lexists(src_path)
+        if os.path.lexists(candidate_path) and not (replaced and source_was_removed):
             try:
                 os.remove(candidate_path)
             except OSError:
@@ -133,10 +165,7 @@ def _atomic_copy_stream(
 
 class WorkerSignals(QObject):
     """Signals to communicate back to the main UI thread."""
-    finished = pyqtSignal(str)          # Emits filepath upon successful completion
-    error = pyqtSignal(str, str)        # Emits (filepath, error_message)
-    progress = pyqtSignal(str)          # Emits human-readable progress updates
-    undo_record = pyqtSignal(dict)      # Emits standard UndoToken dictionary
+    progress = pyqtSignal(str)
     operation_result = pyqtSignal(dict)  # Emits unified OperationResult dictionary
 
 
@@ -210,13 +239,14 @@ class FileTaskRunnable(QRunnable):
 
     def _handle_error(self, err_msg: str) -> None:
         """Handles task failure by logging in journal and emitting failure signals."""
-        self.journal.record_terminal(
-            operation_id=self.operation_id,
-            state=JournalState.FAILED,
-            error=err_msg,
-        )
-        self.signals.error.emit(self.filepath, err_msg)
-
+        try:
+            self.journal.record_terminal(
+                operation_id=self.operation_id,
+                state=JournalState.FAILED,
+                error=err_msg,
+            )
+        except Exception:
+            logger.error("Could not record failed operation in journal", exc_info=True)
         result = OperationResult(
             operation_id=self.operation_id,
             action=self.task_type,
@@ -238,10 +268,272 @@ class FileTaskRunnable(QRunnable):
         val = self.settings.get(section, key)
         return val if val is not None else default
 
-    def _execute(self) -> None:
-        """Core transactional logic for moving, copying, trashing, or undoing."""
-        filepath = os.path.normpath(self.filepath)
+    def _temp_path(self, parent: str, label: str) -> str:
+        return os.path.join(
+            parent, f".imagesorter-{self.operation_id}-{label}-{uuid.uuid4().hex}.tmp"
+        )
 
+    def _artifact(self, path: str, kind: str) -> dict[str, Any]:
+        record: dict[str, Any] = {
+            "path": path,
+            "kind": kind,
+            "owner_token": self.journal.owner_token,
+        }
+        if os.path.lexists(path) and not os.path.islink(path):
+            stat = os.stat(path)
+            record.update({"dev": stat.st_dev, "ino": stat.st_ino})
+        return record
+
+    @staticmethod
+    def _validate_regular_path(path: str, *, label: str) -> None:
+        if not os.path.lexists(path):
+            raise FileNotFoundError(f"{label} file missing: {path}")
+        if os.path.islink(path):
+            raise ValueError(f"{label} file is a symbolic link: {path}")
+        if not os.path.isfile(path):
+            raise ValueError(f"{label} path is not a regular file: {path}")
+
+    def _stage_transfer(
+        self, source: str, destination_folder: str, *, is_move: bool
+    ) -> tuple[str, str | None]:
+        """Copy an image/sidecar set, then remove sources only after both commit."""
+        source_sidecar = source + ".txt"
+        include_sidecar = os.path.lexists(source_sidecar)
+        if include_sidecar:
+            self._validate_regular_path(source_sidecar, label="Sidecar")
+
+        candidate, candidate_sidecar = _reserve_candidate_paths(
+            destination_folder,
+            os.path.basename(source),
+            include_sidecar=include_sidecar,
+        )
+        main_temp = self._temp_path(destination_folder, "image")
+        artifacts = [
+            self._artifact(candidate, "reservation"),
+            self._artifact(main_temp, "temp"),
+        ]
+        side_temp: str | None = None
+        if candidate_sidecar:
+            side_temp = self._temp_path(destination_folder, "sidecar")
+            artifacts.extend(
+                [
+                    self._artifact(candidate_sidecar, "reservation"),
+                    self._artifact(side_temp, "temp"),
+                ]
+            )
+        try:
+            self.journal.record_staged(
+                self.operation_id, destination_path=candidate, artifacts=artifacts
+            )
+        except Exception:
+            for target in (candidate_sidecar, candidate):
+                if target and os.path.lexists(target):
+                    try:
+                        os.remove(target)
+                    except OSError:
+                        pass
+            raise
+
+        try:
+            _atomic_copy_stream(
+                source, candidate, is_move=False, temp_path=main_temp
+            )
+            if candidate_sidecar and side_temp:
+                _atomic_copy_stream(
+                    source_sidecar,
+                    candidate_sidecar,
+                    is_move=False,
+                    temp_path=side_temp,
+                )
+        except Exception:
+            for target in (candidate_sidecar, candidate):
+                if target and os.path.lexists(target):
+                    try:
+                        os.remove(target)
+                    except OSError:
+                        pass
+            raise
+
+        warning: str | None = None
+        if is_move:
+            try:
+                os.remove(source)
+            except OSError:
+                for target in (candidate_sidecar, candidate):
+                    if target and os.path.lexists(target):
+                        try:
+                            os.remove(target)
+                        except OSError:
+                            pass
+                raise
+            if include_sidecar:
+                try:
+                    os.remove(source_sidecar)
+                except OSError as exc:
+                    warning = (
+                        "Image moved, but the original sidecar could not be removed: "
+                        f"{exc}"
+                    )
+        return candidate, warning
+
+    @staticmethod
+    def _validate_companions(token: dict[str, Any]) -> list[dict[str, Any]]:
+        companions = token.get("companions") or []
+        if not isinstance(companions, list):
+            raise ValueError("Undo token companion records are invalid")
+        for companion in companions:
+            if not isinstance(companion, dict):
+                raise ValueError("Undo token companion record is invalid")
+            if not all(
+                isinstance(companion.get(key), expected)
+                for key, expected in (
+                    ("original", str),
+                    ("current", str),
+                    ("provenance", dict),
+                )
+            ):
+                raise ValueError("Undo token companion record is incomplete")
+        return companions
+
+    def _restore_move_set(
+        self, current: str, token: dict[str, Any]
+    ) -> tuple[str, str | None]:
+        """Restore a validated move and every recorded companion as one file set."""
+        original = os.path.normpath(token["original"])
+        original_dir = os.path.dirname(original)
+        if not os.path.isdir(original_dir) or os.path.islink(original_dir):
+            raise FileNotFoundError(
+                f"Original directory missing or invalid: {original_dir}"
+            )
+        if os.path.lexists(original):
+            raise FileExistsError(
+                f"Cannot restore file: destination path already exists: {original}"
+            )
+
+        companions = self._validate_companions(token)
+        for companion in companions:
+            if os.path.realpath(companion["current"]) != os.path.realpath(current + ".txt"):
+                raise ValueError("Undo token companion current path is invalid")
+            if os.path.realpath(companion["original"]) != os.path.realpath(original + ".txt"):
+                raise ValueError("Undo token companion original path is invalid")
+            self._validate_regular_path(companion["current"], label="Companion")
+            _verify_provenance(companion["current"], companion["provenance"])
+            if os.path.lexists(companion["original"]):
+                raise FileExistsError(
+                    "Cannot restore sidecar: destination path already exists: "
+                    f"{companion['original']}"
+                )
+
+        restore_paths = [original] + [item["original"] for item in companions]
+        reserved: list[str] = []
+        try:
+            for path in restore_paths:
+                fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o666)
+                os.close(fd)
+                reserved.append(path)
+        except Exception:
+            for path in reserved:
+                try:
+                    os.remove(path)
+                except OSError:
+                    pass
+            raise
+
+        source_paths = [current] + [item["current"] for item in companions]
+        temps = [
+            self._temp_path(os.path.dirname(path), f"restore-{index}")
+            for index, path in enumerate(restore_paths)
+        ]
+        artifacts = [self._artifact(path, "reservation") for path in restore_paths]
+        artifacts.extend(self._artifact(path, "temp") for path in temps)
+        try:
+            self.journal.record_staged(
+                self.operation_id, destination_path=original, artifacts=artifacts
+            )
+        except Exception:
+            for path in restore_paths:
+                if os.path.lexists(path):
+                    try:
+                        os.remove(path)
+                    except OSError:
+                        pass
+            raise
+
+        try:
+            for source_path, restore_path, temp_path in zip(
+                source_paths, restore_paths, temps, strict=True
+            ):
+                _atomic_copy_stream(
+                    source_path, restore_path, is_move=False, temp_path=temp_path
+                )
+        except Exception:
+            for path in restore_paths:
+                if os.path.lexists(path):
+                    try:
+                        os.remove(path)
+                    except OSError:
+                        pass
+            raise
+
+        try:
+            os.remove(current)
+        except OSError:
+            for path in restore_paths:
+                if os.path.lexists(path):
+                    try:
+                        os.remove(path)
+                    except OSError:
+                        pass
+            raise
+
+        warning: str | None = None
+        for companion in companions:
+            try:
+                os.remove(companion["current"])
+            except OSError as exc:
+                warning = f"Image restored, but a source sidecar remains: {exc}"
+        return original, warning
+
+    def _remove_copy_set(self, current: str, token: dict[str, Any]) -> str | None:
+        """Delete a validated copy while rolling back a companion rename on failure."""
+        companions = self._validate_companions(token)
+        backups: list[tuple[str, str]] = []
+        for index, companion in enumerate(companions):
+            if os.path.realpath(companion["current"]) != os.path.realpath(current + ".txt"):
+                raise ValueError("Undo token companion current path is invalid")
+            self._validate_regular_path(companion["current"], label="Companion")
+            _verify_provenance(companion["current"], companion["provenance"])
+            backup = self._temp_path(os.path.dirname(current), f"undo-sidecar-{index}")
+            backups.append((companion["current"], backup))
+
+        self.journal.record_staged(
+            self.operation_id,
+            destination_path=current,
+            artifacts=[self._artifact(path, "temp") for _source, path in backups],
+        )
+        for source, backup in backups:
+            os.replace(source, backup)
+        try:
+            os.remove(current)
+        except Exception:
+            for source, backup in reversed(backups):
+                if os.path.lexists(backup):
+                    os.replace(backup, source)
+            raise
+
+        warnings: list[str] = []
+        for _source, backup in backups:
+            try:
+                os.remove(backup)
+            except OSError as exc:
+                warnings.append(str(exc))
+        if warnings:
+            return "Copy removed, but a temporary sidecar artifact remains: " + "; ".join(warnings)
+        return None
+
+    def _execute(self) -> None:
+        """Execute one operation and emit a single truthful terminal result."""
+        filepath = os.path.normpath(self.filepath)
         self.journal.record_intent(
             operation_id=self.operation_id,
             action=self.task_type,
@@ -250,190 +542,189 @@ class FileTaskRunnable(QRunnable):
             task_options=self.task_options.to_dict(),
         )
 
-        final_path = filepath
+        final_path: str | None = filepath
         undo_token: dict[str, Any] | None = None
-        state = OperationState.COMPLETED
-        warning_msg: str | None = None
+        warnings: list[str] = []
         action_verb = "Processed"
 
-        if self.task_type in ["move", "copy"]:
-            if not os.path.lexists(filepath):
-                raise FileNotFoundError(f"Source file missing: {filepath}")
-            if os.path.islink(filepath):
-                raise ValueError(f"Source file is a symbolic link: {filepath}")
-            if not os.path.isfile(filepath):
-                raise ValueError(f"Source path is not a regular file: {filepath}")
-
+        if self.task_type in ("move", "copy"):
+            self._validate_regular_path(filepath, label="Source")
             if not self.dest_folder:
-                raise ValueError("Destination folder required for move/copy operation.")
+                raise ValueError("Destination folder required for move/copy operation")
+            destination_folder = os.path.normpath(self.dest_folder)
+            if (
+                not os.path.isdir(destination_folder)
+                or os.path.islink(destination_folder)
+            ):
+                raise FileNotFoundError(
+                    f"Destination folder missing or invalid: {destination_folder}"
+                )
+            intended = os.path.join(destination_folder, os.path.basename(filepath))
+            if os.path.realpath(filepath) == os.path.realpath(intended):
+                raise ValueError(
+                    f"Source and destination resolve to the same effective location: {filepath}"
+                )
 
-            dest_folder = os.path.normpath(self.dest_folder)
-            if not os.path.exists(dest_folder) or not os.path.isdir(dest_folder) or os.path.islink(dest_folder):
-                raise FileNotFoundError(f"Destination folder missing or invalid: {dest_folder}")
-
-            filename = os.path.basename(filepath)
-            intended_dest = os.path.join(dest_folder, filename)
-
-            if os.path.realpath(filepath) == os.path.realpath(intended_dest):
-                raise ValueError(f"Source and destination resolve to the same effective location: {filepath}")
-            if os.path.exists(intended_dest) and os.path.samefile(filepath, intended_dest):
-                raise ValueError(f"Source and destination resolve to the same file: {filepath}")
-
-            candidate_path = _reserve_candidate_path(dest_folder, filename)
-            final_path = candidate_path
-
-            self.journal.record_staged(self.operation_id, destination_path=candidate_path)
-
-            _atomic_copy_stream(filepath, candidate_path, is_move=(self.task_type == "move"))
-            self.journal.record_committed(self.operation_id, destination_path=candidate_path)
-
-            action_verb = f"{'Moved' if self.task_type == 'move' else 'Copied'} {os.path.basename(candidate_path)} to {dest_folder}"
+            final_path, transfer_warning = self._stage_transfer(
+                filepath,
+                destination_folder,
+                is_move=self.task_type == "move",
+            )
+            if transfer_warning:
+                warnings.append(transfer_warning)
+            verb = "Moved" if self.task_type == "move" else "Copied"
+            action_verb = (
+                f"{verb} {os.path.basename(final_path)} to {destination_folder}"
+            )
 
         elif self.task_type == "trash":
-            if not os.path.lexists(filepath):
-                raise FileNotFoundError(f"Source file missing: {filepath}")
-            if os.path.islink(filepath):
-                raise ValueError(f"Source file is a symbolic link: {filepath}")
-            if not os.path.isfile(filepath):
-                raise ValueError(f"Source path is not a regular file: {filepath}")
-
+            self._validate_regular_path(filepath, label="Source")
             trash_folder = self._get_setting("directories", "trash")
-            if trash_folder and os.path.exists(trash_folder) and os.path.isdir(trash_folder) and not os.path.islink(trash_folder):
+            if (
+                trash_folder
+                and os.path.isdir(trash_folder)
+                and not os.path.islink(trash_folder)
+            ):
                 trash_folder = os.path.normpath(trash_folder)
-                filename = os.path.basename(filepath)
-                intended_dest = os.path.join(trash_folder, filename)
-
-                if os.path.realpath(filepath) == os.path.realpath(intended_dest):
+                intended = os.path.join(trash_folder, os.path.basename(filepath))
+                if os.path.realpath(filepath) == os.path.realpath(intended):
                     raise ValueError(f"Source file is already in the trash folder: {filepath}")
-                if os.path.exists(intended_dest) and os.path.samefile(filepath, intended_dest):
-                    raise ValueError(f"Source file is already in the trash folder: {filepath}")
-
-                candidate_path = _reserve_candidate_path(trash_folder, filename)
-                final_path = candidate_path
-
-                self.journal.record_staged(self.operation_id, destination_path=candidate_path)
-                _atomic_copy_stream(filepath, candidate_path, is_move=True)
-                self.journal.record_committed(self.operation_id, destination_path=candidate_path)
-
-                action_verb = f"Moved {os.path.basename(candidate_path)} to Trash folder"
+                final_path, transfer_warning = self._stage_transfer(
+                    filepath, trash_folder, is_move=True
+                )
+                if transfer_warning:
+                    warnings.append(transfer_warning)
+                action_verb = (
+                    f"Moved {os.path.basename(final_path)} to Trash folder"
+                )
             else:
                 try:
                     send2trash(filepath)
-                    self.journal.record_committed(self.operation_id, destination_path=filepath)
-                    action_verb = f"Trashed {os.path.basename(filepath)}"
-                except TrashPermissionError as e:
-                    raise PermissionError(f"Trash permission denied: {e}")
+                except TrashPermissionError as exc:
+                    raise PermissionError(f"Trash permission denied: {exc}") from exc
+                final_path = None
+                action_verb = f"Trashed {os.path.basename(filepath)}"
 
-        elif self.task_type in ["undo_move", "undo_trash"]:
-            if self.undo_token and isinstance(self.undo_token, dict) and "provenance" in self.undo_token:
-                _verify_provenance(filepath, self.undo_token["provenance"])
-
-            if not self.dest_folder:
-                raise ValueError("Original path (dest_folder) required to undo operation.")
-
-            original_path = os.path.normpath(self.dest_folder)
-
-            if not os.path.lexists(filepath):
-                raise FileNotFoundError(f"Source file missing for undo: {filepath}")
-
-            if os.path.lexists(original_path):
-                raise FileExistsError(f"Cannot restore file: destination path already exists: {original_path}")
-
-            orig_dir = os.path.dirname(original_path)
-            if not os.path.exists(orig_dir) or not os.path.isdir(orig_dir) or os.path.islink(orig_dir):
-                raise FileNotFoundError(f"Original directory missing or invalid: {orig_dir}")
-
-            try:
-                fd = os.open(original_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o666)
-                os.close(fd)
-            except FileExistsError:
-                raise FileExistsError(f"Cannot restore file: destination path already exists: {original_path}")
-
-            self.journal.record_staged(self.operation_id, destination_path=original_path)
-            _atomic_copy_stream(filepath, original_path, is_move=True)
-            final_path = original_path
-            self.journal.record_committed(self.operation_id, destination_path=original_path)
-
-            action_verb = f"Undid action: restored {os.path.basename(original_path)}"
+        elif self.task_type in ("undo_move", "undo_trash"):
+            token = validate_undo_token(
+                self.undo_token, undo_action=self.task_type, current_path=filepath
+            )
+            self._validate_regular_path(filepath, label="Undo source")
+            _verify_provenance(filepath, token["provenance"])
+            if self.dest_folder and os.path.realpath(self.dest_folder) != os.path.realpath(
+                token["original"]
+            ):
+                raise ValueError("Undo destination does not match the Undo token")
+            final_path, restore_warning = self._restore_move_set(filepath, token)
+            if restore_warning:
+                warnings.append(restore_warning)
+            action_verb = f"Restored {os.path.basename(final_path)}"
 
         elif self.task_type == "undo_copy":
-            if not os.path.lexists(filepath):
-                raise FileNotFoundError(f"Source file missing for undo_copy: {filepath}")
-
-            if self.undo_token and isinstance(self.undo_token, dict) and "provenance" in self.undo_token:
-                _verify_provenance(filepath, self.undo_token["provenance"])
-
-            os.remove(filepath)
+            token = validate_undo_token(
+                self.undo_token, undo_action=self.task_type, current_path=filepath
+            )
+            self._validate_regular_path(filepath, label="Undo source")
+            _verify_provenance(filepath, token["provenance"])
+            removal_warning = self._remove_copy_set(filepath, token)
+            if removal_warning:
+                warnings.append(removal_warning)
             final_path = filepath
-            self.journal.record_committed(self.operation_id, destination_path=filepath)
+            action_verb = f"Removed copied file {os.path.basename(filepath)}"
 
-            action_verb = f"Undid copy: {os.path.basename(filepath)}"
+        else:
+            raise ValueError(f"Unsupported file operation: {self.task_type}")
 
-        # Handle AI Tagging & Metadata for non-undo operations
-        if self.task_type not in ["undo_move", "undo_trash", "undo_copy"] and os.path.exists(final_path):
+        if (
+            self.task_type not in ("undo_move", "undo_trash", "undo_copy")
+            and final_path
+            and os.path.exists(final_path)
+        ):
             ai_enabled = self._get_setting("ai_tagger", "enabled")
             if ai_enabled and self.ai_tagger:
                 try:
-                    threshold = self._get_setting("ai_tagger", "threshold", 0.5)
-                    # Support threshold kwarg if AITagger get_tags accepts it
-                    try:
-                        tags = self.ai_tagger.get_tags(final_path, threshold=threshold)
-                    except TypeError:
-                        tags = self.ai_tagger.get_tags(final_path)
-
+                    threshold = float(
+                        self._get_setting("ai_tagger", "threshold", 0.5)
+                    )
+                    tags = self.ai_tagger.get_tags(final_path, threshold=threshold)
                     if tags:
-                        write_exif = self._get_setting("metadata", "write_exif", True)
-                        write_sidecar = self._get_setting("metadata", "write_sidecar", False)
-                        write_metadata(final_path, tags, write_exif, write_sidecar)
+                        write_metadata(
+                            final_path,
+                            tags,
+                            bool(self._get_setting("metadata", "write_exif", True)),
+                            bool(self._get_setting("metadata", "write_sidecar", False)),
+                        )
                         action_verb += f" and tagged with: {', '.join(tags)}"
-                except Exception as meta_err:
-                    logger.warning(f"Metadata write warning for {final_path}: {meta_err}")
-                    state = OperationState.COMPLETED_WITH_WARNING
-                    warning_msg = f"Metadata tagging failed: {meta_err}"
+                except Exception as exc:
+                    logger.warning(f"Metadata write warning for {final_path}: {exc}")
+                    warnings.append(f"Metadata tagging failed: {exc}")
 
-        # Calculate FINAL provenance on committed destination file AFTER AI metadata changes
-        if self.task_type in ["move", "copy", "trash"] and os.path.exists(final_path):
-            final_provenance = _compute_provenance(final_path)
-            orig_src = filepath
-            undo_token = create_undo_token(
-                token_id=str(uuid.uuid4()),
-                action=self.task_type,
-                original_path=orig_src,
-                current_path=final_path,
-                timestamp=time.time(),
-                provenance=final_provenance,
+        if self.task_type in ("move", "copy", "trash") and final_path:
+            try:
+                companion_tokens: list[dict[str, Any]] = []
+                current_sidecar = final_path + ".txt"
+                if os.path.exists(current_sidecar):
+                    companion_tokens.append(
+                        {
+                            "original": filepath + ".txt",
+                            "current": current_sidecar,
+                            "provenance": _compute_provenance(current_sidecar),
+                        }
+                    )
+                undo_token = create_undo_token(
+                    token_id=str(uuid.uuid4()),
+                    action=self.task_type,
+                    original_path=filepath,
+                    current_path=final_path,
+                    timestamp=time.time(),
+                    provenance=_compute_provenance(final_path),
+                    companions=companion_tokens,
+                )
+            except Exception as exc:
+                warnings.append(f"Operation completed, but Undo could not be created: {exc}")
+
+        try:
+            self.journal.record_committed(
+                self.operation_id, destination_path=final_path, undo_token=undo_token
             )
+        except Exception as exc:
+            logger.error("Filesystem operation committed but journal commit failed", exc_info=True)
+            warnings.append(f"Operation committed, but journal update failed: {exc}")
 
-        # Journal update for terminal completion
-        self.journal.record_terminal(
-            operation_id=self.operation_id,
-            state=state,
-            destination_path=final_path,
-            undo_token=undo_token,
-            warning=warning_msg,
+        state = (
+            OperationState.COMPLETED_WITH_WARNING
+            if warnings
+            else OperationState.COMPLETED
         )
+        warning_message = "; ".join(warnings) if warnings else None
+        try:
+            self.journal.record_terminal(
+                operation_id=self.operation_id,
+                state=state,
+                destination_path=final_path,
+                undo_token=undo_token,
+                warning=warning_message,
+            )
+        except Exception as exc:
+            logger.error("Terminal journal update failed", exc_info=True)
+            warnings.append(f"Terminal journal update failed: {exc}")
+            state = OperationState.COMPLETED_WITH_WARNING
+            warning_message = "; ".join(warnings)
 
-        # Signal emissions strictly in ordered sequence
         self.signals.progress.emit(action_verb)
-
-        if undo_token:
-            self.signals.undo_record.emit(undo_token)
-
-        self.signals.finished.emit(final_path)
-
-        op_result = OperationResult(
-            operation_id=self.operation_id,
-            action=self.task_type,
-            source_path=filepath,
-            destination_path=final_path,
-            state=state,
-            undo_token=undo_token,
-            error=None,
-            warning=warning_msg,
-            view_generation=self.task_options.view_generation,
+        self.signals.operation_result.emit(
+            OperationResult(
+                operation_id=self.operation_id,
+                action=self.task_type,
+                source_path=filepath,
+                destination_path=final_path,
+                state=state,
+                undo_token=undo_token,
+                error=None,
+                warning=warning_message,
+                view_generation=self.task_options.view_generation,
+            ).to_dict()
         )
-        self.signals.operation_result.emit(op_result.to_dict())
-
 
 class QueueWorker(QObject):
     """
@@ -450,6 +741,7 @@ class QueueWorker(QObject):
         # Reconcile any crashed/interrupted operations from previous run
         try:
             self.journal.reconcile_interrupted_operations()
+            self.journal.prune_journal()
         except Exception as e:
             logger.warning(f"Error reconciling interrupted journal operations: {e}")
 
@@ -567,7 +859,9 @@ class QueueWorker(QObject):
         return operation_id
 
     def stop(self) -> None:
-        """Waits for current tasks to finish and stops accepting new ones."""
+        """Wait for current tasks with a bounded desktop-shutdown delay."""
         logger.info("Stopping QueueWorker, waiting for tasks to finish...")
-        self.thread_pool.waitForDone()
-        logger.info("QueueWorker stopped.")
+        if self.thread_pool.waitForDone(5_000):
+            logger.info("QueueWorker stopped.")
+        else:
+            logger.warning("QueueWorker still has tasks after five seconds")

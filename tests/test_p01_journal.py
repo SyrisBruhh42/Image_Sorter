@@ -48,10 +48,20 @@ def test_journal_reconciliation_on_crash_recovery(tmp_path):
     src2 = tmp_path / "file2.jpg"
     src2.write_text("file 2 content")
     dst2 = tmp_path / "dst2.jpg"
-    tmp_art = tmp_path / ".tmp_staged_artifact"
+    tmp_art = tmp_path / ".imagesorter-op_staged_1-copy.tmp"
     tmp_art.write_text("temp staged bytes")
     journal.record_intent("op_staged_1", "move", str(src2), str(dst2))
-    journal.record_staged("op_staged_1", str(dst2), artifacts=[str(tmp_art)])
+    journal.record_staged(
+        "op_staged_1",
+        str(dst2),
+        artifacts=[
+            {
+                "path": str(tmp_art),
+                "kind": "temp",
+                "owner_token": journal.owner_token,
+            }
+        ],
+    )
 
     # Scenario 3: Interrupted at COMMITTED state (destination committed, source removed)
     dst3 = tmp_path / "dst3.jpg"
@@ -60,7 +70,7 @@ def test_journal_reconciliation_on_crash_recovery(tmp_path):
     journal.record_committed("op_committed_1", str(dst3))
 
     # Reconcile interrupted operations
-    reconciled = journal.reconcile_interrupted_operations()
+    reconciled = journal.reconcile_interrupted_operations(force=True)
     assert len(reconciled) == 3
 
     # Verify temp artifact was safely cleaned up
@@ -79,6 +89,34 @@ def test_journal_reconciliation_on_crash_recovery(tmp_path):
 
     e3 = journal.get_entry("op_committed_1")
     assert e3["state"] == JournalState.COMPLETED
+
+    # Reconciliation is idempotent: terminal records are not reprocessed.
+    assert journal.reconcile_interrupted_operations(force=True) == []
+
+
+def test_live_lease_is_not_reconciled(tmp_path):
+    journal = OperationJournal(db_path=str(tmp_path / "journal.db"))
+    source = tmp_path / "source.jpg"
+    source.write_text("active operation")
+    journal.record_intent("active", "move", str(source), str(tmp_path / "dest.jpg"))
+
+    assert journal.reconcile_interrupted_operations() == []
+    assert journal.get_entry("active")["state"] == JournalState.INTENT
+
+
+def test_ambiguous_intent_preserves_both_files(tmp_path):
+    journal = OperationJournal(db_path=str(tmp_path / "journal.db"))
+    source = tmp_path / "source.jpg"
+    destination = tmp_path / "destination.jpg"
+    source.write_text("source")
+    destination.write_text("unrelated destination")
+    journal.record_intent("ambiguous", "move", str(source), str(destination))
+
+    journal.reconcile_interrupted_operations(force=True)
+
+    assert journal.get_entry("ambiguous")["state"] == JournalState.RECOVERY_REQUIRED
+    assert source.read_text() == "source"
+    assert destination.read_text() == "unrelated destination"
 
 
 def test_journal_multithreaded_contention(tmp_path):

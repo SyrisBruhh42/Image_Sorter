@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from typing import Any
 
@@ -77,9 +78,10 @@ def create_undo_token(
     current_path: str,
     timestamp: float,
     provenance: dict[str, Any],
+    companions: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Creates a versioned UndoToken dictionary."""
-    return {
+    token = {
         "version": 1,
         "token_id": token_id,
         "action": action,
@@ -88,3 +90,41 @@ def create_undo_token(
         "timestamp": timestamp,
         "provenance": provenance,
     }
+    if companions:
+        token["companions"] = companions
+    return token
+
+
+def validate_undo_token(
+    token: dict[str, Any] | None,
+    *,
+    undo_action: str,
+    current_path: str,
+) -> dict[str, Any]:
+    """Validate a destructive Undo request before any filesystem mutation."""
+    if not isinstance(token, dict):
+        raise ValueError("A complete Undo token is required")
+    if token.get("version") != SCHEMA_VERSION:
+        raise ValueError("Unsupported or missing Undo token version")
+    if not isinstance(token.get("token_id"), str) or not token["token_id"]:
+        raise ValueError("Undo token identifier is missing")
+    expected_original_actions = {
+        "undo_move": {"move", "trash"},
+        "undo_trash": {"trash"},
+        "undo_copy": {"copy"},
+    }
+    if token.get("action") not in expected_original_actions.get(undo_action, set()):
+        raise ValueError("Undo token action does not match the requested operation")
+    for key in ("original", "current"):
+        if not isinstance(token.get(key), str) or not token[key]:
+            raise ValueError(f"Undo token {key} path is missing")
+    if os.path.realpath(token["current"]) != os.path.realpath(current_path):
+        raise ValueError("Undo token current path does not match the requested file")
+    provenance = token.get("provenance")
+    if not isinstance(provenance, dict):
+        raise ValueError("Undo token provenance is missing")
+    if not isinstance(provenance.get("size"), int) or not isinstance(
+        provenance.get("sha256"), str
+    ):
+        raise ValueError("Undo token provenance is incomplete")
+    return token

@@ -27,9 +27,15 @@ def test_queue_worker_concurrent_moves_and_undo(qtbot, tmp_path):
     finished_files = []
     errors = []
 
-    worker.signals.undo_record.connect(lambda token: undo_tokens.append(token))
-    worker.signals.finished.connect(lambda f: finished_files.append(f))
-    worker.signals.error.connect(lambda f, err: errors.append((f, err)))
+    def collect(result):
+        if result["state"].startswith("completed"):
+            finished_files.append(result["destination_path"])
+            if result["undo_token"]:
+                undo_tokens.append(result["undo_token"])
+        else:
+            errors.append((result["source_path"], result["error"]))
+
+    worker.signals.operation_result.connect(collect)
 
     # Concurrent dispatch of 200 moves across 8 worker threads
     for fp in file_paths:
@@ -52,11 +58,16 @@ def test_queue_worker_concurrent_moves_and_undo(qtbot, tmp_path):
         assert moved_p.read_text() == f"dummy content {i}"
 
     restored_files = []
-    worker.signals.finished.connect(lambda f: restored_files.append(f))
+
+    def collect_restored(result):
+        if result["action"] == "undo_move" and result["state"].startswith("completed"):
+            restored_files.append(result["destination_path"])
+
+    worker.signals.operation_result.connect(collect_restored)
 
     # Verify 100% undo rollback accuracy across all 200 moved files
     for token in undo_tokens:
-        worker.add_task("undo_move", token["current"], token["original"])
+        worker.add_task("undo_move", token["current"], token)
 
     qtbot.waitUntil(lambda: len(restored_files) == num_files, timeout=10000)
     worker.stop()
@@ -84,7 +95,11 @@ def test_queue_worker_enospc_disk_full(qtbot, tmp_path):
 
     worker = QueueWorker(sm)
     errors = []
-    worker.signals.error.connect(lambda f, err: errors.append((f, err)))
+    worker.signals.operation_result.connect(
+        lambda result: errors.append((result["source_path"], result["error"]))
+        if result["state"] == "failed"
+        else None
+    )
 
     # Simulate ENOSPC disk full error during streaming write in _atomic_copy_stream
     enospc_error = OSError(errno.ENOSPC, "No space left on device")

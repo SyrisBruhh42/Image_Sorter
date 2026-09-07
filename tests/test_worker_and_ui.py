@@ -39,8 +39,8 @@ def test_queue_worker_move_and_undo(qtbot, tmp_path):
 
     worker = QueueWorker(sm)
 
-    undo_tokens = []
-    worker.signals.undo_record.connect(lambda token: undo_tokens.append(token))
+    results = []
+    worker.signals.operation_result.connect(results.append)
 
     # Test move
     worker.add_task("move", str(file_a), str(dst_dir))
@@ -50,12 +50,12 @@ def test_queue_worker_move_and_undo(qtbot, tmp_path):
     assert not file_a.exists()
     moved_file = dst_dir / "photo.jpg"
     assert moved_file.exists()
-    assert len(undo_tokens) == 1
-    token = undo_tokens[0]
+    assert len(results) == 1
+    token = results[0]["undo_token"]
     assert token["action"] == "move"
 
     # Test undo move
-    worker.add_task("undo_move", token["current"], token["original"])
+    worker.add_task("undo_move", token["current"], token)
     worker.stop()
     QCoreApplication.processEvents()
 

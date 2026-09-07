@@ -27,8 +27,6 @@ def test_add_task_returns_operation_id_and_emits_operation_result(qtbot, tmp_pat
     signals_order: list[str] = []
 
     worker.signals.progress.connect(lambda msg: signals_order.append("progress"))
-    worker.signals.undo_record.connect(lambda token: signals_order.append("undo_record"))
-    worker.signals.finished.connect(lambda path: signals_order.append("finished"))
     worker.signals.operation_result.connect(
         lambda res: (signals_order.append("operation_result"), results.append(res))
     )
@@ -61,8 +59,7 @@ def test_add_task_returns_operation_id_and_emits_operation_result(qtbot, tmp_pat
     assert res["undo_token"]["original"] == str(src_file)
     assert res["undo_token"]["current"] == str(dst_dir / "test.jpg")
 
-    # Verify signal emission order: progress -> undo_record -> finished -> operation_result
-    assert signals_order == ["progress", "undo_record", "finished", "operation_result"]
+    assert signals_order == ["progress", "operation_result"]
 
 
 def test_undo_token_structure(qtbot, tmp_path):

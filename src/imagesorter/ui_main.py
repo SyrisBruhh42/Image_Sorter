@@ -266,11 +266,7 @@ class MainViewer(QMainWindow):
 
         self.worker = QueueWorker(self.settings)
         self.worker.signals.progress.connect(self.on_worker_progress)
-        self.worker.signals.finished.connect(self.on_worker_finished)
-        self.worker.signals.error.connect(self.on_worker_error)
-        self.worker.signals.undo_record.connect(self.on_undo_record_received)
-        if hasattr(self.worker.signals, 'operation_result'):
-            self.worker.signals.operation_result.connect(self.on_operation_result)
+        self.worker.signals.operation_result.connect(self.on_operation_result)
 
         self.images: list[str] = []
         self.current_index: int = -1
@@ -853,13 +849,11 @@ class MainViewer(QMainWindow):
         )
         self.pending_ops[op_id] = pending_op
 
-        # Invoke worker add_task with operation contract parameters
-        try:
-            res_id = self.worker.add_task(action, filepath, dest_folder, operation_id=op_id)
-            if res_id:
-                pending_op.op_id = res_id
-        except TypeError:
-            self.worker.add_task(action, filepath, dest_folder)
+        res_id = self.worker.add_task(
+            action, filepath, dest_folder, operation_id=op_id
+        )
+        if res_id:
+            pending_op.op_id = res_id
 
         if action == 'trash':
             trash_folder = self.settings.get('directories', 'trash')
@@ -1038,7 +1032,7 @@ class MainViewer(QMainWindow):
         undo_token = result.get('undo_token')
         error = result.get('error')
 
-        op = self._match_pending_op_by_id_or_path(op_id, source_path or dest_path)
+        op = self.pending_ops.get(op_id) if isinstance(op_id, str) else None
 
         if op and op.state == "pending":
             if state in ("completed", "completed_with_warning"):
@@ -1056,6 +1050,9 @@ class MainViewer(QMainWindow):
                     restored_path = dest_path or op.raw_original_path or source_path
                     if restored_path:
                         self.reinsert_image_at_index(restored_path, op.original_index)
+
+                if result.get('warning'):
+                    self.statusBar().showMessage(str(result['warning']), 5000)
 
             elif state in ("failed", "recovery_required"):
                 op.state = "error"
@@ -1240,13 +1237,15 @@ class MainViewer(QMainWindow):
                 )
                 self.pending_ops[op_id] = pending_op
 
-                # Forward full last_action undo_token to worker
-                try:
-                    res_id = self.worker.add_task('undo_move', current_path, original_path, undo_token=last_action, operation_id=op_id)
-                    if res_id:
-                        pending_op.op_id = res_id
-                except TypeError:
-                    self.worker.add_task('undo_move', current_path, original_path, undo_token=last_action)
+                res_id = self.worker.add_task(
+                    'undo_move',
+                    current_path,
+                    original_path,
+                    undo_token=last_action,
+                    operation_id=op_id,
+                )
+                if res_id:
+                    pending_op.op_id = res_id
 
                 msg = f"Restoring {os.path.basename(original_path)} to original location..."
                 self.statusBar().showMessage(msg, 3000)
@@ -1265,12 +1264,14 @@ class MainViewer(QMainWindow):
             )
             self.pending_ops[op_id] = pending_op
 
-            try:
-                res_id = self.worker.add_task('undo_copy', current_path, undo_token=last_action, operation_id=op_id)
-                if res_id:
-                    pending_op.op_id = res_id
-            except TypeError:
-                self.worker.add_task('undo_copy', current_path, undo_token=last_action)
+            res_id = self.worker.add_task(
+                'undo_copy',
+                current_path,
+                undo_token=last_action,
+                operation_id=op_id,
+            )
+            if res_id:
+                pending_op.op_id = res_id
 
             msg = f"Undoing copy of {os.path.basename(current_path)}..."
             self.statusBar().showMessage(msg, 3000)

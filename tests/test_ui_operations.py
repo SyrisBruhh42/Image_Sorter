@@ -218,6 +218,7 @@ def test_cache_bytes_reset_on_reload_and_clear(qtbot, tmp_path):
 
     # Load image into cache
     viewer.show_image()
+    qtbot.waitUntil(lambda: viewer.cache_bytes > 0, timeout=3000)
     assert viewer.cache_bytes > 0
     assert len(viewer.pixmap_cache) > 0
 
@@ -228,11 +229,13 @@ def test_cache_bytes_reset_on_reload_and_clear(qtbot, tmp_path):
 
     # Load image again to populate cache
     viewer.show_image()
+    qtbot.waitUntil(lambda: viewer.cache_bytes > 0, timeout=3000)
     assert viewer.cache_bytes > 0
 
     # Reload directory
     viewer.load_images()
-    assert viewer.cache_bytes > 0  # Re-populated by show_image in load_images()
+    qtbot.waitUntil(lambda: viewer.cache_bytes > 0, timeout=3000)
+    assert viewer.cache_bytes > 0
     viewer.clear_pixmap_cache()
     assert viewer.cache_bytes == 0
 

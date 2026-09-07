@@ -78,7 +78,11 @@ def test_tampered_destination_undo_refusal(qtbot, tmp_path):
 
     results.clear()
     errors = []
-    worker.signals.error.connect(lambda f, err: errors.append((f, err)))
+    worker.signals.operation_result.connect(
+        lambda result: errors.append((result["source_path"], result["error"]))
+        if result["state"] == OperationState.FAILED
+        else None
+    )
 
     worker.add_task("undo_move", moved_path, token)
     worker.stop()
