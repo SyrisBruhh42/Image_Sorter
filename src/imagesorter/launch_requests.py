@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 from collections.abc import Sequence
 
-SUPPORTED_EXTENSIONS = (
+CORE_EXTENSIONS = (
     ".jpg",
     ".jpeg",
     ".png",
@@ -15,6 +15,23 @@ SUPPORTED_EXTENSIONS = (
     ".tiff",
     ".tif",
 )
+
+OPTIONAL_EXTENSIONS = (
+    ".heic",
+    ".heif",
+    ".avif",
+    ".cr2",
+    ".nef",
+    ".arw",
+    ".dng",
+    ".orf",
+    ".rw2",
+    ".pef",
+    ".raf",
+    ".srw",
+)
+
+SUPPORTED_EXTENSIONS = CORE_EXTENSIONS + OPTIONAL_EXTENSIONS
 
 
 def is_supported_image(filepath: str) -> bool:

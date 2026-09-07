@@ -110,7 +110,7 @@ def test_explicit_unsupported_formats(tmp_path):
 
     qimg, err = decode_image(str(raw_path))
     assert qimg is None
-    assert "CR2" in err and "not supported" in err
+    assert "CR2" in err and "optional" in err
 
     info = inspect_image_header(str(raw_path))
     assert info["valid"] is False

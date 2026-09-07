@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import sys
 import tempfile
+import uuid
 import warnings
 from pathlib import Path
 
@@ -69,13 +70,18 @@ def _get_valid_env_path(var_name: str) -> Path | None:
 
 def _test_directory_writable(d: Path) -> bool:
     """Tests actual writability of directory d using a temporary test file."""
+    test_file = d / f".write-test-{os.getpid()}-{uuid.uuid4().hex}"
     try:
-        test_file = d / f".write_test_{os.getpid()}_{tempfile.mktemp(dir='')}"
-        test_file.touch(exist_ok=False)
-        test_file.unlink(missing_ok=True)
+        fd = os.open(test_file, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        os.close(fd)
         return True
     except (OSError, PermissionError):
         return False
+    finally:
+        try:
+            test_file.unlink(missing_ok=True)
+        except OSError:
+            pass
 
 
 def _ensure_dir_or_fallback(target_dir: Path, category: str) -> Path:
@@ -242,3 +248,15 @@ def get_settings_path() -> Path:
     if is_portable_mode():
         return get_app_dir() / "settings.json"
     return get_config_dir() / "settings.json"
+
+
+def get_components_dir() -> Path:
+    """Return the versioned, user-writable root for optional components."""
+    return _ensure_dir_or_fallback(get_data_dir() / "components", "components")
+
+
+def get_component_cache_dir() -> Path:
+    """Return the staging root for incomplete optional-component downloads."""
+    return _ensure_dir_or_fallback(
+        get_cache_dir() / "component-downloads", "component-downloads"
+    )

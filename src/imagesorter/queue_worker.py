@@ -4,8 +4,10 @@ import copy
 import hashlib
 import os
 import shutil
+import threading
 import time
 import uuid
+from concurrent.futures import Future, ThreadPoolExecutor, TimeoutError
 from typing import Any
 
 from PyQt6.QtCore import QObject, QRunnable, QThreadPool, pyqtSignal, pyqtSlot
@@ -182,6 +184,7 @@ class FileTaskRunnable(QRunnable):
         dest_folder: str | dict[str, Any] | None,
         settings: SettingsManager,
         ai_tagger: AITagger | None,
+        ai_future: Future[AITagger] | None,
         signals: WorkerSignals,
         journal: OperationJournal,
         source_lock: Any,
@@ -204,6 +207,7 @@ class FileTaskRunnable(QRunnable):
         self.filepath = filepath
         self.settings = settings
         self.ai_tagger = ai_tagger
+        self.ai_future = ai_future
         self.signals = signals
         self.journal = journal
         self.source_lock = source_lock
@@ -641,12 +645,20 @@ class FileTaskRunnable(QRunnable):
             and os.path.exists(final_path)
         ):
             ai_enabled = self._get_setting("ai_tagger", "enabled")
-            if ai_enabled and self.ai_tagger:
+            tagger = self.ai_tagger
+            if ai_enabled and tagger is None and self.ai_future is not None:
+                try:
+                    tagger = self.ai_future.result(timeout=60)
+                except TimeoutError:
+                    warnings.append("AI model initialization timed out")
+                except Exception as exc:
+                    warnings.append(f"AI model initialization failed: {exc}")
+            if ai_enabled and tagger:
                 try:
                     threshold = float(
                         self._get_setting("ai_tagger", "threshold", 0.5)
                     )
-                    tags = self.ai_tagger.get_tags(final_path, threshold=threshold)
+                    tags = tagger.get_tags(final_path, threshold=threshold)
                     if tags:
                         write_metadata(
                             final_path,
@@ -750,45 +762,76 @@ class QueueWorker(QObject):
         self.thread_pool.setMaxThreadCount(int(max_threads))
 
         self._source_locks: dict[str, Any] = {}
-        import threading
         self._source_locks_guard_obj = threading.Lock()
 
         self.ai_tagger: AITagger | None = None
-        self._init_ai()
+        self._ai_lock = threading.RLock()
+        self._ai_executor = ThreadPoolExecutor(
+            max_workers=1, thread_name_prefix="imagesorter-ai-loader"
+        )
+        self._ai_future: Future[AITagger] | None = None
+        self._ai_config: tuple[str | None, bool] | None = None
+        self._schedule_ai_init()
         logger.info(f"QueueWorker initialized with max {self.thread_pool.maxThreadCount()} threads.")
 
     def _get_source_lock(self, canonical_path: str) -> Any:
         """Retrieves or creates a thread lock for a given canonical source path."""
         if not hasattr(self, "_source_locks_guard_obj"):
-            import threading
             self._source_locks_guard_obj = threading.Lock()
 
         with self._source_locks_guard_obj:
             if canonical_path not in self._source_locks:
-                import threading
                 self._source_locks[canonical_path] = threading.Lock()
             return self._source_locks[canonical_path]
 
-    def _init_ai(self) -> None:
-        """Initializes or disables the AI tagger based on settings."""
-        is_enabled = self.settings.get("ai_tagger", "enabled")
-        if is_enabled and self.ai_tagger is None:
-            logger.info("Initializing AI Tagger in QueueWorker.")
-            # Check for hardware_acceleration parameter if supported by AITagger
-            hw_accel = self.settings.get("advanced", "hardware_acceleration")
-            if hw_accel is None:
-                hw_accel = True
-            try:
-                self.ai_tagger = AITagger(hardware_acceleration=hw_accel)
-            except TypeError:
-                self.ai_tagger = AITagger()
-        elif not is_enabled and self.ai_tagger is not None:
-            logger.info("Disabling AI Tagger in QueueWorker.")
+    def _desired_ai_config(self) -> tuple[str | None, bool]:
+        model_path = self.settings.get("ai_tagger", "model_path")
+        model_dir: str | None = None
+        if isinstance(model_path, str) and model_path and os.path.isabs(model_path):
+            expanded = os.path.abspath(os.path.expanduser(model_path))
+            model_dir = os.path.dirname(expanded)
+        hardware = self.settings.get("advanced", "hardware_acceleration")
+        return model_dir, True if hardware is None else bool(hardware)
+
+    def _schedule_ai_init(self) -> None:
+        """Schedule optional model/provider loading without blocking the GUI thread."""
+        enabled = bool(self.settings.get("ai_tagger", "enabled"))
+        with self._ai_lock:
+            if not enabled:
+                self.ai_tagger = None
+                self._ai_future = None
+                self._ai_config = None
+                return
+            desired = self._desired_ai_config()
+            if desired == self._ai_config and (
+                self.ai_tagger is not None or self._ai_future is not None
+            ):
+                return
             self.ai_tagger = None
+            self._ai_config = desired
+            model_dir, hardware = desired
+            future = self._ai_executor.submit(
+                AITagger,
+                model_dir=model_dir,
+                hardware_acceleration=hardware,
+            )
+            self._ai_future = future
+            future.add_done_callback(self._on_ai_ready)
+
+    def _on_ai_ready(self, future: Future[AITagger]) -> None:
+        try:
+            tagger = future.result()
+        except Exception:
+            logger.error("AI Tagger initialization failed", exc_info=True)
+            return
+        with self._ai_lock:
+            if future is self._ai_future and self.ai_tagger is None:
+                self.ai_tagger = tagger
+                logger.info("AI Tagger initialized in the background")
 
     def refresh_settings(self) -> None:
         """Called when settings are updated to apply new configurations."""
-        self._init_ai()
+        self._schedule_ai_init()
         new_threads = self.settings.get("advanced", "worker_threads")
         if new_threads and int(new_threads) != self.thread_pool.maxThreadCount():
             self.thread_pool.setMaxThreadCount(int(new_threads))
@@ -840,6 +883,9 @@ class QueueWorker(QObject):
 
         canonical_path = os.path.realpath(filepath)
         source_lock = self._get_source_lock(canonical_path)
+        with self._ai_lock:
+            ai_tagger = self.ai_tagger
+            ai_future = self._ai_future if ai_tagger is None else None
 
         logger.debug(f"Adding task {operation_id}: {task_type} {filepath}")
         task = FileTaskRunnable(
@@ -847,7 +893,8 @@ class QueueWorker(QObject):
             filepath=filepath,
             dest_folder=dest_folder,
             settings=self.settings,
-            ai_tagger=self.ai_tagger,
+            ai_tagger=ai_tagger,
+            ai_future=ai_future,
             signals=self.signals,
             journal=self.journal,
             source_lock=source_lock,
@@ -865,3 +912,8 @@ class QueueWorker(QObject):
             logger.info("QueueWorker stopped.")
         else:
             logger.warning("QueueWorker still has tasks after five seconds")
+
+    def shutdown(self) -> None:
+        """Bound pending work and release the optional AI loader executor."""
+        self.stop()
+        self._ai_executor.shutdown(wait=False, cancel_futures=True)

@@ -190,6 +190,10 @@ def test_ui_settings_validation_and_control_states(qtbot, tmp_path):
         with patch("imagesorter.ui_settings.get_model_dir", return_value=str(tmp_path)):
             win = SettingsWindow(settings_mgr)
             qtbot.addWidget(win)
+            qtbot.waitUntil(
+                lambda: win.btn_download_model.text() != "Checking Model…",
+                timeout=3000,
+            )
 
             # UI should uncheck and disable the checkbox because files are invalid
             assert win.chk_ai_enable.isChecked() is False
@@ -205,6 +209,10 @@ def test_ui_settings_validation_and_control_states(qtbot, tmp_path):
                     win.download_ai_model()
 
             assert mock_crit.called
+            qtbot.waitUntil(
+                lambda: win.btn_download_model.text() != "Checking Model…",
+                timeout=3000,
+            )
             assert win.btn_download_model.isEnabled() is True
             assert win.chk_ai_enable.isEnabled() is False
 
@@ -214,6 +222,10 @@ def test_ui_settings_validation_and_control_states(qtbot, tmp_path):
 
             # Re-initialize or refresh status
             win.refresh_ai_model_status()
+            qtbot.waitUntil(
+                lambda: win.btn_download_model.text() == "Model Downloaded",
+                timeout=3000,
+            )
             assert win.btn_download_model.text() == "Model Downloaded"
             assert win.btn_download_model.isEnabled() is False
             assert win.chk_ai_enable.isEnabled() is True

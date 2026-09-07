@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 from typing import Any
 
-from PyQt6.QtCore import Qt, QThread, pyqtSignal
+from PyQt6.QtCore import Qt, QThread, QTimer, pyqtSignal
 from PyQt6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -58,6 +58,8 @@ class SettingsWindow(QDialog):
         self.downloader: ModelDownloader | None = None
         self.progress: QProgressDialog | None = None
         self.check_worker: ModelCheckWorker | None = None
+        self._model_refresh_pending = False
+        self._close_pending = False
         self.setWindowTitle("Image Sorter Settings")
         self.resize(800, 600)
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
@@ -367,9 +369,26 @@ class SettingsWindow(QDialog):
             self.add_hotkey_row(key, config.get("action", "move"), config.get("folder", ""), config.get("auto_advance", True))
 
     def refresh_ai_model_status(self) -> None:
-        """Refreshes button and checkbox states based on model and label cryptographic validity."""
-        model_valid = is_model_and_labels_valid()
-        self._on_model_check_finished(model_valid)
+        """Verify optional model files without hashing them on the GUI thread."""
+        if self.check_worker and self.check_worker.isRunning():
+            self._model_refresh_pending = True
+            return
+        self.btn_download_model.setText("Checking Model…")
+        self.btn_download_model.setEnabled(False)
+        self.chk_ai_enable.setEnabled(False)
+        worker = ModelCheckWorker(get_model_dir())
+        self.check_worker = worker
+        worker.check_finished.connect(self._on_model_check_finished)
+        worker.finished.connect(self._on_model_check_thread_finished)
+        worker.start()
+
+    def _on_model_check_thread_finished(self) -> None:
+        self.check_worker = None
+        if self._close_pending:
+            self._finish_pending_close()
+        elif self._model_refresh_pending:
+            self._model_refresh_pending = False
+            self.refresh_ai_model_status()
 
     def _on_model_check_finished(self, is_valid: bool) -> None:
         """Callback when background model check finishes."""
@@ -415,7 +434,8 @@ class SettingsWindow(QDialog):
         if self.downloader and self.downloader.isInterruptionRequested():
             was_cancelled = True
 
-        self.refresh_ai_model_status()
+        if not self._close_pending:
+            self.refresh_ai_model_status()
 
         if was_cancelled:
             QMessageBox.information(self, "Download Cancelled", "Model download was cancelled by user.")
@@ -425,14 +445,31 @@ class SettingsWindow(QDialog):
             QMessageBox.critical(self, "Error", f"Failed to download model: {msg}")
 
     def closeEvent(self, event) -> None:
-        """Ensures running downloader threads are safely interrupted before closing."""
-        if self.downloader and self.downloader.isRunning():
-            self.downloader.requestInterruption()
-            self.downloader.wait(2000)
-        if self.check_worker and self.check_worker.isRunning():
-            self.check_worker.quit()
-            self.check_worker.wait(1000)
+        """Cancel optional work and close once threads finish, without GUI waits."""
+        downloader_running = bool(self.downloader and self.downloader.isRunning())
+        checker_running = bool(self.check_worker and self.check_worker.isRunning())
+        if downloader_running or checker_running:
+            event.ignore()
+            self._close_pending = True
+            self.setEnabled(False)
+            if self.downloader:
+                self.downloader.requestInterruption()
+            if self.check_worker:
+                self.check_worker.requestInterruption()
+            QTimer.singleShot(50, self._finish_pending_close)
+            return
         super().closeEvent(event)
+
+    def _finish_pending_close(self) -> None:
+        if not self._close_pending:
+            return
+        if (self.downloader and self.downloader.isRunning()) or (
+            self.check_worker and self.check_worker.isRunning()
+        ):
+            QTimer.singleShot(50, self._finish_pending_close)
+            return
+        self._close_pending = False
+        self.close()
 
     def save_settings(self) -> None:
         """

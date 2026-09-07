@@ -12,26 +12,11 @@ from typing import Any
 from PyQt6.QtCore import QSize, Qt
 from PyQt6.QtGui import QColorSpace, QImage, QImageReader
 
+from .components import component_for_extension, unsupported_format_message
 from .logger import logger
 
 # Maximum allowed uncompressed buffer allocation (500 MB default)
 DEFAULT_MAX_ALLOCATION_BYTES: int = 500 * 1024 * 1024
-
-# Explicitly unsupported RAW / container formats requiring native plugins
-EXPLICIT_UNSUPPORTED_FORMATS: set[str] = {
-    "heic",
-    "heif",
-    "cr2",
-    "nef",
-    "arw",
-    "dng",
-    "orf",
-    "rw2",
-    "pef",
-    "raf",
-    "srw",
-}
-
 
 def decode_image(
     filepath: str | os.PathLike[str],
@@ -69,17 +54,13 @@ def decode_image(
         return None, f"Failed to access file {path_str}: {e}"
 
     ext: str = os.path.splitext(path_str)[1].lower().lstrip(".")
-    if ext in EXPLICIT_UNSUPPORTED_FORMATS:
-        return (
-            None,
-            f"Format '{ext.upper()}' is not supported by installed image plugins.",
-        )
-
     try:
         reader = QImageReader(path_str)
         reader.setAutoTransform(True)
 
         if not reader.canRead():
+            if component_for_extension(ext):
+                return None, unsupported_format_message(ext)
             err_msg: str = reader.errorString() or "Unsupported image format or corrupt header"
             return None, f"Cannot read image file '{path_str}': {err_msg}"
 
@@ -146,10 +127,23 @@ def inspect_image_header(
         return {"valid": False, "error": f"File does not exist: {path_str}"}
 
     ext: str = os.path.splitext(path_str)[1].lower().lstrip(".")
-    if ext in EXPLICIT_UNSUPPORTED_FORMATS:
+    if component_for_extension(ext):
+        reader = QImageReader(path_str)
+        reader.setAutoTransform(True)
+        if reader.canRead():
+            size = reader.size()
+            fmt_raw = reader.format()
+            fmt_bytes = fmt_raw.data() if hasattr(fmt_raw, "data") else bytes(fmt_raw)
+            return {
+                "valid": True,
+                "format": fmt_bytes.decode("ascii", errors="ignore").lower(),
+                "width": size.width(),
+                "height": size.height(),
+                "error": None,
+            }
         return {
             "valid": False,
-            "error": f"Format '{ext.upper()}' is not supported by installed plugins.",
+            "error": unsupported_format_message(ext),
         }
 
     reader = QImageReader(path_str)

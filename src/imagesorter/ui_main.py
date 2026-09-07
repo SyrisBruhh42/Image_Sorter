@@ -11,7 +11,6 @@ from PyQt6.QtGui import (
     QAction,
     QColor,
     QImage,
-    QImageReader,
     QKeySequence,
     QMouseEvent,
     QPainter,
@@ -47,6 +46,7 @@ import numpy as np
 from PyQt6.QtCore import QEvent, QObject, Qt, pyqtSlot
 
 from .image_loader import ImageLoader
+from .launch_requests import is_supported_image
 from .logger import logger
 from .queue_worker import QueueWorker
 from .settings_manager import SettingsManager
@@ -369,6 +369,7 @@ class MainViewer(QMainWindow):
         gen = result.get('generation', 0)
         filepath = result.get('filepath')
         qimg = result.get('image')
+        error = result.get('error')
 
         if gen != self.load_generation:
             return  # Discard stale decoder results
@@ -385,6 +386,15 @@ class MainViewer(QMainWindow):
                 if (0 <= self.current_index < len(self.images) and
                         _canonical_path(self.images[self.current_index]) == _canonical_path(filepath)):
                     self.show_image()
+        elif error and filepath and (
+            0 <= self.current_index < len(self.images)
+            and _canonical_path(self.images[self.current_index]) == _canonical_path(filepath)
+        ):
+            self.viewer.hide()
+            self.hud_widget.hide()
+            self.empty_label.setText(str(error))
+            self.empty_label.show()
+            self.statusBar().showMessage(str(error), 7000)
 
     def preload_adjacent_images(self) -> None:
         """Preloads adjacent images using extended or legacy ImageLoader contract."""
@@ -640,10 +650,10 @@ class MainViewer(QMainWindow):
             self.loader.clear_tasks(new_generation=self.load_generation)
         self.clear_pixmap_cache()
 
-        supported_formats = {fmt.data().decode().lower() for fmt in QImageReader.supportedImageFormats()}
-
         if self.transient_paths is not None:
-            self.images = [p for p in self.transient_paths if os.path.isfile(p) and os.path.splitext(p)[1][1:].lower() in supported_formats]
+            self.images = [
+                p for p in self.transient_paths if os.path.isfile(p) and is_supported_image(p)
+            ]
             if self.images:
                 self.current_index = 0
                 self.show_image()
@@ -672,8 +682,7 @@ class MainViewer(QMainWindow):
             for f in os.listdir(src_dir):
                 filepath = os.path.join(src_dir, f)
                 if os.path.isfile(filepath):
-                    ext = os.path.splitext(f)[1][1:].lower()
-                    if ext in supported_formats:
+                    if is_supported_image(filepath):
                         self.images.append(filepath)
 
             self.images.sort()
@@ -1298,7 +1307,7 @@ class MainViewer(QMainWindow):
 
     def closeEvent(self, event: QEvent) -> None:
         """Ensures background threads are safely stopped upon window close."""
-        self.worker.stop()
+        self.worker.shutdown()
         if hasattr(self, 'loader'):
             self.loader.stop()
         super().closeEvent(event)
