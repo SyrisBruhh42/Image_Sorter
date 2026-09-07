@@ -1,169 +1,130 @@
-# Image Sorter Enterprise
+# Image Sorter
 
-High-Throughput Image Triage & AI Tagging Suite built with Python and PyQt6.
+Keyboard-first desktop image review and sorting for Linux, built with Python and
+PyQt6. Ubuntu 24.04 LTS with KDE Plasma/X11 is the primary target. Windows and
+macOS currently receive experimental smoke coverage.
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Python 3.9+](https://img.shields.io/badge/python-3.9+-blue.svg)](https://www.python.org/downloads/)
-[![Status: Beta](https://img.shields.io/badge/Status-Beta-blue.svg)](https://github.com/SyrisBruhh42/Image_Sorter)
+[![CI](https://github.com/SyrisBruhh42/Image_Sorter/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/SyrisBruhh42/Image_Sorter/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/downloads/)
 
----
+## Current capabilities
 
-## 🚀 Overview
+- Open one or more images or scan a selected directory.
+- Review with keyboard navigation, zoom, pan, a compact HUD, clipping warnings,
+  zen mode, accessible labels, themes, and configurable destination hotkeys.
+- Move, copy, or send an image to a custom staging trash or the system trash.
+- Preserve matching `.txt` sidecars through file operations.
+- Undo application-managed move, copy, and custom-trash operations with strict
+  identity/provenance checks. System-trash operations are intentionally not
+  advertised as application-undoable.
+- Recover conservatively from interrupted application-managed operations using a
+  bounded SQLite journal. Ambiguous state is preserved for manual recovery.
+- Optionally write merged tags to JPEG EXIF XPKeywords and/or `.txt` sidecars.
+- Optionally download and run a pinned MobileNetV2 ONNX model. Model weights and
+  labels are not bundled and no first-run download occurs.
 
-**Image Sorter Enterprise** is a high-throughput, cross-platform desktop application designed for high-quantity image generators, professional photographers, and digital archivists. Built on PyQt6 and ONNX Runtime, it delivers non-destructive file operations, multi-threaded image preloading, exposure clipping diagnostic tools, and AI auto-tagging.
+The file-operation safeguards reduce accidental loss, but this is beta software.
+Use test copies until it has been qualified with your own filesystem and backup
+workflow.
 
----
+## Format and component status
 
-## ✨ Feature Matrix
+The core scanner recognizes JPEG, PNG, WebP, BMP, GIF, and TIFF. Actual decoding
+depends on the Qt image plugins available in the installed build. GIF/APNG/WebP
+animation and multipage TIFF presentation are not implemented yet; currently the
+viewer shows a decoded still frame.
 
-| Feature | Description |
-| :--- | :--- |
-| **Zero-Latency Rendering** | Sub-millisecond image navigation backed by asynchronous `ImageLoader` background preloading queues. |
-| **Transactional File Operations** | Bounded `QThreadPool` for moves, copies, and deletions with full `UndoToken` bidirectional rollback support (`Ctrl+Z`). |
-| **AI Auto-Tagging Engine** | Decoupled ONNX Runtime engine supporting MobileNetV2 with automatic hardware execution provider prioritization (TensorRT > CUDA > ROCm > OpenVINO > DirectML > CoreML > CPU). |
-| **EXIF Metadata Synergy** | Non-destructive, atomic EXIF tag writing (`piexif`) with safe temp-file swapping. |
-| **Diagnostic Tools** | Real-time exposure clipping inspector highlights blown-out highlights (`>250`) and crushed shadows (`<5`). |
-| **Cross-Platform Path Resolution** | Strict compliance with XDG Base Directory specs on POSIX/Linux, `%APPDATA%` on Windows, and `Application Support` on macOS, with optional `portable.flag` override. |
-| **Desktop Launch Integration** | Opens specific image files or folders directly from command-line invocation (`imagesorter /path/to/file.jpg` or `imagesorter /path/to/folder`). |
+HEIF/HEIC/AVIF, camera RAW, animation/multipage support, optional AI packs, and
+hardware-provider packs have stable capability identifiers and separate data/cache
+locations. A unified Download & Component Manager is planned but is not yet an
+installer. Unsupported optional formats produce an actionable diagnostic instead
+of being silently omitted.
 
----
+## Install for development
 
-## 🏗️ Architecture Diagram
+Prerequisites are Python 3.10 or newer and the Qt runtime libraries required by
+your display backend. On Ubuntu 24.04:
 
-```
-+-----------------------------------------------------------------------------------+
-|                                 USER INTERFACE                                    |
-|   MainViewer (QMainWindow) <=========================> SettingsWindow (QDialog)   |
-+-----------------------------------------------------------------------------------+
-       |                                      |                                |
-       v                                      v                                v
-+----------------------+           +--------------------+           +--------------------+
-|     ImageLoader      |           |    QueueWorker     |           |   SettingsManager  |
-|  (Background QThread)|           | (Bounded QThread)  |           | (Thread-Safe RLock)|
-+----------------------+           +--------------------+           +--------------------+
-       |                                      |                                |
-       v                                      v                                v
-+----------------------+           +--------------------+           +--------------------+
-|  Preloaded Image     |           | Non-Destructive    |           | XDG / AppData /    |
-|  Frame Cache         |           | File Ops & EXIF    |           | Portable Path Res  |
-+----------------------+           +--------------------+           +--------------------+
-                                              |
-                                              v
-                                   +--------------------+
-                                   |  AITagger (ONNX)   |
-                                   | Provider Auto-Scan |
-                                   +--------------------+
-```
-
----
-
-## 📦 Installation
-
-### Prerequisites
-* Python `>= 3.9`
-
-### Editable Installation (Development Mode)
 ```bash
+sudo apt update
+sudo apt install -y python3-venv libegl1 libgl1 libxcb-cursor0 libdbus-1-3
 git clone https://github.com/SyrisBruhh42/Image_Sorter.git
 cd Image_Sorter
-pip install -e .
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install -e ".[dev]"
 ```
 
-To install with development and testing dependencies:
-```bash
-pip install -e ".[dev]"
-```
-
----
-
-## ⚡ Quick Start & Execution
-
-Launch the application using either the CLI command, positional arguments, or module execution:
+Launch it with a configured source directory, an image, or a directory:
 
 ```bash
-# Direct CLI entry point (opens default configured source directory)
 imagesorter
-
-# Launch with explicit image files or directory
-imagesorter /path/to/photo.jpg /path/to/folder
-
-# Python module invocation (run headless offscreen or standard)
-QT_QPA_PLATFORM=offscreen python3 -m imagesorter.main --help
+imagesorter /path/to/photo.jpg
+imagesorter /path/to/folder
 ```
 
----
+The application does not force Wayland or X11. Qt uses the active desktop session.
 
-## ⌨️ Keyboard Shortcuts Reference
+## Keyboard controls
 
-Image Sorter features a comprehensive, keyboard-driven UI designed for high-speed triage:
+| Action | Default key |
+| --- | --- |
+| Next / previous | `D`, `Right`, or `Space` / `A`, `Left`, or `Backspace` |
+| Custom move or copy | Configured single-character hotkey |
+| Custom/system trash | `X` or `Delete` |
+| Undo application-managed operation | `Ctrl+Z` |
+| Settings | `S` or `Ctrl+S` |
+| Reload source | `R` |
+| Clipping warning overlay | `C` |
+| Lock zoom | `L` |
+| Zen mode | `Z` |
+| Copy current path | `Ctrl+C` |
+| Exit / leave fullscreen or zen mode | `Esc` |
 
-| Action | Shortcut | Description |
-| :--- | :--- | :--- |
-| **Next Image** | `Right` / `D` / `Space` | Advance to the next image in source directory. |
-| **Previous Image** | `Left` / `A` | Move to the previous image. |
-| **Move to Trash** | `Delete` / `X` | Move active image to configured staging trash / system bin. |
-| **Exposure Clipping** | `C` | Toggle over/under-exposure overlay mask. |
-| **Lock Zoom** | `L` | Lock current zoom level and pan position across image transitions. |
-| **Zen Mode** | `Z` | Toggle full-screen distraction-free viewing mode. |
-| **Undo Action** | `Ctrl + Z` | Rollback the last file operation (move, delete, tag). |
-| **Open Settings** | `S` | Open Settings and AI Auto-Tagging configuration dialog. |
-| **Zoom In / Out** | `+` / `-` or `Ctrl + Mouse Wheel` | Adjust viewport zoom. |
-| **Reset Zoom** | `0` or `Ctrl + 0` | Reset image view to fit container. |
+A configured custom single-character hotkey takes precedence over the fallback
+letter action. Modifier shortcuts, arrows, `Space`, `Backspace`, and `Delete` keep
+their fixed behavior.
 
----
+## Optional local AI
 
-## 🤖 AI Auto-Tagging Setup (ONNX Runtime)
+Open Settings → AI & Metadata and choose **Download Model**. The downloader uses
+pinned HTTPS URLs, writes to a temporary file, verifies SHA-256, and atomically
+activates the model and label files under the application data directory. AI is
+off by default and ordinary image review remains available without those files.
 
-1. Open the **Settings Window** (`S`).
-2. Enable **AI Auto-Tagging Engine**.
-3. Select or download the desired ONNX tagging model (e.g., MobileNetV2 tagger). Model weights are optional; when downloaded, artifacts are validated via SHA-256 checksums before target placement. Model weights are saved directly to your OS application data directory (`~/.local/share/ImageSorter/models` on Linux).
-4. Configure tag confidence thresholds (`0.0 - 1.0`).
-5. Hardware execution acceleration is dynamically probed:
-   * **NVIDIA GPU**: TensorRT / CUDA
-   * **AMD GPU**: ROCm / MIGraphX
-   * **Intel GPU/CPU**: OpenVINO
-   * **Windows GPU**: DirectML
-   * **Apple Silicon**: CoreML
-   * **Fallback**: Multi-threaded CPU Execution Provider
+The standard Python dependency set currently includes the CPU ONNX Runtime. GPU
+provider packs are future optional components; the application only selects an
+accelerated provider already available in its runtime and falls back to CPU.
 
----
+## Build and test
 
-## 🛠️ Standalone Executable & AppImage Build Guide
-
-The project includes an automated `build.py` script powered by PyInstaller and Freedesktop standards.
-
-### 1. PyInstaller Single-Directory Executable
 ```bash
-python3 build.py
+./scripts/test_headless.sh -m "not packaging" -q tests
+source .venv/bin/activate
+ruff check src tests scripts build_desktop.py
+python build_desktop.py
 ```
-Outputs are stored in `dist/ImageSorter/`.
 
-### 2. Standalone Linux AppImage Build
-To build a standalone Linux AppImage binary using a checksum-verified `appimagetool`:
-```bash
-python3 build.py --appimage
-```
-On x86_64 systems, this generates `dist/ImageSorter-x86_64.AppImage`.
+`python build_desktop.py` creates a PyInstaller onedir build under
+`dist/ImageSorter/`. On Linux x86_64, `python build_desktop.py --appimage`
+additionally requires a verified
+AppImage. The build script downloads only the pinned `appimagetool` 1.9.1 binary,
+verifies its digest, and fails if the requested artifact is absent.
 
-#### Ubuntu 24.04 LTS FUSE Requirements & Fallback
-Ubuntu 24.04 LTS does not include `libfuse2` by default (it defaults to `fuse3`). To run `.AppImage` files natively on Ubuntu 24.04:
-```bash
-sudo apt update && sudo apt install -y libfuse2t64
-```
-Alternatively, extract and run without FUSE:
+Ubuntu 24.04 may require `libfuse2t64` to mount an AppImage. Extraction is the
+FUSE-free fallback:
+
 ```bash
 ./dist/ImageSorter-x86_64.AppImage --appimage-extract
 ./squashfs-root/AppRun
 ```
 
-### 3. Testing and Coverage Verification
-To run unit tests headlessly with coverage report:
-```bash
-QT_QPA_PLATFORM=offscreen python3 -m pytest --cov=imagesorter --cov-report=term-missing tests/
-```
+See [Architecture](docs/architecture.md),
+[Contributing](CONTRIBUTING.md), and the
+[KDE acceptance matrix](docs/engineering/platform-acceptance.md) for scope and
+verification details.
 
----
+## License
 
-## 📄 License
-
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details. Copyright (c) 2026 SyrisBruhh42.
+MIT. See [LICENSE](LICENSE).

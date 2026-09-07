@@ -1,102 +1,96 @@
-name: Release Qualification & Artifact Publishing
+name: Release qualification
 
 on:
   push:
-    tags:
-      - 'v*'
+    tags: ["v*"]
   workflow_dispatch:
-    inputs:
-      release_notes:
-        description: 'Release Notes / Instructions'
-        required: false
-        default: 'Manual Release Dispatch'
 
-permissions:
-  contents: write
+env:
+  PIP_DISABLE_PIP_VERSION_CHECK: "1"
+  ONNXRUNTIME_DISABLE_TELEMETRY: "1"
+  DO_NOT_TRACK: "1"
+  HF_HUB_OFFLINE: "1"
+  TRANSFORMERS_OFFLINE: "1"
 
 jobs:
-  build-and-publish-release:
-    name: Build & Publish Release Artifacts
+  qualify-and-build:
+    name: Qualify source and build Linux artifacts
     runs-on: ubuntu-24.04
-
+    permissions:
+      contents: read
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Install system dependencies for Qt
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libegl1 libgl1 libxcb-cursor0 libdbus-1-3
-
-      - name: Set up Python 3.12
-        uses: actions/setup-python@v5
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-
-      - name: Install build and dev dependencies
+          cache: pip
+      - name: Install dependencies
         run: |
-          python -m pip install --upgrade pip build wheel
-          pip install -e ".[dev]"
-
-      - name: Run diagnostic script pre-flight
+          sudo apt-get update
+          sudo apt-get install -y libegl1 libgl1 libxcb-cursor0 libdbus-1-3 xvfb file
+          python -m pip install --upgrade build
+          python -m pip install -e ".[dev]"
+      - name: Full offline qualification
+        env:
+          QT_QPA_PLATFORM: offscreen
+          XDG_CONFIG_HOME: ${{ runner.temp }}/config
+          XDG_DATA_HOME: ${{ runner.temp }}/data
+          XDG_CACHE_HOME: ${{ runner.temp }}/cache
+          XDG_STATE_HOME: ${{ runner.temp }}/state
         run: |
-          python3 scripts/diagnose_linux_p07.py --json > release_diagnostics.json
-
-      - name: Build Wheel Package
+          python -m pip check
+          ruff check src tests scripts build_desktop.py
+          python -m pytest -m "not packaging" tests
+          xvfb-run --auto-servernum python -m pytest tests/test_platform_startup.py tests/test_p07_infrastructure.py
+      - name: Build wheel, onedir, and AppImage
         run: |
-          pip wheel --no-deps --wheel-dir dist .
-
-      - name: Build PyInstaller Standalone Binary
+          python -m build --wheel
+          python build_desktop.py --appimage
+          test -s dist/ImageSorter-x86_64.AppImage
+          test -x dist/ImageSorter/ImageSorter
+      - name: Qualify wheel outside checkout
         run: |
-          python3 build.py
-
-      - name: Check P06 AppImage Build Contract
+          python -m venv "${{ runner.temp }}/wheel-venv"
+          "${{ runner.temp }}/wheel-venv/bin/pip" install dist/imagesorter-*.whl
+          cd "${{ runner.temp }}"
+          "${{ runner.temp }}/wheel-venv/bin/imagesorter" --help
+          "${{ runner.temp }}/wheel-venv/bin/python" -c "from imagesorter.paths import get_resource_dir; assert (get_resource_dir() / 'imagesorter.png').is_file()"
+      - name: Archive and hash release files
         run: |
-          if [ -f "dist/build_appimage.sh" ]; then
-            echo "build_appimage.sh script found in dist."
-          fi
-          echo "Note: Full 'python build.py --appimage' execution requires integrated P06 contract."
-
-      - name: Generate Release Manifest & SHA-256 Checksums
-        run: |
-          cd dist
-          sha256sum * > checksums.txt 2>/dev/null || true
-          python3 -c "
-          import json, os, sys, glob, hashlib
-          import imagesorter
-
-          files = glob.glob('*')
-          hashes = {}
-          for fn in files:
-              if os.path.isfile(fn):
-                  with open(fn, 'rb') as f:
-                      hashes[fn] = hashlib.sha256(f.read()).hexdigest()
-
-          manifest = {
-              'version': getattr(imagesorter, '__version__', '1.0.0'),
-              'source_sha': '${{ github.sha }}',
-              'ref': '${{ github.ref }}',
-              'build_environment': 'ubuntu-24.04',
-              'python_version': sys.version.split()[0],
-              'artifacts_sha256': hashes,
-              'platform_support': {
-                  'linux_x86_64': 'supported',
-                  'windows_x86_64': 'experimental',
-                  'macos_x64_arm64': 'experimental'
-              }
-          }
-          with open('release_manifest.json', 'w') as f:
-              json.dump(manifest, f, indent=2)
-          "
-          ls -la
-
-      - name: Upload Release Artifacts
-        uses: actions/upload-artifact@v4
+          tar --sort=name --mtime='UTC 1970-01-01' --owner=0 --group=0 --numeric-owner -czf dist/ImageSorter-linux-x86_64.tar.gz -C dist ImageSorter
+          python scripts/diagnose_linux_p07.py --json > dist/build_diagnostics.json
+          python scripts/create_release_manifest.py --dist dist --source-sha "${{ github.sha }}"
+          (cd dist && sha256sum -c checksums.txt)
+      - uses: actions/upload-artifact@v4
         with:
-          name: imagesorter-release-${{ github.ref_name }}
+          name: imagesorter-qualified-${{ github.sha }}
+          if-no-files-found: error
           path: |
             dist/*.whl
-            dist/ImageSorter/
+            dist/*.AppImage
+            dist/*.tar.gz
             dist/checksums.txt
             dist/release_manifest.json
-            release_diagnostics.json
+            dist/build_diagnostics.json
+
+  publish-github-release:
+    name: Publish GitHub Release for qualified tag
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-24.04
+    needs: qualify-and-build
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: imagesorter-qualified-${{ github.sha }}
+          path: release-assets
+      - name: Publish immutable tag artifacts
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${{ github.ref_name }}" release-assets/* \
+            --repo "${{ github.repository }}" \
+            --verify-tag \
+            --generate-notes \
+            --title "Image Sorter ${{ github.ref_name }}"

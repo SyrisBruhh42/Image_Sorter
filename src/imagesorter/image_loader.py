@@ -1,4 +1,4 @@
-"""Background thread for preloading images to achieve zero-latency navigation.
+"""Bounded background image decoding and preload queue.
 
 Implements SHARED DECODER CONTRACT v1 with priority scheduling, request identity,
 cancellation, bounded backlogs, and nonblocking request_stop.

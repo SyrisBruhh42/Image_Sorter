@@ -5,10 +5,11 @@ import py_compile
 import subprocess
 import sys
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
-import build
+import build_desktop as build
 
 
 def test_run_app_compiles():
@@ -62,14 +63,39 @@ def test_appdir_preparation(tmp_path):
     assert ".isp" not in desktop_content
 
 
+def test_unverified_appimagetool_is_rejected(tmp_path):
+    tool = tmp_path / "appimagetool"
+    tool.write_bytes(b"not the pinned upstream binary")
+
+    with pytest.raises(build.BuildError, match="checksum mismatch"):
+        build.get_appimagetool_executable(tmp_path, explicit_tool=tool)
+
+
+def test_appimage_success_without_output_is_failure(tmp_path):
+    root_dir = Path(__file__).resolve().parent.parent
+    dist_dir = tmp_path / "dist"
+    executable = dist_dir / "ImageSorter" / "ImageSorter"
+    executable.parent.mkdir(parents=True)
+    executable.write_bytes(b"binary")
+    executable.chmod(0o755)
+    build.generate_freedesktop_artifacts(dist_dir)
+    build.ensure_icon_assets(root_dir)
+
+    with patch.object(
+        build, "get_appimagetool_executable", return_value=Path("/bin/true")
+    ):
+        with pytest.raises(build.BuildError, match="without producing"):
+            build.build_appimage(root_dir, dist_dir)
+
+
 @pytest.mark.packaging
 def test_pyinstaller_executable_smoke():
-    """Packaging smoke test: runs build.py and launches built executable with QT_QPA_PLATFORM=offscreen."""
+    """Run the desktop build and launch its executable using offscreen Qt."""
     root_dir = Path(__file__).resolve().parent.parent
-    build_script = root_dir / "build.py"
+    build_script = root_dir / "build_desktop.py"
 
     build_res = subprocess.run([sys.executable, str(build_script)], capture_output=True, text=True, cwd=root_dir)
-    assert build_res.returncode == 0, f"build.py failed:\nSTDOUT:\n{build_res.stdout}\nSTDERR:\n{build_res.stderr}"
+    assert build_res.returncode == 0, f"desktop build failed:\nSTDOUT:\n{build_res.stdout}\nSTDERR:\n{build_res.stderr}"
 
     exe_name = "ImageSorter.exe" if sys.platform == "win32" else "ImageSorter"
     exe_path = root_dir / "dist" / "ImageSorter" / exe_name

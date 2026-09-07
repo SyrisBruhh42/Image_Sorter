@@ -1,11 +1,11 @@
-# Developer & Agent Guidelines — Image Sorter Enterprise
+# Developer & Agent Guidelines — Image Sorter
 
 ## Architecture & Code Layout
 - Core application source code resides under `src/imagesorter/`.
 - Tests reside under `tests/`.
 - Entry points: `run_app.py` (PyInstaller / root launcher) and `imagesorter.main:main` (`imagesorter` CLI).
 - Package imports within `src/imagesorter/*.py` use relative imports (e.g., `from .paths import get_config_dir`).
-- Test imports and external scripts must set `PYTHONPATH=src` to import `imagesorter` cleanly.
+- Editable installs are preferred; repository test helpers also set `PYTHONPATH=src`.
 
 ## Execution & Test Environment
 - **Environment Setup:** Execute `./scripts/jules_setup.sh` to initialize the `.venv` virtual environment and verify runtime dependencies.
@@ -13,7 +13,7 @@
 - **Test Commands:**
   - Standard Non-Packaging Suite: `./scripts/test_headless.sh -m "not packaging" -q tests/`
   - Packaging Smoke Test: `./scripts/test_headless.sh -m packaging -q tests/`
-  - Ruff Linter: `source .venv/bin/activate && ruff check src/ tests/`
+  - Ruff Linter: `source .venv/bin/activate && ruff check src tests scripts build_desktop.py`
   - Pip Dependency Check: `source .venv/bin/activate && pip check`
 
 ## Safety, Quality & Test Conventions

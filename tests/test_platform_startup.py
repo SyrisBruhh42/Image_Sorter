@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import os
 import sys
-from unittest.mock import patch
 
 from imagesorter.main import configure_linux_platform, main
 
@@ -71,10 +70,18 @@ def test_non_linux_platform_no_op(monkeypatch):
 
 def test_qt_init_failure_exit_and_stderr(capsys, monkeypatch):
     monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
-    with patch("PyQt6.QtWidgets.QApplication.instance", return_value=None), \
-         patch("PyQt6.QtWidgets.QApplication", side_effect=RuntimeError("Cannot connect to server")):
-        exit_code = main(["imagesorter"])
-        assert exit_code == 1
+
+    class FailingApplication:
+        @staticmethod
+        def instance():
+            return None
+
+        def __init__(self, _args):
+            raise RuntimeError("Cannot connect to server")
+
+    monkeypatch.setattr("PyQt6.QtWidgets.QApplication", FailingApplication)
+    exit_code = main(["imagesorter"])
+    assert exit_code == 1
 
     captured = capsys.readouterr()
     assert "Error: Qt application initialization failed" in captured.err

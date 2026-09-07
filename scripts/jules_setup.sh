@@ -26,10 +26,9 @@ source "${VENV_DIR}/bin/activate"
 # 2. Upgrade core tooling
 python -m pip install --upgrade pip setuptools wheel --quiet
 
-# 3. Install runtime and development dependencies
+# 3. Install the package and its declared development dependencies
 echo "Installing project dependencies..."
-pip install -r "${REPO_ROOT}/requirements.txt" --quiet
-pip install pytest pytest-qt pytest-mock pytest-cov pyinstaller ruff mypy --quiet
+python -m pip install -e "${REPO_ROOT}[dev]" --quiet
 
 # 4. Dependency Health Check
 echo "Running dependency check..."

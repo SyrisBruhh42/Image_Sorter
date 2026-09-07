@@ -6,6 +6,13 @@ from pathlib import Path
 _root_dir = Path(os.path.abspath(SPECPATH)) if 'SPECPATH' in globals() else Path.cwd()
 SRC_PATH = str(_root_dir / 'src')
 
+_version_namespace = {}
+exec((_root_dir / 'src' / 'imagesorter' / '__init__.py').read_text(encoding='utf-8'), _version_namespace)
+APP_VERSION = _version_namespace['__version__']
+_numeric_version = APP_VERSION.split('+', 1)[0].split('dev', 1)[0].rstrip('.')
+_version_parts = [int(part) for part in _numeric_version.split('.')]
+VERSION_TUPLE = tuple((_version_parts + [0, 0, 0, 0])[:4])
+
 block_cipher = None
 
 version_info = None
@@ -16,8 +23,8 @@ if sys.platform == "win32":
         )
         version_info = VSVersionInfo(
             ffi=FixedFileInfo(
-                filevers=(1, 0, 0, 0),
-                prodvers=(1, 0, 0, 0),
+                filevers=VERSION_TUPLE,
+                prodvers=VERSION_TUPLE,
                 mask=0x3f,
                 flags=0x0,
                 OS=0x40004,
@@ -32,13 +39,13 @@ if sys.platform == "win32":
                             '040904B0',
                             [
                                 StringStruct('CompanyName', 'SyrisBruhh42'),
-                                StringStruct('FileDescription', 'Image Sorter Enterprise'),
-                                StringStruct('FileVersion', '1.0.0.0'),
+                                StringStruct('FileDescription', 'Image Sorter'),
+                                StringStruct('FileVersion', APP_VERSION),
                                 StringStruct('InternalName', 'ImageSorter'),
                                 StringStruct('LegalCopyright', 'Copyright (c) 2026 SyrisBruhh42'),
                                 StringStruct('OriginalFilename', 'ImageSorter.exe'),
-                                StringStruct('ProductName', 'Image Sorter Enterprise'),
-                                StringStruct('ProductVersion', '1.0.0.0'),
+                                StringStruct('ProductName', 'Image Sorter'),
+                                StringStruct('ProductVersion', APP_VERSION),
                             ]
                         )
                     ]
@@ -58,8 +65,7 @@ a = Analysis(
     pathex=[SRC_PATH],
     binaries=[],
     datas=[
-        (os.path.join(str(_root_dir), 'models'), 'models'),
-        (os.path.join(SRC_PATH, 'imagesorter', 'resources'), 'src/imagesorter/resources'),
+        (os.path.join(SRC_PATH, 'imagesorter', 'resources'), 'imagesorter/resources'),
     ],
     hiddenimports=[
         'onnxruntime',
@@ -76,6 +82,8 @@ a = Analysis(
         'imagesorter',
         'imagesorter.main',
         'imagesorter.launch_requests',
+        'imagesorter.components',
+        'imagesorter.metadata_io',
     ],
     hookspath=[],
     hooksconfig={},
@@ -98,7 +106,7 @@ exe = EXE(
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
-    upx=True,
+    upx=False,
     console=False,
     disable_windowed_traceback=False,
     argv_emulation=False,
@@ -115,7 +123,7 @@ coll = COLLECT(
     a.zipfiles,
     a.datas,
     strip=False,
-    upx=True,
+    upx=False,
     upx_exclude=[],
     name='ImageSorter',
 )

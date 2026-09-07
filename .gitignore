@@ -66,6 +66,7 @@ venv.bak/
 ImageSorter.AppDir/
 squashfs-root/
 *.AppImage
+.build-tools/
 models/*
 !models/.gitkeep
 

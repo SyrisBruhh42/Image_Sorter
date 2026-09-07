@@ -1,75 +1,83 @@
-# KDE Plasma Platform Acceptance Matrix (Ubuntu 24.04 LTS)
+# KDE Plasma Acceptance Matrix — Ubuntu 24.04 LTS
 
-## Overview & Target Environment
-- **Operating System:** Ubuntu 24.04 LTS (Noble Numbat)
-- **Desktop Environment:** KDE Plasma 6.x / KDE Plasma 5.27 LTS
-- **Display Server:** KWin (Wayland) & KWin (X11)
-- **Application:** ImageSorter Enterprise v1.0.0
-- **Purpose:** Systematic validation of user interface rendering, system integration, file operations, multi-monitor behavior, scaling, and interruption resilience under KDE Plasma.
+This matrix is the native-desktop gate for the current Linux-first development
+baseline. Automated offscreen and Xvfb tests support it, but do not replace it.
 
----
+## Target profile
 
-## Pre-Requisites & Test Fixture Preparation
+| Item | Target |
+| --- | --- |
+| Distribution | Ubuntu 24.04.4 LTS (Noble), x86_64 |
+| Desktop | KDE Plasma 5.27.12 |
+| Window manager/session | KWin 5.27.11, X11 |
+| Display manager | SDDM 0.20.0 |
+| GPU | NVIDIA GeForce RTX 4070 SUPER |
+| Application version | `0.1.0.dev0` |
+| Native status | **NOT RUN** for the unified candidate |
 
-Before executing the acceptance matrix, create an isolated directory with temporary test image fixtures using the following commands:
+Record the source commit, package type, Qt/PyQt versions, NVIDIA driver, screen
+layout, scale factor, and result when executing this matrix. Never convert a
+`NOT RUN` cell to `PASS` based only on CI or code inspection.
+
+## Disposable fixture setup
+
+Run acceptance tests only against disposable files:
 
 ```bash
-# Create isolated test fixture directory
-mkdir -p /tmp/imagesorter_accept_fixtures/{sample_folder,trash_folder,external_mnt}
+fixture_root="$(mktemp -d)"
+mkdir -p "$fixture_root/source" "$fixture_root/destination" "$fixture_root/trash"
+python - "$fixture_root/source" <<'PY'
+from pathlib import Path
+import sys
+from PIL import Image
 
-# Generate temporary image fixtures (RGB/RGBA/JPEG)
-python3 -c "
-from PIL import Image, ImageDraw
-import os
-
-base = '/tmp/imagesorter_accept_fixtures/sample_folder'
-os.makedirs(base, exist_ok=True)
-
-# Generate 5 sample images with distinct colors and text
-colors = ['red', 'green', 'blue', 'yellow', 'magenta']
-for i, color in enumerate(colors):
-    img = Image.new('RGB', (1920, 1080), color=color)
-    draw = ImageDraw.Draw(img)
-    draw.text((100, 100), f'Fixture Image {i+1} ({color})', fill='white')
-    img.save(os.path.join(base, f'fixture_{i+1:02d}_{color}.jpg'), 'JPEG')
-
-print('Test fixtures created successfully under /tmp/imagesorter_accept_fixtures')
-"
+root = Path(sys.argv[1])
+for index, color in enumerate(("red", "green", "blue"), start=1):
+    image = root / f"sample-{index}.jpg"
+    Image.new("RGB", (1600, 1000), color).save(image, quality=90)
+    image.with_suffix(".txt").write_text(f"human note {index}\n", encoding="utf-8")
+PY
 ```
 
-Also run the diagnostic script to attach environment information to the test run report:
+Create a separate application profile for the run:
+
 ```bash
-python3 scripts/diagnose_linux_p07.py --json > /tmp/imagesorter_accept_fixtures/diag_report.json
+export XDG_CONFIG_HOME="$fixture_root/xdg/config"
+export XDG_DATA_HOME="$fixture_root/xdg/data"
+export XDG_CACHE_HOME="$fixture_root/xdg/cache"
+export XDG_STATE_HOME="$fixture_root/xdg/state"
+mkdir -p "$XDG_CONFIG_HOME" "$XDG_DATA_HOME" "$XDG_CACHE_HOME" "$XDG_STATE_HOME"
 ```
 
----
+Remove `fixture_root` only after reviewing results and copying any diagnostic log
+you want to retain.
 
-## Platform Acceptance Matrix
+## Acceptance cases
 
-| ID | Category | Specific Condition / Test Description | Test Execution Procedure | Expected Outcome | Status | Supporting Evidence & Notes |
-|:---|:---|:---|:---|:---|:---:|:---|
-| **KDE-01** | Display Session | **Wayland Native Session** | Launch ImageSorter under KDE Plasma Wayland session (`WAYLAND_DISPLAY` set). `QT_QPA_PLATFORM=wayland;xcb`. | App initializes without platform plugin errors or visual artifacting. Crisp window borders. | `[ ] PASS`<br>`[ ] FAIL`<br>`[X] NOT RUN` | Terminal output, KWin Wayland debug log, diagnostic report JSON. |
-| **KDE-02** | Display Session | **X11 / XCB Session** | Launch ImageSorter under KDE Plasma X11 session (`DISPLAY` set, `WAYLAND_DISPLAY` unset). | App initializes using `xcb` backend without crashes or missing font/icon rendering. | `[ ] PASS`<br>`[ ] FAIL`<br>`[X] NOT RUN` | Terminal log from `x11` environment session. |
-| **KDE-03** | Fractional Scaling | **100% DPI Scaling (Standard)** | Set Plasma Display Scaling to 100% (96 DPI). Open ImageSorter with sample fixtures. | Image previews render cleanly. Text and UI icons are un-distorted and sharp. | `[ ] PASS`<br>`[ ] FAIL`<br>`[X] NOT RUN` | Screenshot of main viewer window at 100%. |
-| **KDE-04** | Fractional Scaling | **150% Fractional Scaling** | Set Plasma Display Scaling to 150% (Wayland / X11 forced scaling). Open ImageSorter. | UI components scale proportionally without text truncation, layout overlap, or pixmap blurring. | `[ ] PASS`<br>`[ ] FAIL`<br>`[X] NOT RUN` | Screenshot of main viewer and settings modal at 150%. |
-| **KDE-05** | High-DPI Scaling | **200% DPI Scaling (4K HiDPI)** | Set Plasma Display Scaling to 200%. Open ImageSorter with high-resolution images. | High-DPI pixel ratio (`devicePixelRatio`) correctly applied to preview canvas and icons. | `[ ] PASS`<br>`[ ] FAIL`<br>`[X] NOT RUN` | Screenshot at 200% DPI. |
-| **KDE-06** | Multi-Monitor | **Multi-Monitor Drag & DPI Span** | Move ImageSorter window between Primary (e.g. 150% 4K) and Secondary (100% 1080p) monitors. | Window adapts to display screen changes smoothly without crashing or corrupting Qt canvas. | `[ ] PASS`<br>`[ ] FAIL`<br>`[X] NOT RUN` | Multi-monitor display layout diagram / screenshot. |
-| **KDE-07** | Window Manager | **Taskbar Icon & Grouping** | Pin ImageSorter to Plasma Panel / Task Manager (`Plasma Task Manager`). Launch multiple instances. | Application icon (`imagesorter.png`) displays properly on panel and groups correctly under single launcher. | `[ ] PASS`<br>`[ ] FAIL`<br>`[X] NOT RUN` | Screenshot of Plasma taskbar showing pinned/grouped icon. |
-| **KDE-08** | File Manager | **Dolphin "Open With" Integration** | In Dolphin File Manager, right-click an image file -> Open With -> ImageSorter. | ImageSorter launches and opens selected image immediately as active item in viewer. | `[ ] PASS`<br>`[ ] FAIL`<br>`[X] NOT RUN` | `imagesorter.desktop` file location verification and Dolphin screenshot. |
-| **KDE-09** | System Integration| **Native KDE File Dialogs** | Open Settings or File Picker within ImageSorter. Check dialog style. | File chooser uses KDE Plasma native file dialogs (`KFileDialog` / `QFileDialog` native integration) matching system theme. | `[ ] PASS`<br>`[ ] FAIL`<br>`[X] NOT RUN` | Screenshot of open file/folder dialog. |
-| **KDE-10** | Shortcuts & HUD | **Keyboard Navigation & HUD** | Press `Space` (Next), `Backspace`/`Left` (Prev), `Delete` (Trash), `Ctrl+Z` (Undo) in viewer. | Shortcuts trigger navigation and operations instantly without losing focus to background panels. | `[ ] PASS`<br>`[ ] FAIL`<br>`[X] NOT RUN` | Key press sequence log / event trace. |
-| **KDE-11** | Plasma Themes | **Breeze Dark & Light Themes** | Toggle Plasma Global Theme between Breeze Light and Breeze Dark while ImageSorter is running. | UI colors adjust or maintain readable contrast across dialogs, tag lists, and main preview pane. | `[ ] PASS`<br>`[ ] FAIL`<br>`[X] NOT RUN` | Side-by-side screenshots in Breeze Light and Breeze Dark. |
-| **KDE-12** | File Operations | **Copy, Move, Trash & Undo** | Execute Move (`M`), Copy (`C`), Trash (`Delete`), and Undo (`Ctrl+Z`) on `/tmp/imagesorter_accept_fixtures/sample_folder/`. | Operations modify files transactionally; `Send2Trash` sends files to Plasma Trash; Undo restores exact original paths. | `[ ] PASS`<br>`[ ] FAIL`<br>`[X] NOT RUN` | Directory file listing before and after operations. |
-| **KDE-13** | Storage Paths | **Removable Storage / External Mounts** | Load image directory located on external USB drive or FUSE mount (e.g. `/media/$USER/EXT_DRIVE`). | Reads images, writes EXIF/sidecar metadata, and moves/copies files cleanly across filesystem boundaries. | `[ ] PASS`<br>`[ ] FAIL`<br>`[X] NOT RUN` | Terminal session output showing mount path operations. |
-| **KDE-14** | Recovery | **Interruption & Crash Recovery** | Simulate abnormal termination (`kill -9`) during background worker batch processing or corrupt `settings.json`. | ImageSorter detects corrupt settings on next launch, creates safety backup (`settings.json.corrupt.*`), and loads clean defaults without state corruption. | `[ ] PASS`<br>`[ ] FAIL`<br>`[X] NOT RUN` | Verification of backup file creation and startup log. |
+| ID | Area | Procedure | Required result | Status |
+| --- | --- | --- | --- | --- |
+| KDE-01 | Startup | Launch the wheel command, onedir executable, and extracted AppImage from a directory outside the repository. | Each opens without importing source-tree files; supplied file/folder opens. | NOT RUN |
+| KDE-02 | Desktop | Launch the AppImage normally and via Dolphin “Open With.” | Icon/desktop identity is correct; `%F` paths arrive in order; no forced Wayland backend. | NOT RUN |
+| KDE-03 | Navigation | Navigate rapidly with keyboard, zoom/pan, lock zoom, toggle clipping and zen mode. | UI remains responsive; only the current generation is displayed; no stale image flash. | NOT RUN |
+| KDE-04 | Custom hotkeys | Configure move and copy keys to the disposable destination and exercise auto-advance. | Exactly one operation occurs per key; fixed/modifier shortcut precedence matches README. | NOT RUN |
+| KDE-05 | File set | Move/copy/trash an image that has a `.txt` sidecar, including a destination-name collision. | Image and sidecar remain paired; unique destination chosen; no overwrite or orphan. | NOT RUN |
+| KDE-06 | Undo | Undo move, copy, and custom-trash; then alter a destination and try Undo again. | Valid operations reverse; altered target is refused without deleting either copy. | NOT RUN |
+| KDE-07 | Failure | Make a destination unwritable or disconnect a disposable mounted destination during an operation. | Failure is visible; source set remains intact; no false success. | NOT RUN |
+| KDE-08 | Recovery | Terminate the app during a disposable operation and relaunch twice. | Proven temporary artifacts reconcile once; ambiguous files remain with `RECOVERY_REQUIRED`; second launch is idempotent. | NOT RUN |
+| KDE-09 | Settings | Save settings, corrupt the isolated settings JSON, then relaunch. | Corrupt file is uniquely backed up; validated defaults load; actual user profile is untouched. | NOT RUN |
+| KDE-10 | Optional AI | Confirm no model files/network activity on first launch; explicitly download; tag a fixture with CPU and any installed NVIDIA provider. | Base app works without model; verified files activate only after request; provider and fallback are reported honestly. | NOT RUN |
+| KDE-11 | Formats | Open JPEG/PNG/WebP/BMP/GIF/TIFF plus HEIC and one camera RAW sample if available. | Core stills decode where Qt supports them; animation/multipage stays still; unavailable optional formats show the component diagnostic. | NOT RUN |
+| KDE-12 | Display | Exercise normal/maximized/fullscreen at 100% and any routinely used fractional scale; move across monitors if applicable. | Controls remain visible and keyboard focus is clear; no blocking dialog appears behind the main window. | NOT RUN |
+| KDE-13 | Accessibility | Navigate menus/settings with keyboard, inspect focus, tooltips, names, dark/high-contrast themes, and large font. | Every interactive control remains operable and labeled; focus is visible. | NOT RUN |
+| KDE-14 | Shutdown | Close during decode, model validation/download, and queued file work. | Close is bounded and responsive; committed results are reported/recovered; no indefinite wait. | NOT RUN |
 
----
+## Evidence record
 
-## Execution Guidelines for QA / Joe
+For each failure, record exact reproduction steps and whether the source image and
+sidecar hashes changed. Attach `scripts/diagnose_linux_p07.py --json` output after
+reviewing it for privacy, plus application logs from the isolated state directory.
 
-1. **Environment Setup:** Ensure testing machine is running clean Ubuntu 24.04 LTS with KDE Plasma (`plasma-desktop` / `kubuntu-desktop`).
-2. **Fixture Generation:** Execute the fixture preparation script provided above before starting tests.
-3. **Execution Recording:**
-   - Mark each item `[X] PASS` or `[X] FAIL` as tests are performed.
-   - For failed items, attach terminal output or screenshot in `Supporting Evidence & Notes`.
-   - Run `python3 scripts/diagnose_linux_p07.py` and attach the diagnostic log alongside results.
+Acceptance is complete only when KDE-01 through KDE-09 and KDE-12 through KDE-14
+pass. KDE-10 and optional-format portions of KDE-11 may remain explicitly skipped
+when the corresponding optional components are not installed; the base behavior
+must still pass.

@@ -29,6 +29,10 @@ mkdir -p "${XDG_CONFIG_HOME}" "${XDG_DATA_HOME}" "${XDG_CACHE_HOME}" "${XDG_STAT
 
 export PYTHONPATH="${REPO_ROOT}/src"
 export QT_QPA_PLATFORM="offscreen"
+export ONNXRUNTIME_DISABLE_TELEMETRY="1"
+export DO_NOT_TRACK="1"
+export HF_HUB_OFFLINE="1"
+export TRANSFORMERS_OFFLINE="1"
 
 echo "=== Running Headless Test Suite with Isolated XDG Paths ==="
 echo "XDG Root Temp Dir: ${TMP_XDG_DIR}"

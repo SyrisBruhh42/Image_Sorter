@@ -35,8 +35,8 @@ def get_resource_dir() -> Path:
         Path: Path to static assets or package resources.
     """
     if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
-        return Path(sys._MEIPASS).resolve()
-    return get_app_dir()
+        return Path(sys._MEIPASS).resolve() / "imagesorter" / "resources"
+    return Path(__file__).resolve().parent / "resources"
 
 
 def is_portable_mode() -> bool:

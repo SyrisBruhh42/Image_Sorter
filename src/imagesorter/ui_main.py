@@ -414,7 +414,7 @@ class MainViewer(QMainWindow):
 
     def init_ui(self) -> None:
         """Initializes main UI with WCAG AAA accessibility properties."""
-        self.setWindowTitle("Image Sorter - Enterprise")
+        self.setWindowTitle("Image Sorter")
 
         if self.settings.get('ui', 'fullscreen'):
             self.showFullScreen()
@@ -426,7 +426,7 @@ class MainViewer(QMainWindow):
         self.layout = QVBoxLayout(self.central_widget)
         self.layout.setContentsMargins(0, 0, 0, 0)
 
-        # Enterprise HUD overlay
+        # Compact image/status HUD overlay
         self.hud_widget = QWidget(self.central_widget)
         self.hud_widget.setStyleSheet("background-color: rgba(0, 0, 0, 180); color: white; border-radius: 5px; padding: 6px;")
         hud_layout = QVBoxLayout(self.hud_widget)
@@ -758,7 +758,7 @@ class MainViewer(QMainWindow):
             else:
                 msg = "All done! No remaining images in queue."
             self.empty_label.setText(msg)
-            self.setWindowTitle("Image Sorter - Enterprise")
+            self.setWindowTitle("Image Sorter")
             self.announce_accessibility_event(self.empty_label, msg)
             return
 

@@ -86,7 +86,7 @@ def _download_file_secure(
 
     req = urllib.request.Request(
         url,
-        headers={"User-Agent": "ImageSorter-Enterprise/1.0 (Cross-Platform; x86_64)"}
+        headers={"User-Agent": "ImageSorter/0.1 (optional-model-downloader)"}
     )
     with urllib.request.urlopen(req, context=ctx, timeout=timeout) as response, open(dest_temp_path, "wb") as out_file:
         total_size = int(response.headers.get("Content-Length", 0))
