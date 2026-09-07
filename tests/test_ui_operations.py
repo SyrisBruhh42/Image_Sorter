@@ -240,7 +240,7 @@ def test_cache_bytes_reset_on_reload_and_clear(qtbot, tmp_path):
     assert viewer.cache_bytes == 0
 
 
-def test_signal_resilience_duplicate_and_out_of_order(qtbot, tmp_path):
+def test_operation_result_is_idempotent(qtbot, tmp_path, monkeypatch):
     src_dir = tmp_path / "src"
     dst_dir = tmp_path / "dst"
     src_dir.mkdir()
@@ -254,37 +254,45 @@ def test_signal_resilience_duplicate_and_out_of_order(qtbot, tmp_path):
 
     viewer = MainViewer(sm)
     qtbot.addWidget(viewer)
+    monkeypatch.setattr(
+        viewer.worker,
+        "add_task",
+        lambda *args, **kwargs: kwargs["operation_id"],
+    )
 
     op_id = viewer.trigger_file_action("move", img1, str(dst_dir))
     pending_op = viewer.pending_ops[op_id]
 
-    # Simulate out of order: undo_record arrives before finished
     undo_token = {
+        "version": 1,
         "token_id": "test-uuid-1",
         "action": "move",
         "original": img1,
         "current": str(dst_dir / "img1.png"),
         "timestamp": 12345.0
     }
-    viewer.on_undo_record_received(undo_token)
-    assert pending_op.undo_record_received is True
-    assert pending_op.state == "pending"  # Pending until finished confirms
-
-    # Send duplicate undo_record signal
-    viewer.on_undo_record_received(undo_token)
-
-    # Send finished signal
-    viewer.on_worker_finished(str(dst_dir / "img1.png"))
+    result = {
+        "schema_version": 1,
+        "operation_id": op_id,
+        "action": "move",
+        "source_path": img1,
+        "destination_path": str(dst_dir / "img1.png"),
+        "state": "completed",
+        "undo_token": undo_token,
+        "error": None,
+        "warning": None,
+    }
+    viewer.on_operation_result(result)
     assert pending_op.state == "finished"
     assert len(viewer.history) == 1
 
-    # Send duplicate finished signal - must be ignored gracefully
-    viewer.on_worker_finished(str(dst_dir / "img1.png"))
+    viewer.on_operation_result(result)
     assert img1 not in viewer.images
     assert len(viewer.images) == 0
+    assert len(viewer.history) == 1
 
 
-def test_navigation_during_pending_operations(qtbot, tmp_path):
+def test_navigation_during_pending_operations(qtbot, tmp_path, monkeypatch):
     src_dir = tmp_path / "src"
     dst_dir = tmp_path / "dst"
     src_dir.mkdir()
@@ -302,12 +310,17 @@ def test_navigation_during_pending_operations(qtbot, tmp_path):
 
     viewer = MainViewer(sm)
     qtbot.addWidget(viewer)
+    monkeypatch.setattr(
+        viewer.worker,
+        "add_task",
+        lambda *args, **kwargs: kwargs["operation_id"],
+    )
 
     # Current index is 0 (img1)
     assert viewer.current_index == 0
 
     # Action on img1 -> pending op created, advances UI to index 1 (img2)
-    viewer.trigger_file_action("move", img1, str(dst_dir))
+    op_id = viewer.trigger_file_action("move", img1, str(dst_dir))
     assert viewer.current_index == 1
     assert viewer.images[viewer.current_index] == img2
 
@@ -316,7 +329,19 @@ def test_navigation_during_pending_operations(qtbot, tmp_path):
     assert viewer.images[viewer.current_index] == img3
 
     # Now finish img1 operation
-    viewer.on_worker_finished(str(dst_dir / "img1.png"))
+    viewer.on_operation_result(
+        {
+            "schema_version": 1,
+            "operation_id": op_id,
+            "action": "move",
+            "source_path": img1,
+            "destination_path": str(dst_dir / "img1.png"),
+            "state": "completed",
+            "undo_token": None,
+            "error": None,
+            "warning": None,
+        }
+    )
 
     # img1 removed from list
     assert img1 not in viewer.images

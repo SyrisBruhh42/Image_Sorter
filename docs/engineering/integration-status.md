@@ -31,8 +31,7 @@ next candidate commit after the repair checkpoints above.
 
 ## Remaining cutover gates
 
-1. Commit documentation/packaging/CI cleanup and rerun the complete isolated suite,
-   wheel install outside the checkout, and real packaging smoke.
+1. Commit the qualified documentation/packaging/CI cleanup.
 2. Publish the integration candidate, qualify the published SHA, and merge it while
    retaining the eight task-head parents.
 3. Rename the GitHub default to `main`, update the local remote tracking state, and

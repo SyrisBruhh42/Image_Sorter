@@ -52,6 +52,29 @@ current canonical implementation and regression areas below:
 | Source layout, frozen startup, AppImage, releases | PEP 621 `src` layout, unrelated-CWD wheel/frozen tests, verified appimagetool, artifact manifest/checksum workflows. |
 | Test harness | Current isolated tests retained; generated coverage data and obsolete package layouts were not restored. |
 
+Per-PR disposition for closure is explicit:
+
+| PR | Outcome | Current evidence/replacement |
+| --- | --- | --- |
+| #2 | Superseded and retained | Navigation, preloading, zoom lock, zen mode, settings, worker retries, and AI behavior exist in the canonical `src` layout; temporary patch scripts are intentionally rejected. |
+| #5 | Retained/ported | The HUD is integrated into `MainViewer`; shortcut precedence and accessibility are covered by P02/accessibility tests. The separate `EnterpriseHUD` module/name is superseded. |
+| #6 | Retained/ported | XDG/platform paths, validated settings recovery, logger fallback, provider ranking, and hardware scan remain under current modules. |
+| #7 | Superseded/ported | One current CI/release pipeline builds from PEP 621 metadata and hashes explicit artifacts. Old nested specs, duplicate license/readme, placeholder version file, and empty model directory are rejected. |
+| #8 | Superseded/ported | Bounded worker/decoder lifecycles, cancellation, strict model verification, and provider fallback replace the earlier engine and example digest. |
+| #9 | Retained/ported | Equivalent and expanded test areas exist under `tests/`; the checked-in coverage database, duplicate dependency file, and old package topology are rejected. |
+| #12 | Retained/ported | XDG validation, packaged resources, and display-backend preservation have automated tests. Native Plasma acceptance remains openly NOT RUN. |
+| #13 | Retained/ported | PEP 621 `src` layout, entry point, resources, and unrelated-working-directory wheel validation remain. Checked-in runtime settings and duplicate requirements are removed. |
+| #14 | Retained/ported | Pinned SHA-256 model/labels, bounded image preprocessing, non-finite output handling, provider fallback, and safe metadata tests remain; metadata has one canonical writer. |
+| #15 | Superseded/ported | Source serialization, cross-device preservation, bounded stop, view generations, versioned operation results, strict Undo, and persistence failures are covered by current contracts. |
+| #16 | Superseded/ported | Current spec/icons, artifact builder, accessibility/concurrency/security tests, and fatal build failures replace the older scripts. |
+| #17 | Retained/ported | Bounded LRU cache, clipping overlay, focus isolation, accessible announcements, modal settings, zoom, and zen behavior remain in the unified UI. |
+| #19 | Retained/ported | `run_app.py`, frozen resource lookup, spec imports, and an actual PyInstaller startup test remain; the desktop builder was renamed to avoid shadowing the standard `build` frontend. |
+| #20 | Retained/ported | Exact pinned model/labels, background index handling, revalidation, cleanup, UI status, cancellation, and optional network integration remain. |
+| #21 | Retained/ported | Collision reservation, no-overwrite, provenance, cross-filesystem preservation, custom trash, strict Undo, and sidecar-set extensions remain. |
+| #22 | Retained/ported | Type repair/clamping, unknown-field preservation, atomic save, unique corrupt backup, XDG fallback, and logger fallback remain. |
+| #23 | Superseded/ported | Pending-operation IDs and queue/Undo recovery remain, now settled only by the canonical versioned `operation_result` instead of multiple order-sensitive legacy signals. |
+| #24 | Superseded/ported | CLI launch failures, backend preservation, Linux tests, and real artifact CI remain. Native Plasma acceptance remains openly NOT RUN; old non-fatal packaging behavior is rejected. |
+
 The seven already merged PRs (#1, #3, #4, #10, #11, #18, #25) retain their merged
 history. Historic feature branches may be closed as superseded/ported; that status
 must not be misrepresented as a direct GitHub merge.

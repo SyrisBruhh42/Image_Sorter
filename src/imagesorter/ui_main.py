@@ -234,13 +234,10 @@ class PendingOp:
     original_index: int
     load_generation: int
     dest_folder: str | None = None
-    dest_path: str | None = None
     original_path: str | None = None
     raw_original_path: str | None = None
     state: str = "pending"  # 'pending', 'finished', 'error'
     undo_token: dict[str, Any] | None = None
-    finished_received: bool = False
-    undo_record_received: bool = False
 
 
 def _canonical_path(path: str) -> str:
@@ -999,34 +996,6 @@ class MainViewer(QMainWindow):
                 self.load_images()
                 return
 
-    def next_image_after_action(self) -> None:
-        """Deprecated legacy helper retained for backward compatibility."""
-        self.advance_ui_after_pending_action()
-
-    def _match_pending_op_by_id_or_path(self, op_id: str | None, path: str | None) -> PendingOp | None:
-        if op_id and op_id in self.pending_ops:
-            return self.pending_ops[op_id]
-
-        if not path:
-            return None
-
-        can_p = _canonical_path(path)
-        for op in self.pending_ops.values():
-            if op.state != "pending":
-                continue
-            if op.src_path == can_p:
-                return op
-            if op.dest_path and _canonical_path(op.dest_path) == can_p:
-                return op
-            if op.original_path and _canonical_path(op.original_path) == can_p:
-                return op
-            if op.dest_folder and _canonical_path(os.path.dirname(can_p)) == op.dest_folder:
-                base_src = os.path.splitext(os.path.basename(op.src_path))[0]
-                base_fin = os.path.splitext(os.path.basename(can_p))[0]
-                if base_fin == base_src or base_fin.startswith(f"{base_src}_"):
-                    return op
-        return None
-
     @pyqtSlot(dict)
     def on_operation_result(self, result: dict[str, Any]) -> None:
         """
@@ -1077,94 +1046,6 @@ class MainViewer(QMainWindow):
 
             self.update_hud()
             self.show_image()
-
-    def on_undo_record_received(self, data: dict[str, Any]) -> None:
-        """Receives UndoToken from background worker and correlates with pending op."""
-        orig_p = data.get('original') or ''
-        curr_p = data.get('current') or data.get('new') or ''
-        can_orig = _canonical_path(orig_p)
-        can_curr = _canonical_path(curr_p)
-
-        target_op = self._match_pending_op_by_id_or_path(None, can_orig) or self._match_pending_op_by_id_or_path(None, can_curr)
-
-        if target_op:
-            if target_op.undo_record_received:
-                return  # Duplicate signal ignored
-            target_op.undo_record_received = True
-            target_op.undo_token = data
-            if target_op.action in ('move', 'trash'):
-                target_op.dest_path = can_curr
-            if target_op.finished_received and target_op.state == "pending":
-                target_op.state = "finished"
-                if not any(t.get('token_id') == data.get('token_id') for t in self.history if 'token_id' in t):
-                    self.history.append(data)
-                    if len(self.history) > 50:
-                        self.history.pop(0)
-        else:
-            # Uncorrelated token
-            if not any(t.get('token_id') == data.get('token_id') for t in self.history if 'token_id' in t):
-                self.history.append(data)
-                if len(self.history) > 50:
-                    self.history.pop(0)
-
-    def on_worker_finished(self, finished_path: str) -> None:
-        """Handles worker task completion with transactional queue updates."""
-        can_finished = _canonical_path(finished_path)
-
-        target_op = self._match_pending_op_by_id_or_path(None, can_finished)
-
-        if target_op:
-            if target_op.finished_received:
-                return  # Duplicate finished signal ignored
-            target_op.finished_received = True
-            if target_op.action in ('move', 'trash'):
-                target_op.dest_path = can_finished
-                trash_folder = self.settings.get('directories', 'trash')
-                is_system_trash = (target_op.action == 'trash' and (not trash_folder or not os.path.isdir(trash_folder)))
-
-                if target_op.undo_record_received or is_system_trash:
-                    target_op.state = "finished"
-                    if target_op.undo_token and not any(t.get('token_id') == target_op.undo_token.get('token_id') for t in self.history if 'token_id' in t):
-                        self.history.append(target_op.undo_token)
-                        if len(self.history) > 50:
-                            self.history.pop(0)
-                # Remove source image from visible queue exactly once
-                self.remove_image_from_queue(target_op.src_path)
-
-            elif target_op.action in ('undo_move', 'undo_trash'):
-                target_op.state = "finished"
-                # Reinsert restored image at original recorded index without duplicates
-                restored_path = target_op.raw_original_path or finished_path
-                self.reinsert_image_at_index(restored_path, target_op.original_index)
-
-            elif target_op.action == 'undo_copy':
-                target_op.state = "finished"
-
-        self.update_hud()
-
-    def on_worker_error(self, filepath: str, error: str) -> None:
-        """Displays error messages, restores state on operation failures."""
-        msg = f"Error processing {os.path.basename(filepath)}: {error}"
-        self.statusBar().showMessage(msg, 5000)
-        self.announce_accessibility_event(self.central_widget, msg)
-
-        target_op = self._match_pending_op_by_id_or_path(None, filepath)
-
-        if target_op:
-            target_op.state = "error"
-
-            if target_op.action in ('move', 'trash'):
-                # Ensure the image is present in self.images and clear pending state
-                self.reinsert_image_at_index(target_op.raw_src_path, target_op.original_index)
-
-            elif target_op.action in ('undo_move', 'undo_trash', 'undo_copy'):
-                # Restore failed undo token back to history stack
-                if target_op.undo_token:
-                    if not any(t.get('token_id') == target_op.undo_token.get('token_id') for t in self.history if 'token_id' in t):
-                        self.history.append(target_op.undo_token)
-
-        self.update_hud()
-        self.show_image()
 
     def remove_image_from_queue(self, canonical_path: str) -> None:
         """Removes an image matching canonical_path from self.images exactly once."""
