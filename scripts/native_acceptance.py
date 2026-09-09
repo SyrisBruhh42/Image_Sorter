@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import importlib.util
 import json
 import os
 import platform
@@ -20,6 +21,10 @@ import tempfile
 import time
 import uuid
 from pathlib import Path
+
+_trace_spec = importlib.util.spec_from_file_location("imagesorter_model_trace", Path(__file__).with_name("model_trace.py"))
+_model_trace = importlib.util.module_from_spec(_trace_spec)
+_trace_spec.loader.exec_module(_model_trace)
 
 
 def digest(path):
@@ -53,7 +58,7 @@ def valid_origin(origin, artifact, kind):
     return str(origin).startswith("/tmp/.mount_") and "imagesorter" in origin.parts
 
 
-def summarize_trace(paths):
+def summarize_trace(paths, startup_files=None):
     attempts, model_opens, process_ids = [], [], []
     for path in paths:
         try:
@@ -66,7 +71,7 @@ def summarize_trace(paths):
                     (re.search(r"\b(connect|sendto|sendmsg|sendmmsg)\(", line) and
                      re.search(r"AF_INET6?\b|<(?:TCP|UDP):", line))):
                 attempts.append({"pid": process_id, "trace": str(path), "syscall": line})
-            if re.search(r"\b(open|openat|openat2)\(", line) and re.search(r"\.(onnx|safetensors|pt|pth)(?:\"|')", line):
+            if _model_trace.is_model_open(line, startup_files):
                 model_opens.append({"pid": process_id, "trace": str(path), "syscall": line})
     return {"process_ids": sorted(process_ids), "network_attempts": attempts, "model_open_attempts": model_opens}
 
@@ -160,6 +165,15 @@ def run(options):
     if not artifact.is_file() or not os.access(artifact, os.X_OK):
         raise ValueError("--artifact must be an existing executable (wheel entry point, onedir executable, AppImage or extracted AppRun)")
     artifact_before = evidence(artifact)
+    build_description, installed_build, startup_files = None, None, {}
+    if getattr(options, "build_record", None):
+        spec = importlib.util.spec_from_file_location("imagesorter_smoke_build_schema", Path(__file__).with_name("qualification_schema.py"))
+        schema = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(schema)
+        installed_build = evidence(Path(options.build_record).resolve(strict=True))
+        build_description = schema.verify_build({**artifact_before, "kind": options.kind, "build": installed_build},
+                                                Path(installed_build["path"]).parent, options.source_sha, options.source_tree)
+        startup_files = _model_trace.attested_startup_files(build_description)
     output = Path(options.output).resolve() if options.output else Path(tempfile.mkdtemp(prefix="imagesorter-native-"))
     output.mkdir(parents=True, exist_ok=True)
     profile = output / "profile"
@@ -246,7 +260,9 @@ def run(options):
         if unparsed:
             failure = failure or "Privileged observer output contained unparsed lines; raw output preserved, not qualified"
     traces = sorted(output.glob("process-trace.*"))
-    telemetry = summarize_trace(traces)
+    telemetry = summarize_trace(traces, startup_files)
+    if build_description is not None and _model_trace.attested_startup_files(build_description) != startup_files:
+        failure = failure or "Attested Python startup files changed during observation"
     write_json(output / "telemetry.json", telemetry)
     presented = next((item for item in diagnostic.get("events", []) if item["event"] == "image_presented"), {})
     shutdown = next((item for item in diagnostic.get("events", []) if item["event"] == "gui_shutdown"), {})
@@ -280,6 +296,7 @@ def run(options):
               "fixtures_before": evidence(output / "fixtures-before.json"),
               "fixtures_after": evidence(output / "fixtures-after.json"),
               "build_receipt": evidence(output / "build-identity.json"),
+              "installed_build": installed_build, "python_startup_files": list(startup_files.values()),
               "profile_id": "installed-artifact-smoke", "native": options.backend == "xcb",
               "display_backend": options.backend, "session_type": os.environ.get("XDG_SESSION_TYPE"),
               "desktop": os.environ.get("XDG_CURRENT_DESKTOP"), "environment": {"platform": platform.platform()},
@@ -345,6 +362,7 @@ def main(argv=None):
         parser.add_argument("--output", required=True)
     else:
         parser.add_argument("--artifact", required=True)
+        parser.add_argument("--build-record", help="Exact verified installed build record; required to distinguish attested Python startup .pth from model weights")
         parser.add_argument("--kind", choices=("wheel", "onedir", "appimage"), required=True)
         parser.add_argument("--backend", choices=("xcb", "offscreen"), default="xcb")
         parser.add_argument("--output")

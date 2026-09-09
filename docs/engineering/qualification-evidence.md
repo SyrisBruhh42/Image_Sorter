@@ -78,6 +78,18 @@ unsuccessful network attempt is still an attempt. Fixture lists must match and
 their retained files must still match their hashes. This smoke is a bounded
 observation, not proof against future network activity or unobserved launch paths.
 
+Python startup `.pth` files are not automatically model weights, but their
+extension or basename never grants an exemption. Pass `--build-record` to the
+native observer for an installed wheel. It verifies the complete installed build
+inventory and accepts only a bounded valid site-startup file directly under
+site-packages/dist-packages, with exact SHA-256/size, unique distribution RECORD
+ownership and inventory-bound RECORD/METADATA bytes. No startup text is executed
+by the classifier. The smoke retains that full `python_startup_files` attestation
+and its `installed_build` reference; the independent verifier reconstructs and
+compares it. Changed bytes, binary checkpoints, unowned/ambiguous files and the
+same basename outside that exact installed location remain model attempts. Raw
+traces and failed prior observations are preserved, never rewritten into PASS.
+
 ## Interactive case observation
 
 Each required `{id, artifact_kind, status, evidence}` case additionally references

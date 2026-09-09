@@ -43,6 +43,11 @@ Catalog and source hash checks prevent pre-repair packs from satisfying final
 qualification even if they report the same provisional protocol version.
 
 This is file/IPC authority containment, not a comprehensive host resource sandbox.
+It does not confine filesystem reads to the input snapshot: normal account-level
+read access remains. It is therefore not a confidentiality boundary for unrelated
+same-account files or an untrusted-tenant sandbox. Hash-pinned helper provenance
+and bounded replies remain necessary; blocking network writes does not make all
+helper output intrinsically trustworthy.
 Kernel/GPU-driver defects, malicious unconfined same-user host processes, and
 complete memory/thread/disk-allocation quotas are outside the claim. No arbitrary
 address-space ceiling is imposed on CUDA's large virtual mappings. Supported

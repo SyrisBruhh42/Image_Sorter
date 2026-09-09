@@ -94,6 +94,12 @@ example `--runtime-package 'onnxruntime-gpu[cuda,cudnn]'`; unknown extras fail.
 Non-model helpers require explicit package roots, so the base application's Qt
 dependencies cannot silently become an optional helper's package inventory.
 The data-only `ai.mobilenet-v2` pack defaults to no Python runtime packages.
+
+The installed base wheel's 12 runtime dependencies are pinned separately in
+`requirements/locks/linux-x86_64-py312-runtime.lock`; this runtime environment
+excludes build/development packages, while the 35-package build lock remains
+separate. The runtime lock does not replace final frozen native-library inventory.
+
 Do not include PyInstaller, setuptools or other
 build tools as runtime merely because they share a build environment. The
 PyInstaller bootloader is actually delivered and therefore must have its own

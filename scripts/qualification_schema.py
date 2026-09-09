@@ -6,11 +6,16 @@ recomputed from raw records; interactive facts require attributed observations.
 from __future__ import annotations
 
 import hashlib
+import importlib.util
 import json
 import math
 import re
 from datetime import datetime
 from pathlib import Path
+
+_trace_spec = importlib.util.spec_from_file_location("imagesorter_qualification_model_trace", Path(__file__).with_name("model_trace.py"))
+_model_trace = importlib.util.module_from_spec(_trace_spec)
+_trace_spec.loader.exec_module(_model_trace)
 
 HEX64 = re.compile(r"[0-9a-f]{64}\Z")
 CASE_CRITERIA = {
@@ -105,7 +110,7 @@ def verify_build(artifact, root, source_sha, source_tree):
     return build
 
 
-def trace_facts(paths):
+def trace_facts(paths, startup_files=None):
     pids, connections, models, exited, execution = [], [], [], set(), []
     for path in paths:
         try:
@@ -118,7 +123,7 @@ def trace_facts(paths):
                     re.search(r"\b(connect|sendto|sendmsg|sendmmsg)\(", line)
                     and re.search(r"AF_INET6?\b|<(?:TCP|UDP):", line)):
                 connections.append({"pid": pid, "trace": str(path), "syscall": line})
-            if re.search(r"\b(open|openat|openat2)\(", line) and re.search(r"\.(onnx|safetensors|pt|pth)(?:\"|')", line):
+            if _model_trace.is_model_open(line, startup_files):
                 models.append({"pid": pid, "trace": str(path), "syscall": line})
             if "+++ exited with 0 +++" in line:
                 exited.add(pid)
@@ -150,7 +155,12 @@ def verify_smoke(artifact, root, source_sha, source_tree):
          "Actual explicit profile is not recorded consistently")
     need(isinstance(smoke.get("run_id"), str) and bool(smoke["run_id"]), "Smoke run identity is missing")
     traces = [reference(item, base) for item in smoke.get("traces", [])]
-    actual, executions = trace_facts(traces)
+    build = verify_build(artifact, root, source_sha, source_tree)
+    startup_files = _model_trace.attested_startup_files(build)
+    need(smoke.get("python_startup_files", []) == list(startup_files.values()), "Python startup exemption lacks exact installed RECORD provenance")
+    if startup_files:
+        need(reference(smoke.get("installed_build"), base) == reference(artifact["build"], root), "Startup exemption uses another build record")
+    actual, executions = trace_facts(traces, startup_files)
     telemetry, _ = record(smoke.get("telemetry"), base)
     need(telemetry == actual and not actual["network_attempts"] and not actual["model_open_attempts"], "Raw network/model trace contradicts telemetry or attempted egress is nonzero")
     need(diagnostic.get("pid") in actual["process_ids"], "GUI process is not in the observed process tree")

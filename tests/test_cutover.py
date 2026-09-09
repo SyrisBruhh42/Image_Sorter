@@ -238,6 +238,51 @@ def test_complete_exact_native_manifest_is_accepted(tmp_path):
     assert verify_qualification(path, CANDIDATE, TREE, COMPONENT_IDS) == expected
 
 
+@pytest.mark.parametrize("alteration", [None, "forged_attestation", "same_basename_outside"])
+def test_native_startup_pth_requires_build_bound_exact_identity(tmp_path, alteration):
+    import base64
+    import hashlib
+
+    from scripts.model_trace import attested_startup_files
+
+    path, receipt = qualified_manifest(tmp_path)
+    artifact = next(item for item in receipt["artifacts"] if item["kind"] == "wheel")
+    build = json.loads(Path(artifact["build"]["path"]).read_text())
+    runtime = Path(build["runtime_root"])
+    site = runtime / "lib/python3.12/site-packages"
+    metadata = site / "synthetic-1.dist-info"
+    metadata.mkdir(parents=True)
+    pth = site / "distutils-precedence.pth"
+    content = b"import sys; synthetic_startup_test_only = True\n"
+    pth.write_bytes(content)
+    encoded = base64.urlsafe_b64encode(hashlib.sha256(content).digest()).rstrip(b"=").decode()
+    (metadata / "METADATA").write_text("Name: synthetic\nVersion: 1\n")
+    (metadata / "RECORD").write_text(f"{pth.name},sha256={encoded},{len(content)}\n")
+    for added in (pth, metadata / "METADATA", metadata / "RECORD"):
+        build["runtime_files"].append({"relative_path": added.relative_to(runtime).as_posix(), "sha256": file_digest(added)})
+    artifact["build"] = evidence_file(tmp_path, "build-wheel.json", json.dumps(build).encode())
+    smoke = json.loads(Path(artifact["smoke"]["path"]).read_text())
+    smoke.update(installed_build=artifact["build"], python_startup_files=list(attested_startup_files(build).values()))
+    assert len(smoke["python_startup_files"]) == 1
+    target = pth
+    if alteration == "same_basename_outside":
+        target = tmp_path / pth.name
+        target.write_bytes(content)
+    trace = Path(smoke["traces"][0]["path"])
+    previous = trace.read_text()
+    trace.write_text(f'100.5 openat(AT_FDCWD, "{target}", O_RDONLY) = 3\n' + previous)
+    smoke["traces"][0]["sha256"] = file_digest(trace)
+    if alteration == "forged_attestation":
+        smoke["python_startup_files"][0]["sha256"] = "f" * 64
+    artifact["smoke"] = evidence_file(tmp_path, "smoke-wheel.json", json.dumps(smoke).encode())
+    path.write_text(json.dumps(receipt))
+    if alteration is None:
+        assert verify_qualification(path, CANDIDATE, TREE, COMPONENT_IDS) == receipt
+    else:
+        with pytest.raises(GateError, match="provenance|Raw network/model"):
+            verify_qualification(path, CANDIDATE, TREE, COMPONENT_IDS)
+
+
 @pytest.mark.parametrize("alteration", ["old_sha", "old_tree", "headless", "skip", "missing_component", "active_worker", "missing_egress", "missing_case", "duplicate_case", "altered_evidence"])
 def test_native_false_evidence_is_rejected(tmp_path, alteration):
     path, receipt = qualified_manifest(tmp_path)
