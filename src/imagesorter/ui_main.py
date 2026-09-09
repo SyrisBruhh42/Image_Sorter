@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import os
+import time
 import uuid
 from collections import OrderedDict
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
 import psutil
@@ -22,16 +23,21 @@ from PyQt6.QtGui import (
 from PyQt6.QtWidgets import (
     QAbstractSpinBox,
     QApplication,
+    QCheckBox,
     QComboBox,
     QGraphicsPixmapItem,
     QGraphicsScene,
     QGraphicsView,
+    QHBoxLayout,
     QKeySequenceEdit,
     QLabel,
     QLineEdit,
     QMainWindow,
+    QMessageBox,
     QPlainTextEdit,
     QProgressBar,
+    QPushButton,
+    QSpinBox,
     QTextEdit,
     QVBoxLayout,
     QWidget,
@@ -43,8 +49,9 @@ try:
 except ImportError:
     HAS_QACCESSIBLE = False
 import numpy as np
-from PyQt6.QtCore import QEvent, QObject, Qt, pyqtSlot
+from PyQt6.QtCore import QEvent, QObject, Qt, QTimer, pyqtSlot
 
+from .image_identity import ImageCacheKey, cache_key, matches_metadata
 from .image_loader import ImageLoader
 from .launch_requests import is_supported_image
 from .logger import logger
@@ -59,6 +66,12 @@ class ImageViewer(QGraphicsView):
     """
     MIN_ZOOM: float = 0.05
     MAX_ZOOM: float = 32.0
+
+    def paintEvent(self, event):
+        super().paintEvent(event)
+        window = self.window()
+        if not self.original_pixmap.isNull() and hasattr(window, "_record_ready"):
+            window._record_ready()
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -264,6 +277,29 @@ class MainViewer(QMainWindow):
         self.worker = QueueWorker(self.settings)
         self.worker.signals.progress.connect(self.on_worker_progress)
         self.worker.signals.operation_result.connect(self.on_operation_result)
+        self.worker.signals.recovery_summary.connect(self.on_recovery_summary)
+        self._closing = False
+        self._ready_recorded = False
+        self._frame_path = None
+        self._frame_index = 0
+        self._frame_count = 1
+        self._frame_loop_count = 0
+        self._frame_total_plays = 1
+        self._frame_duration_ms = 100
+        self._frame_metadata = {}
+        self._frame_requests = {}
+        self._frame_request = None
+        self._frame_pixmap = None
+        self._frame_playing = False
+        self._frame_repeats = 0
+        self._frame_batches = {}
+        self._frame_buffering = False
+        self._frame_tick_started = None
+        self._recovery_records = []
+        self._frame_timer = QTimer(self)
+        self._frame_timer.setSingleShot(True)
+        self._frame_timer.setTimerType(Qt.TimerType.PreciseTimer)
+        self._frame_timer.timeout.connect(self._advance_frame)
 
         self.images: list[str] = []
         self.current_index: int = -1
@@ -274,7 +310,10 @@ class MainViewer(QMainWindow):
         self.pending_ops: dict[str, PendingOp] = {}
         self.pending_decoder_requests: dict[str, tuple[str, int]] = {}  # req_id -> (filepath, load_generation)
 
-        self.pixmap_cache: OrderedDict[str, QPixmap] = OrderedDict()
+        self.pixmap_cache: OrderedDict[ImageCacheKey, QPixmap] = OrderedDict()
+        self._decode_contexts = {}
+        self._uncached_key = self._uncached_pixmap = None
+        self._frame_base_key = None
         self.cache_bytes: int = 0
         self.max_cache_items: int = 25
         self._update_max_cache_bytes()
@@ -304,6 +343,18 @@ class MainViewer(QMainWindow):
         """Clears the pixmap cache and resets byte counter."""
         self.pixmap_cache.clear()
         self.cache_bytes = 0
+        self._frame_metadata.clear()
+        self._decode_contexts.clear()
+        for request_id in self._frame_batches:
+            self.loader.cancel_request(request_id)
+        self._frame_batches.clear()
+        self._uncached_key = self._uncached_pixmap = None
+        self._frame_base_key = None
+        self._set_frame_playing(False)
+        if self._frame_request:
+            self.loader.cancel_request(self._frame_request)
+        self._frame_path, self._frame_request, self._frame_pixmap = None, None, None
+        self._frame_index = 0
 
     def _update_max_cache_bytes(self) -> None:
         custom_mb = self.settings.get('advanced', 'cache_size_mb')
@@ -316,23 +367,46 @@ class MainViewer(QMainWindow):
                 total_ram = 8 * 1024 * 1024 * 1024
             self.max_cache_bytes = min(256 * 1024 * 1024, int(0.20 * total_ram))
 
-    def _add_pixmap_to_cache(self, filepath: str, pixmap: QPixmap) -> None:
-        if filepath in self.pixmap_cache:
-            old_pixmap = self.pixmap_cache.pop(filepath)
+    def _cache_key(self, filepath, *, frame=0, target_size=None):
+        try:
+            return cache_key(filepath, frame=frame, target_size=target_size)
+        except (OSError, ValueError, RuntimeError):
+            return None
+
+    def _add_pixmap_to_cache(self, filepath: str, pixmap: QPixmap, *, key=None) -> bool:
+        key = key or self._cache_key(filepath)
+        if key is None:
+            return False
+        if key in self.pixmap_cache:
+            old_pixmap = self.pixmap_cache.pop(key)
             self.cache_bytes -= (old_pixmap.width() * old_pixmap.height() * 4)
 
         pixmap_size = pixmap.width() * pixmap.height() * 4
-        self.pixmap_cache[filepath] = pixmap
+        if pixmap_size > self.max_cache_bytes or self.max_cache_items < 1:
+            return False  # Display may retain its current frame; cache never exceeds its budget.
+        self.pixmap_cache[key] = pixmap
         self.cache_bytes += pixmap_size
 
-        while len(self.pixmap_cache) > 1 and (self.cache_bytes > self.max_cache_bytes or len(self.pixmap_cache) > self.max_cache_items):
+        while self.pixmap_cache and (self.cache_bytes > self.max_cache_bytes or len(self.pixmap_cache) > self.max_cache_items):
             _old_k, old_pm = self.pixmap_cache.popitem(last=False)
+            self._frame_metadata.pop(_old_k, None)
             self.cache_bytes -= (old_pm.width() * old_pm.height() * 4)
+        return True
 
     def _get_pixmap_from_cache(self, filepath: str) -> QPixmap | None:
-        if filepath in self.pixmap_cache:
-            self.pixmap_cache.move_to_end(filepath)
-            return self.pixmap_cache[filepath]
+        key = self._cache_key(filepath)
+        if key is None:
+            return None
+        for stale in [item for item in self.pixmap_cache if item.path == key.path and
+                      (item.source != key.source or item.decoder != key.decoder)]:
+            old = self.pixmap_cache.pop(stale)
+            self.cache_bytes -= old.width() * old.height() * 4
+            self._frame_metadata.pop(stale, None)
+        if key in self.pixmap_cache:
+            self.pixmap_cache.move_to_end(key)
+            return self.pixmap_cache[key]
+        if key == self._uncached_key:
+            return self._uncached_pixmap
         return None
 
     def eventFilter(self, obj: QObject, event: QEvent) -> bool:
@@ -371,6 +445,57 @@ class MainViewer(QMainWindow):
         if gen != self.load_generation:
             return  # Discard stale decoder results
 
+        metadata = result.get("metadata", {})
+        if req_id in self._frame_batches:
+            expected = self._frame_batches.pop(req_id)
+            if (filepath != self._frame_path or expected != self._frame_base_key or
+                    expected != self._cache_key(filepath)):
+                return
+            if error:
+                self._set_frame_playing(False)
+                self.statusBar().showMessage("Playback buffer failed: " + str(error), 7000)
+                return
+            for item in metadata.get("frames", []):
+                key = replace(expected, frame=item["frame"])
+                image = item.get("image")
+                if image is None or image.isNull() or not matches_metadata(key, item):
+                    self._set_frame_playing(False)
+                    self.statusBar().showMessage("Playback discarded a changed frame identity", 7000)
+                    return
+                if not self._add_pixmap_to_cache(filepath, QPixmap.fromImage(image), key=key):
+                    self._set_frame_playing(False)
+                    self.statusBar().showMessage("A frame exceeds the cache budget; playback paused. Step and seek remain available.", 7000)
+                    return
+                self._frame_metadata[key] = {name: value for name, value in item.items() if name != "image"}
+            self._schedule_frame_playback()
+            return
+        context = self._decode_contexts.pop(req_id, None)
+        if not error and (context is None or context != self._cache_key(filepath, frame=context.frame, target_size=context.preview)
+                          or not matches_metadata(context, metadata)):
+            self.pending_decoder_requests.pop(req_id, None)
+            self._frame_requests.pop(req_id, None)
+            if req_id == self._frame_request:
+                self._frame_request = None
+                self._set_frame_playing(False)
+            if filepath and 0 <= self.current_index < len(self.images) and self.images[self.current_index] == filepath:
+                QTimer.singleShot(0, self.show_image)
+            return  # A late result may never relabel changed bytes or decoder versions.
+        if req_id in self._frame_requests:
+            path, frame = self._frame_requests.pop(req_id)
+            if req_id != self._frame_request or path != self._frame_path:
+                return
+            self._frame_request = None
+            if error or qimg is None or qimg.isNull():
+                self._set_frame_playing(False)
+                self.statusBar().showMessage(str(error or "Frame decode failed"), 7000)
+                return
+            pixmap = QPixmap.fromImage(qimg)
+            if self._add_pixmap_to_cache(path, pixmap, key=context):
+                self._frame_metadata[context] = metadata
+            self._present_frame(frame, pixmap, metadata=metadata)
+            self._schedule_frame_playback()
+            return
+
         if req_id in self.pending_decoder_requests:
             _req_fp, req_gen = self.pending_decoder_requests.pop(req_id)
             if req_gen != self.load_generation:
@@ -379,9 +504,13 @@ class MainViewer(QMainWindow):
         if qimg is not None and isinstance(qimg, QImage) and not qimg.isNull() and filepath:
             pixmap = QPixmap.fromImage(qimg)
             if not pixmap.isNull():
-                self._add_pixmap_to_cache(filepath, pixmap)
+                admitted = self._add_pixmap_to_cache(filepath, pixmap, key=context)
+                if admitted:
+                    self._frame_metadata[context] = metadata
                 if (0 <= self.current_index < len(self.images) and
                         _canonical_path(self.images[self.current_index]) == _canonical_path(filepath)):
+                    self._frame_metadata[context] = metadata
+                    self._uncached_key, self._uncached_pixmap = (None, None) if admitted else (context, pixmap)
                     self.show_image()
         elif error and filepath and (
             0 <= self.current_index < len(self.images)
@@ -399,12 +528,13 @@ class MainViewer(QMainWindow):
             idx = self.current_index + offset
             if 0 <= idx < len(self.images):
                 fp = self.images[idx]
-                if (fp not in self.pixmap_cache and not self._is_path_pending(fp)
+                if (self._get_pixmap_from_cache(fp) is None and not self._is_path_pending(fp)
                         and not self._has_pending_decode(fp)):
                     req_id = self.loader.add_task(
                         fp, generation=self.load_generation, priority=prio
                     )
                     if req_id:
+                        self._decode_contexts[req_id] = self._cache_key(fp)
                         self.pending_decoder_requests[req_id] = (
                             fp, self.load_generation
                         )
@@ -468,6 +598,24 @@ class MainViewer(QMainWindow):
 
         self.layout.addWidget(self.empty_label)
         self.layout.addWidget(self.viewer)
+
+        self.frame_bar = QWidget(self)
+        frame_layout = QHBoxLayout(self.frame_bar)
+        self.frame_previous = QPushButton("Previous frame/page")
+        self.frame_play = QPushButton("Play")
+        self.frame_next = QPushButton("Next frame/page")
+        self.frame_seek = QSpinBox()
+        self.frame_seek.setPrefix("Frame/page ")
+        self.frame_seek.setAccessibleName("Frame or page number")
+        self.frame_loop = QCheckBox("Loop continuously")
+        self.frame_previous.clicked.connect(lambda: self._seek_frame(self._frame_index - 1))
+        self.frame_next.clicked.connect(lambda: self._seek_frame(self._frame_index + 1))
+        self.frame_play.clicked.connect(lambda: self._set_frame_playing(not self._frame_playing))
+        self.frame_seek.valueChanged.connect(lambda value: self._seek_frame(value - 1))
+        for widget in (self.frame_previous, self.frame_play, self.frame_next, self.frame_seek, self.frame_loop):
+            frame_layout.addWidget(widget)
+        self.layout.addWidget(self.frame_bar)
+        self.frame_bar.hide()
 
         self.setup_menu()
         self.statusBar().showMessage("Ready", 3000)
@@ -561,6 +709,14 @@ class MainViewer(QMainWindow):
         undo_action.setToolTip("Revert last file action. (Shortcut: Ctrl+Z)")
         undo_action.triggered.connect(self.undo_last_action)
         file_menu.addAction(undo_action)
+
+        recovery_action = QAction("Review preserved recovery records", self)
+        recovery_action.triggered.connect(self.show_recovery_records)
+        file_menu.addAction(recovery_action)
+
+        inference_action = QAction("Last optional inference receipt", self)
+        inference_action.triggered.connect(self.show_inference_receipt)
+        file_menu.addAction(inference_action)
 
         file_menu.addSeparator()
 
@@ -761,9 +917,51 @@ class MainViewer(QMainWindow):
 
         self.current_index = non_pending_idx
         filepath = self.images[self.current_index]
+        if self._uncached_key is not None and self._uncached_key.path != filepath:
+            self._frame_metadata.pop(self._uncached_key, None)
+            self._uncached_key = self._uncached_pixmap = None
 
         pixmap = self._get_pixmap_from_cache(filepath)
+        base_key = self._cache_key(filepath)
+        if filepath != self._frame_path or base_key != self._frame_base_key:
+            self._set_frame_playing(False)
+            for request_id in self._frame_batches:
+                self.loader.cancel_request(request_id)
+            self._frame_batches.clear()
+            if self._frame_request:
+                self.loader.cancel_request(self._frame_request)
+            self._frame_request = None
+            self._frame_path, self._frame_index = filepath, 0
+            self._frame_base_key = base_key
+            self._frame_pixmap = None
+            self._frame_repeats = 0
+            self._frame_count, self._frame_loop_count, self._frame_duration_ms = 1, 0, 100
+            self._frame_total_plays = 1
+        frame_metadata = self._frame_metadata.get(base_key)
+        if frame_metadata is not None:
+            self._frame_count = max(1, min(100000, int(frame_metadata.get("frame_count", 1))))
+            self._frame_loop_count = frame_metadata.get("loop_count", 0)
+            # New helpers normalize format-specific loop fields into total
+            # plays. Preserve compatibility with older, non-qualified replies.
+            raw_loop = frame_metadata.get("loop_count")
+            fallback_plays = 1 if raw_loop is None else 0 if raw_loop == 0 else raw_loop + (1 if filepath.lower().endswith(".gif") else 0)
+            self._frame_total_plays = frame_metadata.get("total_plays", fallback_plays)
+            if self._frame_index == 0:
+                self._frame_duration_ms = max(1, int(frame_metadata.get("duration_ms", 100) or 100))
+        self.frame_bar.setVisible(self._frame_count > 1)
+        self.frame_seek.blockSignals(True)
+        self.frame_seek.setRange(1, self._frame_count)
+        self.frame_seek.setValue(self._frame_index + 1)
+        self.frame_seek.blockSignals(False)
+        if self._frame_pixmap is not None:
+            pixmap = self._frame_pixmap
         if pixmap is None:
+            # Do not leave the previous image visible under a new current-file
+            # identity while a cancellable decode is still pending.
+            self.viewer.hide()
+            self.hud_widget.hide()
+            self.empty_label.setText("Loading image…")
+            self.empty_label.show()
             # Asynchronous load via ImageLoader
             if not self._has_pending_decode(filepath):
                 requested_id = str(uuid.uuid4())
@@ -774,6 +972,7 @@ class MainViewer(QMainWindow):
                     priority=0,
                 )
                 if req_id:
+                    self._decode_contexts[req_id] = self._cache_key(filepath)
                     self.pending_decoder_requests[req_id] = (
                         filepath, self.load_generation
                     )
@@ -798,6 +997,126 @@ class MainViewer(QMainWindow):
                 if op.src_path == can_p:
                     return True
         return False
+
+    def _set_frame_playing(self, playing):
+        self._frame_playing = bool(playing and self._frame_count > 1 and not self._closing)
+        self._frame_buffering = False
+        self._frame_timer.stop()
+        if hasattr(self, "frame_play"):
+            self.frame_play.setText("Pause" if self._frame_playing else "Play")
+        if self._frame_playing and not self._frame_request:
+            self._schedule_frame_playback()
+
+    def _present_frame(self, frame, pixmap, *, metadata=None):
+        self._frame_index, self._frame_pixmap = frame, pixmap
+        if metadata is None:
+            metadata = self._frame_metadata.get(replace(self._frame_base_key, frame=frame), {})
+        self._frame_duration_ms = max(1, int(metadata.get("duration_ms", 100) or 100))
+        transform = self.viewer.transform()
+        center = self.viewer.mapToScene(self.viewer.viewport().rect().center())
+        self.viewer.set_image(pixmap)
+        self.viewer.setTransform(transform)
+        self.viewer.centerOn(center)
+        self.frame_seek.blockSignals(True)
+        self.frame_seek.setValue(frame + 1)
+        self.frame_seek.blockSignals(False)
+        from .diagnostics import record
+        record("frame_selected", filepath=self._frame_path, frame=frame,
+               playback=self._frame_playing, buffering=self._frame_buffering)
+
+    def _cached_frame(self, frame):
+        if self._frame_base_key is None:
+            return None
+        key = replace(self._frame_base_key, frame=frame)
+        pixmap = self.pixmap_cache.get(key)
+        if pixmap is not None:
+            self.pixmap_cache.move_to_end(key)
+        return pixmap
+
+    def _prefetch_frames(self):
+        if self._frame_batches or not self._frame_base_key or self._frame_count <= 1:
+            return
+        pixmap = self._frame_pixmap or self.viewer.original_pixmap
+        frame_bytes = max(1, pixmap.width() * pixmap.height() * 4)
+        capacity = min(16, self.max_cache_items - 1, self.max_cache_bytes // frame_bytes - 1, self._frame_count - 1)
+        batch_limit = min(8, (64 * 1024 * 1024) // frame_bytes, capacity)
+        if batch_limit < 1:
+            self._set_frame_playing(False)
+            self.statusBar().showMessage("Playback needs more cache space for this image; step and seek remain available.", 7000)
+            return
+        ahead = [(self._frame_index + offset) % self._frame_count for offset in range(1, capacity + 1)]
+        missing = [frame for frame in ahead if self._cached_frame(frame) is None]
+        if not missing or len(ahead) - len(missing) > capacity // 2:
+            return
+        request_id = self.loader.add_task(self._frame_path, generation=self.load_generation, priority=0,
+                                          frames=tuple(missing[:batch_limit]))
+        if request_id:
+            self._frame_batches[request_id] = self._frame_base_key
+
+    def _schedule_frame_playback(self):
+        if not self._frame_playing or self._closing or self._frame_request:
+            return
+        if self._frame_base_key != self._cache_key(self._frame_path):
+            self._set_frame_playing(False)
+            self.show_image()
+            return
+        self._prefetch_frames()
+        if not self._frame_playing:
+            return
+        next_frame = (self._frame_index + 1) % self._frame_count
+        if self._cached_frame(next_frame) is None:
+            self._frame_buffering = True
+            self._frame_timer.stop()
+            self.frame_play.setText("Pause — buffering")
+            self.statusBar().showMessage("Buffering frames; playback timing starts when the next frame is ready.")
+            return
+        if self._frame_timer.isActive():
+            return  # A background batch must not restart the current frame's clock.
+        self._frame_buffering = False
+        self.frame_play.setText("Pause")
+        self._frame_tick_started = time.monotonic()
+        self._frame_timer.start(self._frame_duration_ms)
+
+    def _seek_frame(self, frame, *, playback=False):
+        if not playback:
+            self._set_frame_playing(False)
+            self._frame_repeats = 0
+        if self._closing or not self._frame_path or not 0 <= frame < self._frame_count:
+            return
+        if self._frame_request:
+            self.loader.cancel_request(self._frame_request)
+            self._frame_request = None
+        if self._frame_base_key != self._cache_key(self._frame_path):
+            self._set_frame_playing(False)
+            self.show_image()
+            return
+        pixmap = self._cached_frame(frame)
+        if pixmap is not None:
+            self._present_frame(frame, pixmap)
+            self._schedule_frame_playback()
+            return
+        if playback:
+            self._schedule_frame_playback()
+            return
+        request_id = self.loader.add_task(self._frame_path, generation=self.load_generation,
+                                          priority=0, frame=frame)
+        if request_id:
+            self._decode_contexts[request_id] = self._cache_key(self._frame_path, frame=frame)
+            self._frame_requests[request_id] = (self._frame_path, frame)
+            self._frame_request = request_id
+
+    def _advance_frame(self):
+        if not self._frame_playing:
+            return
+        frame = self._frame_index + 1
+        if frame >= self._frame_count:
+            total_plays = self._frame_total_plays
+            if not self.frame_loop.isChecked() and total_plays > 0 and self._frame_repeats >= total_plays - 1:
+                self._set_frame_playing(False)
+                return
+            frame = 0
+            self._frame_repeats += 1
+        self._seek_frame(frame, playback=True)
 
     def _has_pending_decode(self, filepath: str) -> bool:
         """Return whether the current generation already owns a decode request."""
@@ -860,17 +1179,20 @@ class MainViewer(QMainWindow):
         )
         if res_id:
             pending_op.op_id = res_id
+        else:
+            self.pending_ops.pop(op_id, None)
+            return None
 
         if action == 'trash':
             trash_folder = self.settings.get('directories', 'trash')
             if not trash_folder or not os.path.isdir(trash_folder):
-                msg = "Moved to system trash. Image Sorter Undo is unavailable for this item."
+                msg = "Queued for system trash. Image Sorter Undo will be unavailable if it succeeds."
                 self.statusBar().showMessage(msg, 4000)
                 self.announce_accessibility_event(self.central_widget, msg)
             else:
-                self.announce_accessibility_event(self.central_widget, f"Moved {os.path.basename(filepath)} to trash folder.")
+                self.announce_accessibility_event(self.central_widget, f"Queued {os.path.basename(filepath)} for the trash folder.")
         elif action == 'move':
-            self.announce_accessibility_event(self.central_widget, f"Executed move for {os.path.basename(filepath)} to {dest_folder}.")
+            self.announce_accessibility_event(self.central_widget, f"Queued move for {os.path.basename(filepath)} to {dest_folder}.")
 
         self.advance_ui_after_pending_action()
         return pending_op.op_id
@@ -956,8 +1278,9 @@ class MainViewer(QMainWindow):
                             return
                         self.trigger_file_action(action, filepath, folder)
                     else:
-                        self.worker.add_task(action, filepath, folder)
-                        self.announce_accessibility_event(self.central_widget, f"Executed {action} for {os.path.basename(filepath)} to {folder}.")
+                        if not self.worker.add_task(action, filepath, folder):
+                            return
+                        self.announce_accessibility_event(self.central_widget, f"Queued {action} for {os.path.basename(filepath)} to {folder}.")
                         if config.get('auto_advance', True):
                             self.navigate_next()
                 return
@@ -1009,8 +1332,31 @@ class MainViewer(QMainWindow):
         state = result.get('state')
         undo_token = result.get('undo_token')
         error = result.get('error')
+        if action == "recover":
+            if resolved := result.get("resolved_operation_id"):
+                self._recovery_records = [row for row in self._recovery_records if row["operation_id"] != resolved]
+                self.statusBar().showMessage("Recovery completed. Original records remain in the durable journal.", 5000)
+            else:
+                self.statusBar().showMessage("Recovery not completed: " + str(error or result.get("warning") or state), 10000)
+            return
+        if action == "metadata":
+            if undo_token:
+                for index, token in enumerate(self.history):
+                    if token.get("token_id") == undo_token.get("token_id"):
+                        self.history[index] = undo_token
+            if result.get("warning") or error:
+                self.statusBar().showMessage(str(result.get("warning") or error), 5000)
+            return
 
         op = self.pending_ops.get(op_id) if isinstance(op_id, str) else None
+        if op is None and action == "copy":
+            if state in ("completed", "completed_with_warning") and undo_token:
+                if not any(token.get("token_id") == undo_token.get("token_id") for token in self.history):
+                    self.history.append(undo_token)
+                    self.history = self.history[-50:]
+            if error or result.get("warning"):
+                self.statusBar().showMessage(str(error or result["warning"]), 5000)
+            return
 
         if op and op.state == "pending":
             if state in ("completed", "completed_with_warning"):
@@ -1032,7 +1378,7 @@ class MainViewer(QMainWindow):
                 if result.get('warning'):
                     self.statusBar().showMessage(str(result['warning']), 5000)
 
-            elif state in ("failed", "recovery_required"):
+            elif state in ("failed", "recovery_required", "cancelled"):
                 op.state = "error"
                 if error:
                     msg = f"Error processing {os.path.basename(source_path or '')}: {error}"
@@ -1136,6 +1482,9 @@ class MainViewer(QMainWindow):
                 )
                 if res_id:
                     pending_op.op_id = res_id
+                else:
+                    self.pending_ops.pop(op_id, None)
+                    return
 
                 msg = f"Restoring {os.path.basename(original_path)} to original location..."
                 self.statusBar().showMessage(msg, 3000)
@@ -1162,6 +1511,9 @@ class MainViewer(QMainWindow):
             )
             if res_id:
                 pending_op.op_id = res_id
+            else:
+                self.pending_ops.pop(op_id, None)
+                return
 
             msg = f"Undoing copy of {os.path.basename(current_path)}..."
             self.statusBar().showMessage(msg, 3000)
@@ -1187,8 +1539,102 @@ class MainViewer(QMainWindow):
         self.statusBar().showMessage(msg, 3000)
 
     def closeEvent(self, event: QEvent) -> None:
-        """Ensures background threads are safely stopped upon window close."""
-        self.worker.shutdown()
-        if hasattr(self, 'loader'):
-            self.loader.stop()
+        """Quiesce readers asynchronously; durable writer drains independently."""
+        if not self._closing:
+            if scenario := getattr(self, "_native_scenario_runner", None):
+                scenario.abort()
+            self._closing = True
+            self._set_frame_playing(False)
+            self._close_started = time.monotonic()
+            self.worker.shutdown()
+            self.loader.request_stop()
+            for dialog in self.findChildren(SettingsWindow):
+                dialog.close()
+            self.statusBar().showMessage("Closing; accepted file operations finish safely in the background.")
+        settings_running = any(dialog.isVisible() or
+                               bool(dialog.components_panel.process) or
+                               bool(dialog.check_worker and dialog.check_worker.isRunning()) or
+                               bool(dialog.downloader and dialog.downloader.isRunning())
+                               for dialog in self.findChildren(SettingsWindow))
+        if self.loader.isRunning() or self.worker.readers_running() or settings_running:
+            event.ignore()
+            QTimer.singleShot(50, self.close)
+            return
+        from .diagnostics import record
+        record("gui_shutdown", elapsed_ms=round((time.monotonic() - self._close_started) * 1000),
+               mutation_pending_ids=list(self.worker.client.pending))
         super().closeEvent(event)
+
+    def _record_ready(self):
+        if self._ready_recorded or not self.images or self.current_index < 0:
+            return
+        self._ready_recorded = True
+        import json
+
+        from . import __file__ as module_origin
+        from .diagnostics import record
+        from .paths import get_resource_dir
+        identity_path = get_resource_dir() / "build_identity.json"
+        try:
+            build_identity = json.loads(identity_path.read_text())
+        except (OSError, ValueError):
+            build_identity = None
+        record("image_presented", backend=QApplication.platformName(), module_origin=module_origin,
+               filepath=self.images[self.current_index], generation=self.load_generation,
+               width=self.viewer.original_pixmap.width(), height=self.viewer.original_pixmap.height(),
+               build_identity=build_identity)
+        if getattr(self, "_acceptance_exit_after_ready", False):
+            QTimer.singleShot(150, self.close)
+
+    def on_recovery_summary(self, summary):
+        if summary.get("type") == "recovery_reset":
+            self._recovery_records.clear()
+            return
+        if summary.get("type") == "history":
+            result = summary.get("result", {})
+            token = result.get("undo_token")
+            if token:
+                for index, item in enumerate(self.history):
+                    if item.get("token_id") == token.get("token_id"):
+                        if token.get("revision", 1) > item.get("revision", 1):
+                            self.history[index] = token
+                        break
+                else:
+                    self.history.append(token)
+            return
+        records = summary.get("recovery", [])
+        if records:
+            by_id = {row["operation_id"]: row for row in self._recovery_records}
+            by_id.update({row["operation_id"]: row for row in records})
+            self._recovery_records = list(by_id.values())
+            self.statusBar().showMessage(f"{len(self._recovery_records)} unresolved operations. Review preserved files before sorting.")
+
+    def show_recovery_records(self):
+        from .ui_recovery import RecoveryDialog
+        dialog = RecoveryDialog(self)
+        dialog.exec()
+        dialog.deleteLater()
+
+    def request_recovery(self, record):
+        from .ui_recovery import eligible
+        if not eligible(record) or self.worker.client.pending:
+            self.statusBar().showMessage("Rollback unavailable for this record or while accepted work is pending.", 5000)
+            return None
+        answer = QMessageBox.question(self, "Confirm recorded rollback",
+            "Request rollback of this recorded interrupted transaction?\n\n" + str(record["source_path"]) +
+            "\n\nThe service will verify recorded file identities. Changed or ambiguous files will be preserved and reported, not guessed.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, QMessageBox.StandardButton.No)
+        if answer != QMessageBox.StandardButton.Yes:
+            return None
+        return self.worker.add_recovery_task(record)
+
+    def show_inference_receipt(self):
+        import json
+        receipt = getattr(self.worker, "last_inference_receipt", None)
+        dialog = QMessageBox(self)
+        dialog.setWindowTitle("Last optional inference")
+        dialog.setText("No optional inference has completed in this session." if not receipt else
+                       "Provider: " + str(receipt.get("provider")) + "\nFallback: " + str(receipt.get("fallback_reason") or "None"))
+        if receipt:
+            dialog.setDetailedText(json.dumps(receipt, indent=2))
+        dialog.exec()

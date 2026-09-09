@@ -1,9 +1,10 @@
 import os
-import shutil
 import threading
 
 from PyQt6.QtCore import QCoreApplication
 
+from imagesorter.operation_engine import OperationEngine
+from imagesorter.operation_journal import OperationJournal
 from imagesorter.queue_worker import QueueWorker
 from imagesorter.settings_manager import SettingsManager
 
@@ -198,10 +199,6 @@ def test_same_file_rejection(qtbot, tmp_path):
 
 
 def test_cross_device_failure_preservation(qtbot, tmp_path, monkeypatch):
-    settings_file = tmp_path / "settings.json"
-    sm = SettingsManager(filepath=str(settings_file))
-    worker = QueueWorker(sm)
-
     src_dir = tmp_path / "src"
     dst_dir = tmp_path / "dst"
     src_dir.mkdir()
@@ -210,26 +207,20 @@ def test_cross_device_failure_preservation(qtbot, tmp_path, monkeypatch):
     src_file = src_dir / "test.jpg"
     src_file.write_text("important source data")
 
-    errors = []
-    finished = []
-    worker.signals.operation_result.connect(
-        lambda result: errors.append((result["source_path"], result["error"]))
-        if result["state"] == "failed"
-        else finished.append(result["destination_path"])
-    )
+    engine = OperationEngine(OperationJournal(str(tmp_path / "journal.db")))
+    original_write = os.write
 
-    def mock_copyfileobj(f_src, f_dst, length=65536):
-        f_dst.write(f_src.read(10))
+    def interrupted_stage_write(fd, data):
+        original_write(fd, data[:10])
         raise OSError("Simulated disk write failure")
 
-    monkeypatch.setattr(shutil, "copyfileobj", mock_copyfileobj)
-
-    worker.add_task("move", str(src_file), str(dst_dir))
-    worker.stop()
-    QCoreApplication.processEvents()
-
-    assert len(errors) == 1
-    assert len(finished) == 0
+    # The mutation now runs in another process. Inject at its real OS stream
+    # boundary directly, rather than patching the GUI's unused shutil module.
+    monkeypatch.setattr(os, "write", interrupted_stage_write)
+    result = engine.execute({"operation_id": "interrupted-copy", "action": "move",
+                             "source_path": str(src_file), "destination_path": str(dst_dir)})
+    assert result["state"] == "failed"
+    assert "Simulated disk write failure" in result["error"]
     assert src_file.exists()
     assert src_file.read_text() == "important source data"
     assert len(list(dst_dir.glob("*"))) == 0

@@ -15,8 +15,8 @@ from typing import Any
 from PyQt6.QtCore import QObject, QThread, pyqtSignal
 from PyQt6.QtGui import QImage
 
-from .image_decoding import decode_image
 from .logger import logger
+from .reader_process import ReaderCancelled, run_reader
 
 
 @dataclass(order=True)
@@ -34,6 +34,8 @@ class DecodeRequest:
     filepath: str = field(compare=False)
     target_size: tuple[int, int] | None = field(compare=False, default=None)
     cancelled: bool = field(compare=False, default=False)
+    frame: int = field(compare=False, default=0)
+    frames: tuple[int, ...] | None = field(compare=False, default=None)
 
 
 class ImageLoader(QThread):
@@ -69,6 +71,8 @@ class ImageLoader(QThread):
         generation: int = 0,
         target_size: tuple[int, int] | None = None,
         priority: int = 0,
+        frame: int = 0,
+        frames: tuple[int, ...] | None = None,
     ) -> str:
         """Adds an image decoding request to the preload queue.
 
@@ -103,6 +107,8 @@ class ImageLoader(QThread):
                     and existing.filepath == filepath
                     and existing.target_size == target_size
                     and existing.generation == generation
+                    and existing.frame == frame
+                    and existing.frames == frames
                 ):
                     if priority < existing.priority:
                         existing.priority = priority
@@ -117,6 +123,8 @@ class ImageLoader(QThread):
                 generation=generation,
                 filepath=filepath,
                 target_size=target_size,
+                frame=frame,
+                frames=frames,
             )
 
             heapq.heappush(self._queue, req)
@@ -220,7 +228,23 @@ class ImageLoader(QThread):
                 continue
 
             try:
-                qimg, error = decode_image(req.filepath, target_size=req.target_size)
+                metadata, rgba = run_reader(
+                    {"action": "decode_frames" if req.frames is not None else "decode", "filepath": req.filepath,
+                     "request_id": req.request_id, "target_size": req.target_size,
+                     "frame": req.frame, "frames": list(req.frames) if req.frames is not None else None, "generation": req.generation},
+                    cancelled=lambda request=req: not self._running or request.cancelled or request.generation < self._current_generation,
+                )
+                if req.frames is not None:
+                    for item in metadata["frames"]:
+                        chunk = rgba[item["offset"]:item["offset"] + item["byte_length"]]
+                        item["image"] = QImage(chunk, item["width"], item["height"], item["stride"], QImage.Format.Format_RGBA8888).copy()
+                    qimg = None
+                else:
+                    width, height, stride = metadata["width"], metadata["height"], metadata["stride"]
+                    if stride < width * 4 or len(rgba) != stride * height:
+                        raise ValueError("Invalid reader pixel payload")
+                    qimg = QImage(rgba, width, height, stride, QImage.Format.Format_RGBA8888).copy()
+                error = None
 
                 # Re-check cancellation after potentially long decode
                 if not self._running or req.cancelled or req.generation < self._current_generation:
@@ -240,14 +264,18 @@ class ImageLoader(QThread):
                     filepath=req.filepath,
                     image=qimg,
                     error=error,
+                    metadata=metadata,
                 )
                 self._finish_request(req.request_id)
 
             except Exception as exc:
-                logger.error(
-                    f"Error preloading image {req.filepath} (ID: {req.request_id}): {exc}",
-                    exc_info=True,
-                )
+                if isinstance(exc, ReaderCancelled):
+                    logger.debug("Reader request %s cancelled", req.request_id)
+                else:
+                    logger.error(
+                        f"Error preloading image {req.filepath} (ID: {req.request_id}): {exc}",
+                        exc_info=True,
+                    )
                 self._emit_result(
                     request_id=req.request_id,
                     generation=req.generation,
@@ -270,6 +298,7 @@ class ImageLoader(QThread):
         filepath: str,
         image: QImage | None,
         error: str | None,
+        metadata: dict | None = None,
     ) -> None:
         """Emit the sole public decoder result contract."""
         res: dict[str, Any] = {
@@ -278,5 +307,6 @@ class ImageLoader(QThread):
             "filepath": filepath,
             "image": image,
             "error": error,
+            "metadata": metadata or {},
         }
         self.image_ready.emit(res)

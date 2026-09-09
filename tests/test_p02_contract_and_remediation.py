@@ -43,6 +43,7 @@ def viewer(qtbot, temp_dir, sample_images):
     v = MainViewer(sm)
     qtbot.addWidget(v)
     v.show()
+    qtbot.waitUntil(lambda: not v.viewer.original_pixmap.isNull(), timeout=3000)
     return v
 
 

@@ -43,18 +43,24 @@ def test_lru_pixmap_cache_eviction(qtbot, tmp_path):
     main_win = MainViewer(sm)
     qtbot.addWidget(main_win)
 
-    # 1000x1000 image is ~4MB in ARGB32
-    img = QImage(1000, 1000, QImage.Format.Format_ARGB32)
+    # Two 400x400 images exceed the 1 MiB cache budget together.
+    img = QImage(400, 400, QImage.Format.Format_ARGB32)
     img.fill(Qt.GlobalColor.red)
     pix1 = QPixmap.fromImage(img)
     pix2 = QPixmap.fromImage(img)
 
-    main_win._add_pixmap_to_cache("path1.jpg", pix1)
-    main_win._add_pixmap_to_cache("path2.jpg", pix2)
+    path1, path2 = tmp_path / "path1.jpg", tmp_path / "path2.jpg"
+    path1.write_bytes(b"first image identity")
+    path2.write_bytes(b"second image identity")
+    main_win._add_pixmap_to_cache(str(path1), pix1)
+    main_win._add_pixmap_to_cache(str(path2), pix2)
 
     # Because 1MB limit is exceeded, path1.jpg should be evicted
-    assert "path1.jpg" not in main_win.pixmap_cache
-    assert "path2.jpg" in main_win.pixmap_cache
+    assert main_win._get_pixmap_from_cache(str(path1)) is None
+    assert main_win._get_pixmap_from_cache(str(path2)) is pix2
+    oversized = QPixmap(1000, 1000)
+    assert not main_win._add_pixmap_to_cache(str(path1), oversized)
+    assert main_win.cache_bytes <= main_win.max_cache_bytes
 
 
 def test_settings_window_modal_inheritance(qtbot, tmp_path):

@@ -1,10 +1,17 @@
 # -*- mode: python ; coding: utf-8 -*-
 import sys
 import os
+import json
 from pathlib import Path
 
 _root_dir = Path(os.path.abspath(SPECPATH)) if 'SPECPATH' in globals() else Path.cwd()
 SRC_PATH = str(_root_dir / 'src')
+sys.path.insert(0, str(_root_dir))
+from build_support import source_identity, verify_frozen_modules
+_build_identity = source_identity(_root_dir)
+_identity_path = _root_dir / 'build' / 'attestation' / 'build_identity.json'
+_identity_path.parent.mkdir(parents=True, exist_ok=True)
+_identity_path.write_text(json.dumps(_build_identity, sort_keys=True, indent=2) + '\n')
 
 _version_namespace = {}
 exec((_root_dir / 'src' / 'imagesorter' / '__init__.py').read_text(encoding='utf-8'), _version_namespace)
@@ -66,6 +73,7 @@ a = Analysis(
     binaries=[],
     datas=[
         (os.path.join(SRC_PATH, 'imagesorter', 'resources'), 'imagesorter/resources'),
+        (str(_identity_path), 'imagesorter/resources'),
     ],
     hiddenimports=[
         'onnxruntime',
@@ -79,13 +87,23 @@ a = Analysis(
         'PyQt6.QtGui',
         'PyQt6.QtWidgets',
         'PyQt6.QtSvg',
+        'PyQt6.QtTest',
         'imagesorter',
         'imagesorter.main',
         'imagesorter.launch_requests',
         'imagesorter.components',
         'imagesorter.metadata_io',
+        'imagesorter.bootstrap',
+        'imagesorter.reader_job',
+        'imagesorter.mutation_service',
+        'imagesorter.operation_engine',
+        'imagesorter.component_jobs',
+        'imagesorter.component_worker',
+        'imagesorter.ai_preprocessing',
+        'imagesorter.apng_frames',
+        'imagesorter.native_scenarios',
     ],
-    hookspath=[],
+    hookspath=[str(_root_dir / 'hooks')],
     hooksconfig={},
     runtime_hooks=[],
     excludes=[],
@@ -94,6 +112,13 @@ a = Analysis(
     cipher=block_cipher,
     noarchive=False,
 )
+
+# An editable development install can precede pathex in PyInstaller's graph.
+# Bind every application module to this exact captured source tree, not ambient
+# imports that happen to expose an identically named package.
+verify_frozen_modules(_root_dir, _build_identity, a.pure)
+if any(Path(_destination).name in {'libqpdf.so', 'libQt6Pdf.so.6'} for _destination, *_rest in a.binaries):
+    raise RuntimeError('Unadvertised PDF decoding re-entered the application runtime')
 
 pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
 
@@ -127,3 +152,5 @@ coll = COLLECT(
     upx_exclude=[],
     name='ImageSorter',
 )
+if source_identity(_root_dir) != _build_identity:
+    raise RuntimeError('Source changed during frozen application build')

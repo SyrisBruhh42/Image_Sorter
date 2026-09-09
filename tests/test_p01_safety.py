@@ -6,6 +6,8 @@ from unittest.mock import patch
 from PyQt6.QtCore import QCoreApplication
 
 from imagesorter.operation_contracts import OperationState
+from imagesorter.operation_engine import OperationEngine
+from imagesorter.operation_journal import OperationJournal
 from imagesorter.queue_worker import QueueWorker
 from imagesorter.settings_manager import SettingsManager
 
@@ -132,10 +134,6 @@ def test_conflicting_restoration_target_refusal(qtbot, tmp_path):
 
 
 def test_enospc_during_stream_copy_preserves_source(qtbot, tmp_path):
-    settings_file = tmp_path / "settings.json"
-    sm = SettingsManager(filepath=str(settings_file))
-    worker = QueueWorker(sm)
-
     src_dir = tmp_path / "src"
     dst_dir = tmp_path / "dst"
     src_dir.mkdir()
@@ -144,14 +142,11 @@ def test_enospc_during_stream_copy_preserves_source(qtbot, tmp_path):
     src_file = src_dir / "large_photo.jpg"
     src_file.write_text("valuable source image data")
 
-    results = []
-    worker.signals.operation_result.connect(lambda res: results.append(res))
-
+    engine = OperationEngine(OperationJournal(str(tmp_path / "journal.db")))
     enospc_err = OSError(errno.ENOSPC, "No space left on device")
-    with patch("shutil.copyfileobj", side_effect=enospc_err):
-        worker.add_task("move", str(src_file), str(dst_dir))
-        worker.stop()
-        QCoreApplication.processEvents()
+    with patch("imagesorter.file_safety.os.write", side_effect=enospc_err):
+        results = [engine.execute({"operation_id": "enospc", "action": "move",
+                                   "source_path": str(src_file), "destination_path": str(dst_dir)})]
 
     assert len(results) == 1
     assert results[0]["state"] == OperationState.FAILED

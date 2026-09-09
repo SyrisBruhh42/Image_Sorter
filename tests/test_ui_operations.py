@@ -199,8 +199,8 @@ def test_system_trash_messaging(qtbot, tmp_path):
 
     # Status message should clearly warn that Image Sorter Undo is unavailable for system trash
     status_text = viewer.statusBar().currentMessage()
-    assert "Moved to system trash" in status_text
-    assert "Undo is unavailable" in status_text
+    assert "Queued for system trash" in status_text
+    assert "Undo will be unavailable if it succeeds" in status_text
 
 
 def test_cache_bytes_reset_on_reload_and_clear(qtbot, tmp_path):

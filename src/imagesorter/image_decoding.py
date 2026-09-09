@@ -23,6 +23,7 @@ def decode_image(
     *,
     target_size: tuple[int, int] | None = None,
     max_allocation_bytes: int = DEFAULT_MAX_ALLOCATION_BYTES,
+    frame: int = 0,
 ) -> tuple[QImage | None, str | None]:
     """Decodes an image file safely into a QImage.
 
@@ -54,6 +55,20 @@ def decode_image(
         return None, f"Failed to access file {path_str}: {e}"
 
     ext: str = os.path.splitext(path_str)[1].lower().lstrip(".")
+    component = component_for_extension(ext)
+    if component or frame:
+        from .component_manager import ComponentManager
+        component_id = component.component_id if component else "viewer.animation-multipage"
+        if ComponentManager().active_path(component_id) is not None:
+            from .component_runtime import decode_component
+            pixels, metadata = decode_component(path_str, component_id, frame=frame, target_size=target_size)
+            width, height = int(metadata["width"]), int(metadata["height"])
+            stride = int(metadata.get("stride", width * 4))
+            if width <= 0 or height <= 0 or stride * height > max_allocation_bytes or len(pixels) != stride * height:
+                return None, "Optional decoder exceeded allocation bounds"
+            return QImage(pixels, width, height, stride, QImage.Format.Format_RGBA8888).copy(), None
+        if frame:
+            return None, "Animation/multipage component is not installed"
     try:
         reader = QImageReader(path_str)
         reader.setAutoTransform(True)

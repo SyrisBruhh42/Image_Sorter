@@ -7,6 +7,21 @@ currently `0.1.0.dev0`.
 
 ### Added
 
+- A single OS-locked mutation service with durable operation acceptance,
+  versioned file-set ownership, retained rollback claims and explicit recovery.
+- Independently cancellable reader processes and a pinned mutation runtime that
+  can drain safely after the GUI and normal AppImage mount close.
+- Strict `--profile-root` isolation before settings or logging initialization.
+- An opt-in component installer with complete hash inventories, private staging,
+  leases, interrupted-job reconciliation, update/rollback and offline import.
+- Isolated HEIF/AVIF, LibRaw, animation/TIFF and CUDA helpers, independently
+  verified APNG blending, real CUDA compute evidence and one CPU fallback.
+- Exact source and build-input attestation, hostile-input regressions, VM
+  interruption harnesses, and an immutable-plan/append-only GitHub controller.
+
+These cutover additions remain unpublished candidates until all required native,
+licensing, recovery, CI and remote-state gates pass.
+
 - Versioned file-operation results, strict Undo tokens, an operation journal, and
   conservative restart recovery.
 - Sidecar-aware move/copy/trash/Undo behavior and collision reservation.

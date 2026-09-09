@@ -3,7 +3,6 @@ from unittest.mock import MagicMock, patch
 
 import numpy as np
 import pytest
-from PyQt6.QtWidgets import QMessageBox
 
 from imagesorter.ai_tagger import (
     AITagger,
@@ -186,8 +185,10 @@ def test_ui_settings_validation_and_control_states(qtbot, tmp_path):
     # Persist enabled=True when files are missing/invalid
     settings_mgr.set("ai_tagger", "enabled", True)
 
-    with patch("imagesorter.ui_settings.is_model_and_labels_valid", side_effect=lambda dir=None: is_model_and_labels_valid(str(tmp_path))):
-        with patch("imagesorter.ui_settings.get_model_dir", return_value=str(tmp_path)):
+    # UI consumes a read-only helper result; actual hashing and download failure
+    # preservation are covered independently by the model/installer tests.
+    with patch("imagesorter.reader_process.run_reader", side_effect=lambda *_args, **_kwargs: ({"valid": is_model_and_labels_valid(str(tmp_path))}, b"")):
+        with patch.object(ModelDownloader, "start") as legacy_download:
             win = SettingsWindow(settings_mgr)
             qtbot.addWidget(win)
             qtbot.waitUntil(
@@ -201,14 +202,15 @@ def test_ui_settings_validation_and_control_states(qtbot, tmp_path):
             assert win.btn_download_model.text() == "Download Model"
             assert win.btn_download_model.isEnabled() is True
 
-            # Simulate failed download
-            with patch.object(QMessageBox, "question", return_value=QMessageBox.StandardButton.Yes), \
-                 patch.object(QMessageBox, "critical") as mock_crit, \
-                 patch.object(ModelDownloader, "start", lambda self: self.run()):
-                with patch("imagesorter.ai_tagger._download_file_secure", side_effect=OSError("Failed")):
-                    win.download_ai_model()
-
-            assert mock_crit.called
+            # Download opens the managed component controls; it never invokes
+            # the legacy downloader or silently activates a model.
+            win.download_ai_model()
+            assert win.tabs.currentWidget() is win.components_panel
+            assert win.components_panel.component.currentText() == "ai.mobilenet-v2"
+            assert not legacy_download.called
+            win.components_panel.status_label.setText("Failed download; previous component preserved")
+            win.components_panel._finished(1, None)
+            assert "Failed download" in win.components_panel.status_label.text()
             qtbot.waitUntil(
                 lambda: win.btn_download_model.text() != "Checking Model…",
                 timeout=3000,

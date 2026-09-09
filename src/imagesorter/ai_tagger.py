@@ -11,34 +11,26 @@ from abc import ABC, abstractmethod
 import numpy as np
 import onnxruntime as ort
 import psutil
-from PIL import Image, ImageOps
+from PIL import Image
 from PyQt6.QtCore import QThread, pyqtSignal
 
 from .hardware_scan import get_prioritized_providers
 from .logger import logger
 from .metadata_io import write_metadata
+from .model_assets import LABELS_SHA256, LABELS_URL, MODEL_SHA256, MODEL_URL
 from .paths import get_data_dir
 
 __all__ = ["AITagger", "BaseVisionEngine", "ModelDownloader", "write_metadata"]
 
-MODEL_URL = "https://huggingface.co/onnx-community/mobilenet_v2_1.0_224-ONNX/resolve/f7f884d9505b4c69f8a260d9967ff7791bafa498/onnx/model.onnx"
-MODEL_SHA256 = "2e731702ec8374128edfc9f7d344c44287e7791bb3c7ae25a628c2c2dec83ce6"
-LABELS_URL = "https://raw.githubusercontent.com/pytorch/hub/a6fc887fbbbda0dd37c440bf8a145f1da6707d6b/imagenet_classes.txt"
-LABELS_SHA256 = "1f386e0d1cb6e28b9c2dac651c3dea6801e98ad1b41a14ce6bb1a093d72069f5"
 
 
 def get_model_dir(model_dir: str | None = None) -> str:
     """Returns the resolved directory path for AI model artifacts."""
     if model_dir is not None:
         return model_dir
-    default_dir = str(get_data_dir() / "models")
-    model_name = "mobilenetv2.onnx"
-    labels_name = "labels.txt"
-    if not (os.path.exists(os.path.join(default_dir, model_name)) and os.path.exists(os.path.join(default_dir, labels_name))):
-        rel_dir = "models"
-        if os.path.exists(os.path.join(rel_dir, model_name)) and os.path.exists(os.path.join(rel_dir, labels_name)):
-            return rel_dir
-    return default_dir
+    from .component_manager import ComponentManager
+    active = ComponentManager().active_path("ai.mobilenet-v2")
+    return str(active) if active else str(get_data_dir() / "components" / "unavailable" / "ai.mobilenet-v2")
 
 
 def is_model_and_labels_valid(model_dir: str | None = None) -> bool:
@@ -311,41 +303,9 @@ class AITagger(BaseVisionEngine):
         - Mean/std normalization [0.5, 0.5, 0.5]
         - Output float32 contiguous tensor layout [1, 3, 224, 224]
         """
-        Image.MAX_IMAGE_PIXELS = 50_000_000
         try:
-            with Image.open(image_path) as raw_img:
-                img = ImageOps.exif_transpose(raw_img)
-                img_rgb = img.convert('RGB')
-
-                # Rescale shortest edge to 256 preserving aspect ratio
-                width, height = img_rgb.size
-                if width < height:
-                    new_w = 256
-                    new_h = round(height * (256.0 / width))
-                else:
-                    new_h = 256
-                    new_w = round(width * (256.0 / height))
-
-                img_resized = img_rgb.resize((new_w, new_h), resample=Image.Resampling.BILINEAR)
-
-                # Center crop 224x224
-                left = (new_w - 224) // 2
-                top = (new_h - 224) // 2
-                right = left + 224
-                bottom = top + 224
-                img_cropped = img_resized.crop((left, top, right, bottom))
-
-                arr = np.array(img_cropped, dtype=np.float32)
-
-            arr /= 255.0
-            mean = np.array([0.5, 0.5, 0.5], dtype=np.float32)
-            std = np.array([0.5, 0.5, 0.5], dtype=np.float32)
-            arr -= mean
-            arr /= std
-
-            arr = np.transpose(arr, (2, 0, 1))
-            tensor = np.ascontiguousarray(arr[np.newaxis, ...], dtype=np.float32)
-            return tensor
+            from .ai_preprocessing import preprocess_image
+            return preprocess_image(image_path)
         except Image.DecompressionBombError as e:
             logger.error(f"Decompression bomb detected in {image_path}: {e}")
             return None

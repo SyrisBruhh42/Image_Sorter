@@ -4,6 +4,14 @@ This is the in-repository summary of the 2026-09-07 unification audit. It replac
 an earlier 26-branch report that did not include all surviving refs or the eight
 parallel Jules projects.
 
+This section is a **historical snapshot**, not current cutover authorization or
+new qualification evidence. The 35-tag hash below identifies the earlier archive
+bundle. The later supplied unified-candidate bundle has 36 tags and SHA-256
+`3bb852cc3ae6cd9bf8eb383e150d83a469ca7a1b732c2976b03fa86b7c5b6281`.
+Preserve both identities without substituting one for the other. Current execution
+uses the immutable inventory, per-PR evidence, and receipts described in
+[`cutover-runbook.md`](cutover-runbook.md).
+
 ## Frozen pre-unification state
 
 - Baseline/default tip: `1dfcf47d7d2d7156bd30415bd618155eaa44d4b4`
@@ -43,6 +51,11 @@ The 18 historical open PRs (#2, #5–#9, #12–#17, and #19–#24) were reviewed
 intent rather than merged wholesale. Their relevant behavior is covered by the
 current canonical implementation and regression areas below:
 
+The wording and table below record that earlier review's claims. Each relevant
+claim must be reverified against the repaired candidate and linked to current
+passing evidence before closing a PR as retained/ported. A code-area reference
+alone is not a passing test or proof of behavioral equivalence.
+
 | Historical intent | Current disposition/evidence area |
 | --- | --- |
 | QoL, HUD, keyboard, accessibility, visual review | Current `ui_main.py` / `ui_settings.py`; accessibility, controller, decoding, and launch tests. |
@@ -80,6 +93,11 @@ history. Historic feature branches may be closed as superseded/ported; that stat
 must not be misrepresented as a direct GitHub merge.
 
 ## Final prune gate
+
+The controller-backed procedure in [`cutover-runbook.md`](cutover-runbook.md)
+supersedes the operational list below. It adds exact expected-SHA deletion,
+independent archive restoration, current qualification, and interrupted-operation
+reconciliation. The older list remains context for the original disposition.
 
 An old branch may be removed only after all of these are true:
 

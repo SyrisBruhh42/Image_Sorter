@@ -25,6 +25,8 @@ share/python-wheels/
 .installed.cfg
 *.egg
 MANIFEST
+# Setuptools source-distribution staging (never an application source tree).
+/imagesorter-*/
 
 # PyInstaller
 *.manifest

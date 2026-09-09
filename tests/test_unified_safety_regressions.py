@@ -5,6 +5,8 @@ from unittest.mock import patch
 from PyQt6.QtCore import QCoreApplication
 
 from imagesorter.operation_contracts import OperationState
+from imagesorter.operation_engine import OperationEngine
+from imagesorter.operation_journal import OperationJournal
 from imagesorter.queue_worker import QueueWorker
 from imagesorter.settings_manager import SettingsManager
 
@@ -96,14 +98,13 @@ def test_journal_commit_failure_does_not_report_moved_file_as_failed(tmp_path):
     image = source_dir / "photo.jpg"
     image.write_text("image bytes")
 
-    worker = QueueWorker(SettingsManager(filepath=str(tmp_path / "settings.json")))
-    results: list[dict] = []
-    worker.signals.operation_result.connect(results.append)
+    journal = OperationJournal(str(tmp_path / "journal.db"))
+    engine = OperationEngine(journal)
     with patch.object(
-        worker.journal, "record_committed", side_effect=OSError("journal disk full")
+        journal, "finish_result", side_effect=OSError("journal disk full")
     ):
-        worker.add_task("move", str(image), str(destination_dir))
-        _settle(worker)
+        results = [engine.execute({"operation_id": "disk-full-commit", "action": "move",
+                                   "source_path": str(image), "destination_path": str(destination_dir)})]
 
     assert results[-1]["state"] == OperationState.COMPLETED_WITH_WARNING
     assert "journal update failed" in results[-1]["warning"]

@@ -8,36 +8,72 @@ thread.
 
 | Area | Canonical module | Contract |
 | --- | --- | --- |
-| Startup | `main.py`, `launch_requests.py` | Parse paths without import-time environment mutation; construct one `QApplication` and `MainViewer`. |
+| Startup | `bootstrap.py`, `main.py`, `launch_requests.py` | Process explicit profile before settings/logging imports; validate profile containment; construct one GUI. |
 | UI state | `ui_main.py` | Own view generation, pending operation IDs, Undo history, and display updates. |
-| Decode | `image_loader.py`, `image_decoding.py` | Bounded asynchronous requests; exactly one terminal image/error outcome; stale generations are ignored. |
-| File operations | `queue_worker.py`, `operation_contracts.py` | Bounded background tasks; one versioned terminal result and strict Undo token validation. |
-| Recovery | `operation_journal.py` | WAL-backed intent/state journal; live-owner leases; conservative, idempotent restart reconciliation. |
+| Readers | `image_loader.py`, `reader_process.py`, `reader_job.py` | Preserve viewer request/cancel facade; independently terminate slow readers; suppress stale display generations. |
+| Mutation client | `queue_worker.py`, `mutation_client.py`, `worker_protocol.py` | Versioned bounded JSON, session/request identity, durable acceptance and canonical `operation_result` delivery. |
+| Sole mutation owner | `mutation_service.py`, `operation_engine.py`, `profile_lock.py` | OS-backed profile lock, pinned runtime, idempotent operation IDs; serialize file changes, metadata, migration and recovery. |
+| Recovery | `operation_journal.py`, `file_safety.py` | Durable versioned manifests; retained originals and quarantine claims; bounded cursor replay, not destructive history expiry. |
 | Metadata | `metadata_io.py` | Preserve/merge sidecar and EXIF content; stage and replace atomically; fail closed on malformed data. |
-| Settings and paths | `settings_manager.py`, `paths.py` | Atomic validated settings; XDG paths on Linux; platform-native locations elsewhere; isolated fallback when unwritable. |
-| Optional AI | `ai_tagger.py`, `hardware_scan.py` | Download verified model data only on request; initialize off the UI thread; use an installed provider or CPU. |
-| Future components | `components.py` | Stable optional capability IDs and segregated staging/activation paths; no installation implementation yet. |
+| Settings and paths | `settings_manager.py`, `paths.py`, `bootstrap.py` | Atomic settings; platform defaults or strict explicit profile; an invalid explicit profile never falls back. |
+| Optional AI | `ai_tagger.py`, `ai_preprocessing.py`, `component_runtime.py` | Shared preprocessing, immutable snapshots, isolated inference; separately journalled enrichment follows the primary commit. |
+| Optional components | `component_manager.py`, `component_jobs.py`, `component_worker.py` | Shipped catalog trust root; private staging, complete inventories, self-contained helpers, active-version leases and rollback. |
+| Animation | `apng_frames.py`, `ui_main.py` | Bounded frame metadata/cache; independently tested APNG composition; paused initial playback preserves zoom and pan. |
 
 ## File-operation invariants
 
-- An image and its matching `.txt` sidecar are one operation set.
+- An image and its qualified sidecar (`image.jpg.txt`) are one operation set.
 - Destination names are reserved before mutation and never overwrite an existing
   image or sidecar.
-- Cross-filesystem moves copy and verify the entire set before unlinking sources.
+- Cross-filesystem moves retain private source claims and stage/sync the entire
+  set before publication. Durable intent precedes destructive transitions.
 - Destructive Undo requires a complete versioned token and verifies recorded
   provenance before removing or restoring anything.
-- A journal write that fails after the filesystem commit produces a warning, not a
-  false claim that the operation did not happen.
+- A failed receipt after filesystem commit cannot prove failure: preserve intent
+  and bytes and reconcile the actual state before retrying.
 - Restart recovery removes only artifacts whose ownership can be proven. Ambiguous
   entries remain `RECOVERY_REQUIRED`.
 
-## Optional-component direction
+## Reader and writer lifetime
 
-The intended manager will treat codecs, viewer capabilities, AI models/labels, and
-hardware providers as independently selectable components. Downloads must be
-explicit, versioned, digest-verified, staged outside the active directory, and
-atomically activated with rollback. The base application must continue to launch
-and handle common formats when every optional component is absent.
+Reader cancellation begins immediately; termination follows at one second and
+reaping is checked by three seconds. Decode and inference have 30-second bounds;
+cold model validation/loading gets 60 seconds. These are independently measured
+from GUI shutdown (five-second target, six-second acceptance ceiling).
 
-The current `components.py` registry establishes that boundary; it does not yet
-claim download, dependency resolution, activation, removal, or update support.
+Writers are not killed to satisfy UI timers. A pending writer reports
+`drain_pending`; its verified runtime copy is pinned outside an AppImage mount.
+Profile ownership is determined by an OS lock, not an expired heartbeat. Recovery
+cannot take over a live owner. Undo settles/cancels child enrichment and uses
+authoritative manifest provenance to restore the pre-sort originals.
+
+## Optional-component trust and distribution
+
+The source-controlled catalogue pins every archive, file, size, mode, platform,
+ABI and helper version. It is never refreshed over the network at startup.
+Executable components have their own runtime and do not install into the running
+base application. Download/import jobs and active-version pointers have separate
+durable records. Hostile or incomplete archives cannot activate, failed updates
+retain the working version, and removal waits for active reader leases.
+
+Reader inputs are private, regular-file snapshots; returned identities, dimensions,
+frame metadata, lengths and hashes are validated before presentation. CPU ORT
+stays in the base; CUDA/cuDNN and additional codecs remain in their packs.
+
+The catalog may remain empty until pack qualification and distribution rights
+are established. Source/binary licensing, corresponding source and exact artifact
+identity are release gates; see [licensing](licensing.md) and the
+[qualification evidence contract](engineering/qualification-evidence.md).
+
+## Recovery retention and support boundary
+
+Unresolved records/claims remain indefinitely. Explicit cleanup of resolved
+material requires 30 days and verified identities/surviving bytes; retained
+recovery storage above 10 GiB warns, and insufficient space pauses new work.
+Cleaning the final pre-sort copy can deliberately disable later destructive Undo.
+
+External open-descriptor writers remain a documented concurrency boundary.
+Filesystem sync/locking/no-clobber and attribute support must be real; an
+unsupported guarantee preserves originals and yields an actionable result.
+Process crash, whole-VM power interruption and physical controller failure are
+different evidence classes. Passing one does not imply another.

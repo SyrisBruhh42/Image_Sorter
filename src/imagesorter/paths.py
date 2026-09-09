@@ -49,6 +49,8 @@ def is_portable_mode() -> bool:
     Returns:
         bool: True if portable mode is active, False otherwise.
     """
+    if os.environ.get("IMAGESORTER_PROFILE_ROOT"):
+        return False
     return (get_app_dir() / "portable.flag").exists()
 
 
@@ -97,12 +99,17 @@ def _ensure_dir_or_fallback(target_dir: Path, category: str) -> Path:
     Returns:
         Path: Created and verified directory path or fallback path.
     """
+    explicit_profile = os.environ.get("IMAGESORTER_PROFILE_ROOT")
+    if explicit_profile and not target_dir.resolve().is_relative_to(Path(explicit_profile).resolve()):
+        raise OSError(f"Profile path escapes explicit root: {target_dir}")
     try:
         target_dir.mkdir(parents=True, exist_ok=True)
         if _test_directory_writable(target_dir):
             return target_dir
         raise OSError(f"Directory {target_dir} is not writable.")
     except OSError as e:
+        if explicit_profile:
+            raise OSError(f"Explicit profile is unavailable: {target_dir}") from e
         warnings.warn(
             f"Failed to verify or write to preferred directory {target_dir}: {e}. "
             f"Falling back to temporary directory for category '{category}'.",
@@ -129,6 +136,8 @@ def get_config_dir() -> Path:
     Returns:
         Path: Path to the configuration directory.
     """
+    if profile := os.environ.get("IMAGESORTER_PROFILE_ROOT"):
+        return _ensure_dir_or_fallback(Path(profile) / "config" / "ImageSorter", "config")
     app_dir = get_app_dir()
     if is_portable_mode():
         config_dir = app_dir / "config"
@@ -158,6 +167,8 @@ def get_data_dir() -> Path:
     Returns:
         Path: Path to the application data directory.
     """
+    if profile := os.environ.get("IMAGESORTER_PROFILE_ROOT"):
+        return _ensure_dir_or_fallback(Path(profile) / "data" / "ImageSorter", "data")
     app_dir = get_app_dir()
     if is_portable_mode():
         data_dir = app_dir / "data"
@@ -187,6 +198,8 @@ def get_cache_dir() -> Path:
     Returns:
         Path: Path to the cache directory.
     """
+    if profile := os.environ.get("IMAGESORTER_PROFILE_ROOT"):
+        return _ensure_dir_or_fallback(Path(profile) / "cache" / "ImageSorter", "cache")
     app_dir = get_app_dir()
     if is_portable_mode():
         cache_dir = app_dir / "cache"
@@ -216,6 +229,8 @@ def get_logs_dir() -> Path:
     Returns:
         Path: Path to the log files directory.
     """
+    if profile := os.environ.get("IMAGESORTER_PROFILE_ROOT"):
+        return _ensure_dir_or_fallback(Path(profile) / "state" / "ImageSorter" / "logs", "logs")
     app_dir = get_app_dir()
     if is_portable_mode():
         logs_dir = app_dir / "logs"

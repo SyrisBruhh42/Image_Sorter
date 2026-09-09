@@ -12,6 +12,7 @@ CORE_EXTENSIONS = (
     ".webp",
     ".bmp",
     ".gif",
+    ".apng",
     ".tiff",
     ".tif",
 )

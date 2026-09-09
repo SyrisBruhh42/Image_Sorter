@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import os
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from PyQt6.QtCore import Qt, QThread, QTimer, pyqtSignal
 from PyQt6.QtWidgets import (
@@ -25,8 +25,8 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from .ai_tagger import ModelDownloader, get_model_dir, is_model_and_labels_valid
-from .hardware_scan import scan_hardware
+if TYPE_CHECKING:
+    from .ai_tagger import ModelDownloader
 from .logger import logger
 from .settings_manager import (
     RESERVED_HOTKEYS,
@@ -44,8 +44,13 @@ class ModelCheckWorker(QThread):
         self.model_dir = model_dir
 
     def run(self) -> None:
-        valid = is_model_and_labels_valid(self.model_dir)
-        self.check_finished.emit(valid)
+        from .reader_process import run_reader
+        try:
+            result, _ = run_reader({"action": "validate_model", "model_dir": self.model_dir},
+                                   cancelled=self.isInterruptionRequested, timeout=60)
+            self.check_finished.emit(bool(result["valid"]))
+        except Exception:
+            self.check_finished.emit(False)
 
 
 class SettingsWindow(QDialog):
@@ -60,6 +65,7 @@ class SettingsWindow(QDialog):
         self.check_worker: ModelCheckWorker | None = None
         self._model_refresh_pending = False
         self._close_pending = False
+        self._pending_result = None
         self.setWindowTitle("Image Sorter Settings")
         self.resize(800, 600)
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
@@ -92,6 +98,9 @@ class SettingsWindow(QDialog):
         self.tab_ai.setAccessibleName("AI & Metadata Configuration Tab")
         self.init_ai_tab()
         self.tabs.addTab(self.tab_ai, "AI & Metadata")
+        from .ui_components import ComponentsPanel
+        self.components_panel = ComponentsPanel(self)
+        self.tabs.addTab(self.components_panel, "Optional Components")
 
         # Advanced/Hardware Tab
         self.tab_advanced = QWidget()
@@ -290,7 +299,15 @@ class SettingsWindow(QDialog):
     def run_hardware_scan(self) -> None:
         """Runs hardware scanner and displays recommendations."""
         try:
-            hw = scan_hardware()
+            # Inventory is cheap and does not initialize an ONNX session; full
+            # provider execution qualification belongs to the component worker.
+            import psutil
+            hw = {"physical_cores": psutil.cpu_count(logical=False) or 1,
+                  "logical_cores": psutil.cpu_count() or 1,
+                  "memory_total_gb": round(psutil.virtual_memory().total / 1024**3, 2),
+                  "onnx_providers": ["See component qualification"],
+                  "suggestions": {"ai_provider": "Configured by optional provider component",
+                                  "queue_threads": 1}}
             report = (
                 f"<b>Physical Cores:</b> {hw['physical_cores']}<br>"
                 f"<b>Logical Cores:</b> {hw['logical_cores']}<br>"
@@ -376,7 +393,7 @@ class SettingsWindow(QDialog):
         self.btn_download_model.setText("Checking Model…")
         self.btn_download_model.setEnabled(False)
         self.chk_ai_enable.setEnabled(False)
-        worker = ModelCheckWorker(get_model_dir())
+        worker = ModelCheckWorker()
         self.check_worker = worker
         worker.check_finished.connect(self._on_model_check_finished)
         worker.finished.connect(self._on_model_check_thread_finished)
@@ -406,18 +423,8 @@ class SettingsWindow(QDialog):
 
     def download_ai_model(self) -> None:
         """Initiates model download in a managed background thread."""
-        reply = QMessageBox.question(self, 'Download Model', 'This will download approx 15MB. Continue?',
-                                     QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
-        if reply == QMessageBox.StandardButton.Yes:
-            self.progress = QProgressDialog("Downloading model...", "Cancel", 0, 100, self)
-            self.progress.setWindowModality(Qt.WindowModality.WindowModal)
-            self.progress.canceled.connect(self.cancel_download)
-
-            model_dir = get_model_dir()
-            self.downloader = ModelDownloader(model_dir)
-            self.downloader.progress.connect(self.progress.setValue)
-            self.downloader.finished.connect(self.on_download_finished)
-            self.downloader.start()
+        self.tabs.setCurrentWidget(self.components_panel)
+        self.components_panel.component.setCurrentText("ai.mobilenet-v2")
 
     def cancel_download(self) -> None:
         """Requests interruption for active download without making false success claims."""
@@ -429,6 +436,8 @@ class SettingsWindow(QDialog):
         """Handles model download completion or cancellation safely."""
         if self.progress:
             self.progress.close()
+        if self._close_pending:
+            return  # Closing must not open another modal completion dialog.
 
         was_cancelled = False
         if self.downloader and self.downloader.isInterruptionRequested():
@@ -448,14 +457,17 @@ class SettingsWindow(QDialog):
         """Cancel optional work and close once threads finish, without GUI waits."""
         downloader_running = bool(self.downloader and self.downloader.isRunning())
         checker_running = bool(self.check_worker and self.check_worker.isRunning())
-        if downloader_running or checker_running:
+        component_running = bool(self.components_panel.process)
+        if downloader_running or checker_running or component_running:
             event.ignore()
             self._close_pending = True
+            self._pending_result = QDialog.DialogCode.Rejected
             self.setEnabled(False)
             if self.downloader:
                 self.downloader.requestInterruption()
             if self.check_worker:
                 self.check_worker.requestInterruption()
+            self.components_panel.cancel()
             QTimer.singleShot(50, self._finish_pending_close)
             return
         super().closeEvent(event)
@@ -463,13 +475,29 @@ class SettingsWindow(QDialog):
     def _finish_pending_close(self) -> None:
         if not self._close_pending:
             return
-        if (self.downloader and self.downloader.isRunning()) or (
+        if self.components_panel.process or (self.downloader and self.downloader.isRunning()) or (
             self.check_worker and self.check_worker.isRunning()
         ):
             QTimer.singleShot(50, self._finish_pending_close)
             return
         self._close_pending = False
-        self.close()
+        result, self._pending_result = self._pending_result, None
+        super().done(QDialog.DialogCode.Rejected if result is None else result)
+
+    def done(self, result):
+        if self.components_panel.process or (self.check_worker and self.check_worker.isRunning()) or (
+            self.downloader and self.downloader.isRunning()
+        ):
+            self._close_pending = True
+            self._pending_result = result
+            self.components_panel.cancel()
+            if self.check_worker:
+                self.check_worker.requestInterruption()
+            if self.downloader:
+                self.downloader.requestInterruption()
+            QTimer.singleShot(50, self._finish_pending_close)
+            return
+        super().done(result)
 
     def save_settings(self) -> None:
         """

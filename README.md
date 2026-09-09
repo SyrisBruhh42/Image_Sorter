@@ -5,21 +5,27 @@ PyQt6. Ubuntu 24.04 LTS with KDE Plasma/X11 is the primary target. Windows and
 macOS currently receive experimental smoke coverage.
 
 [![CI](https://github.com/SyrisBruhh42/Image_Sorter/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/SyrisBruhh42/Image_Sorter/actions/workflows/ci.yml)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Source: MIT](https://img.shields.io/badge/Source-MIT-yellow.svg)](LICENSE)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/downloads/)
 
 ## Current capabilities
+
+The cutover candidate is under qualification. Implemented behavior below is not
+a claim that publication, the full native matrix, or the GitHub cutover has
+passed. See the [qualification gates](docs/engineering/integration-status.md).
 
 - Open one or more images or scan a selected directory.
 - Review with keyboard navigation, zoom, pan, a compact HUD, clipping warnings,
   zen mode, accessible labels, themes, and configurable destination hotkeys.
 - Move, copy, or send an image to a custom staging trash or the system trash.
-- Preserve matching `.txt` sidecars through file operations.
+- Preserve image-qualified sidecars (`image.jpg.txt`, not `image.txt`) through
+  file operations, without adopting unrelated destination sidecars.
 - Undo application-managed move, copy, and custom-trash operations with strict
   identity/provenance checks. System-trash operations are intentionally not
   advertised as application-undoable.
-- Recover conservatively from interrupted application-managed operations using a
-  bounded SQLite journal. Ambiguous state is preserved for manual recovery.
+- Recover conservatively from interrupted operations using a durable SQLite
+  journal and versioned file-set manifests. Unresolved material is retained;
+  journal replay is paginated rather than deleting safety history to bound it.
 - Optionally write merged tags to JPEG EXIF XPKeywords and/or `.txt` sidecars.
 - Optionally download and run a pinned MobileNetV2 ONNX model. Model weights and
   labels are not bundled and no first-run download occurs.
@@ -30,16 +36,23 @@ workflow.
 
 ## Format and component status
 
-The core scanner recognizes JPEG, PNG, WebP, BMP, GIF, and TIFF. Actual decoding
-depends on the Qt image plugins available in the installed build. GIF/APNG/WebP
-animation and multipage TIFF presentation are not implemented yet; currently the
-viewer shows a decoded still frame.
+The base scanner recognizes JPEG, PNG/APNG, WebP, BMP, GIF and TIFF. Base decoding
+depends on installed Qt plugins. Settings → Components manages these isolated,
+opt-in packs; only catalogued, platform-compatible versions can be activated:
 
-HEIF/HEIC/AVIF, camera RAW, animation/multipage support, optional AI packs, and
-hardware-provider packs have stable capability identifiers and separate data/cache
-locations. A unified Download & Component Manager is planned but is not yet an
-installer. Unsupported optional formats produce an actionable diagnostic instead
-of being silently omitted.
+| Component | Behavior |
+| --- | --- |
+| `ai.mobilenet-v2` | Hash-verified model and labels, explicit download/pack import or verified legacy import; isolated CPU inference. |
+| `provider.onnx-nvidia` | Separate CUDA/cuDNN runtime, actual compute probe and one explicit CPU fallback; never replaces the driver. |
+| `codec.heif-avif` | Decoder-only HEIF/HEIC and Pillow AVIF, with orientation, transparency, color conversion and resource bounds. |
+| `codec.camera-raw` | CR2, NEF, ARW, DNG, ORF, RW2, PEF, RAF and SRW previews through LibRaw; camera-specific unsupported variants receive errors. |
+| `viewer.animation-multipage` | GIF/APNG/WebP animation and TIFF pages; initially paused, with playback, stepping, seeking and loop controls. |
+
+Install, cancel, enable/disable, verify, update, rollback, remove and interrupted
+installation recovery are explicit actions. Opening the application or Components
+does not access the network. Failed updates preserve the working version; active
+readers hold removal leases. The source-controlled catalogue may intentionally be
+empty while release qualification or distribution rights are unresolved.
 
 ## Install for development
 
@@ -62,9 +75,13 @@ Launch it with a configured source directory, an image, or a directory:
 imagesorter
 imagesorter /path/to/photo.jpg
 imagesorter /path/to/folder
+imagesorter --profile-root /absolute/private/test-profile /path/to/photo.jpg
 ```
 
 The application does not force Wayland or X11. Qt uses the active desktop session.
+An explicit profile is processed before application logging or settings imports;
+its configuration, data, cache, state, components, journal and mutation runtime
+must remain inside that profile. Invalid isolation fails instead of falling back.
 
 ## Keyboard controls
 
@@ -93,9 +110,38 @@ pinned HTTPS URLs, writes to a temporary file, verifies SHA-256, and atomically
 activates the model and label files under the application data directory. AI is
 off by default and ordinary image review remains available without those files.
 
-The standard Python dependency set currently includes the CPU ONNX Runtime. GPU
-provider packs are future optional components; the application only selects an
-accelerated provider already available in its runtime and falls back to CPU.
+The base Python dependency set includes CPU ONNX Runtime. GPU libraries live only
+in the separate provider pack. Actual provider, fallback and component/model
+identities accompany inference results; provider enumeration alone is not a
+successful CUDA test. Primary sorting is committed before optional enrichment;
+enrichment is a separate journalled child operation.
+
+Redistribution of the original pinned model and labels is not yet established.
+The current local qualification packs must not be published until that gate is
+resolved. See [licensing and exact source materials](docs/licensing.md).
+
+## Recovery and filesystem boundaries
+
+One OS-locked mutation service owns a profile. GUI closure cancels readers but
+does not kill a writer to meet a timer: a writer that must settle remains
+`drain_pending` in its pinned independent runtime. Recovery uses journalled
+ownership, never a matching name. System trash submits a recoverable directory
+containing the whole image/sidecar set; native trash review remains necessary and
+application Undo is not advertised for it.
+
+Original claims and rollback material are retained. Unresolved records are never
+aged out automatically. Resolved material becomes eligible for explicit,
+identity-checked cleanup after 30 days; cleaning the last proven pre-sort copy
+can intentionally make later Undo unavailable. Recovery storage above 10 GiB
+triggers a warning; low space pauses work without reclaiming recovery bytes.
+
+File hashes do not exclude every race with external programs holding open file
+descriptors. Do not edit the same collection concurrently; use a local filesystem
+with working no-clobber publication, locking and directory/file sync semantics.
+Unsupported durability or metadata preservation produces an actionable failure
+with source/recovery bytes retained. VM power-interruption evidence is distinct
+from ordinary process-crash tests and does not certify physical drive/controller
+power-loss behavior.
 
 ## Build and test
 
@@ -127,4 +173,7 @@ verification details.
 
 ## License
 
-MIT. See [LICENSE](LICENSE).
+The project's own source is MIT; see [LICENSE](LICENSE). Frozen binaries include
+GPL-licensed PyQt and other dependencies and are not MIT-only distributions.
+Their applicable texts and corresponding source must accompany the exact
+artifacts. See [distribution and relinking requirements](docs/licensing.md).

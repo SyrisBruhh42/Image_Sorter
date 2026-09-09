@@ -4,7 +4,10 @@ import os
 from dataclasses import dataclass
 from typing import Any
 
-SCHEMA_VERSION: int = 1
+OPERATION_RESULT_VERSION: int = 1
+UNDO_TOKEN_VERSION: int = 1
+# Result, Undo, journal and IPC versions evolve independently.
+SCHEMA_VERSION: int = OPERATION_RESULT_VERSION
 
 
 class OperationState:
@@ -13,6 +16,7 @@ class OperationState:
     COMPLETED_WITH_WARNING: str = "completed_with_warning"
     FAILED: str = "failed"
     RECOVERY_REQUIRED: str = "recovery_required"
+    CANCELLED: str = "cancelled"
 
 
 @dataclass(frozen=True)
@@ -82,7 +86,7 @@ def create_undo_token(
 ) -> dict[str, Any]:
     """Creates a versioned UndoToken dictionary."""
     token = {
-        "version": 1,
+        "version": UNDO_TOKEN_VERSION,
         "token_id": token_id,
         "action": action,
         "original": original_path,
@@ -104,7 +108,7 @@ def validate_undo_token(
     """Validate a destructive Undo request before any filesystem mutation."""
     if not isinstance(token, dict):
         raise ValueError("A complete Undo token is required")
-    if token.get("version") != SCHEMA_VERSION:
+    if token.get("version") != UNDO_TOKEN_VERSION:
         raise ValueError("Unsupported or missing Undo token version")
     if not isinstance(token.get("token_id"), str) or not token["token_id"]:
         raise ValueError("Undo token identifier is missing")

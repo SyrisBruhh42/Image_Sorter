@@ -1,0 +1,5 @@
+"""Canonical data-only trust anchors; safe to import in the mutation runtime."""
+MODEL_URL = "https://huggingface.co/onnx-community/mobilenet_v2_1.0_224-ONNX/resolve/f7f884d9505b4c69f8a260d9967ff7791bafa498/onnx/model.onnx"
+MODEL_SHA256 = "2e731702ec8374128edfc9f7d344c44287e7791bb3c7ae25a628c2c2dec83ce6"
+LABELS_URL = "https://raw.githubusercontent.com/pytorch/hub/a6fc887fbbbda0dd37c440bf8a145f1da6707d6b/imagenet_classes.txt"
+LABELS_SHA256 = "1f386e0d1cb6e28b9c2dac651c3dea6801e98ad1b41a14ce6bb1a093d72069f5"

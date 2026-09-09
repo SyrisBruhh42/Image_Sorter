@@ -1,8 +1,8 @@
-"""Canonical capability registry for future opt-in component packs.
+"""Canonical capability discovery for opt-in component packs.
 
 This module intentionally performs no downloads or package installation. It gives the
-core sorter stable IDs, locations, and honest unsupported-format diagnostics while the
-transactional component manager is developed independently.
+core sorter stable IDs, locations, and honest unsupported-format diagnostics.
+Verified activation and version ownership belong to component_manager.
 """
 
 from __future__ import annotations

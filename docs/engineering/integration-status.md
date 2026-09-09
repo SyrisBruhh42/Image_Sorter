@@ -1,9 +1,15 @@
 # Integration Status
 
-Last updated: 2026-09-07 UTC. This file records evidence, not a claim that native
-desktop or GitHub administration gates have already completed.
+The table below preserves the earlier 2026-09-07 qualification snapshot. It does
+not describe the current repaired checkout. Current implementation and outstanding
+acceptance are tracked in [`cutover-findings.md`](cutover-findings.md); execution
+and evidence contracts are in [`cutover-runbook.md`](cutover-runbook.md).
 
-## Candidate
+Any new repair changes the qualified commit. Current test/native/GitHub outcomes
+must be read from a fresh immutable cutover receipt. No native desktop acceptance,
+PR disposition, default rename, or branch deletion is asserted complete here.
+
+## Historical candidate
 
 - Local branch: `integration/unified-main`
 - Original baseline: `1dfcf47d7d2d7156bd30415bd618155eaa44d4b4`
@@ -17,7 +23,7 @@ All eight Jules task heads are reachable from the candidate through explicit mer
 commits. Packaging, CI, and repository-documentation cleanup are grouped in the
 next candidate commit after the repair checkpoints above.
 
-## Verified so far
+## Historical reported evidence
 
 | Gate | Evidence |
 | --- | --- |
@@ -29,7 +35,7 @@ next candidate commit after the repair checkpoints above.
 | Wheel outside checkout | Built `imagesorter-0.1.0.dev0`; installed in a fresh environment; CLI help and packaged icon resolved outside the source tree. |
 | Native KDE Plasma 5.27/X11 | NOT RUN; requires execution on the target machine using `platform-acceptance.md`. |
 
-## Remaining cutover gates
+## Historical remaining gates (superseded)
 
 1. Commit the qualified documentation/packaging/CI cleanup.
 2. Publish the integration candidate, qualify the published SHA, and merge it while

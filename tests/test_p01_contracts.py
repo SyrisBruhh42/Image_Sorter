@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import os
-from unittest.mock import MagicMock
+from unittest.mock import patch
 
 from PyQt6.QtCore import QCoreApplication
 
+from imagesorter.model_assets import LABELS_SHA256, MODEL_SHA256
 from imagesorter.operation_contracts import OperationState, TaskOptions
+from imagesorter.operation_engine import OperationEngine
+from imagesorter.operation_journal import OperationJournal
 from imagesorter.queue_worker import QueueWorker
 from imagesorter.settings_manager import SettingsManager
 
@@ -94,17 +97,7 @@ def test_undo_token_structure(qtbot, tmp_path):
     assert "sha256" in token["provenance"]
 
 
-def test_completed_with_warning_on_metadata_failure(qtbot, tmp_path):
-    settings_file = tmp_path / "settings.json"
-    sm = SettingsManager(filepath=str(settings_file))
-    sm.set("ai_tagger", "enabled", True)
-
-    worker = QueueWorker(sm)
-    # Mock ai_tagger on worker to return tags but fail write_metadata
-    mock_tagger = MagicMock()
-    mock_tagger.get_tags.return_value = ["cat", "cute"]
-    worker.ai_tagger = mock_tagger
-
+def test_primary_commit_survives_metadata_child_failure(qtbot, tmp_path):
     src_dir = tmp_path / "src"
     dst_dir = tmp_path / "dst"
     src_dir.mkdir()
@@ -113,23 +106,22 @@ def test_completed_with_warning_on_metadata_failure(qtbot, tmp_path):
     src_file = src_dir / "cat.jpg"
     src_file.write_text("cat photo data")
 
-    results = []
-    worker.signals.operation_result.connect(lambda res: results.append(res))
-
-    from unittest.mock import patch
-    patcher = patch("imagesorter.queue_worker.write_metadata", side_effect=OSError("Disk full writing metadata"))
-    patcher.start()
-
-    try:
-        worker.add_task("move", str(src_file), str(dst_dir))
-        worker.stop()
-        QCoreApplication.processEvents()
-    finally:
-        patcher.stop()
-
-    assert len(results) == 1
-    res = results[0]
-    assert res["state"] == OperationState.COMPLETED_WITH_WARNING
-    assert "Disk full writing metadata" in res["warning"]
-    # Destination file exists despite metadata warning
+    journal = OperationJournal(str(tmp_path / "journal.db"))
+    engine = OperationEngine(journal)
+    parent = engine.execute({"operation_id": "parent", "action": "move", "source_path": str(src_file), "destination_path": str(dst_dir)})
+    assert parent["state"] == OperationState.COMPLETED
+    with patch("imagesorter.operation_engine.write_metadata", side_effect=OSError("Disk full writing metadata")):
+        child = engine.execute({"operation_id": "metadata-child", "action": "metadata",
+            "source_path": parent["destination_path"], "parent_operation_id": "parent", "tags": ["cat", "cute"],
+            "expected_sha256": parent["undo_token"]["provenance"]["sha256"],
+            "component_receipt": {"model_sha256": MODEL_SHA256, "labels_sha256": LABELS_SHA256,
+                "tensor_sha256": "a" * 64, "provider": "CPUExecutionProvider", "cuda_compute_events": 0,
+                "component_version": "base", "model_component_version": "explicit-verified"}})
+    # Failure belongs to the optional child, never retroactively to the durable
+    # primary transfer. The primary destination and Undo provenance survive.
+    assert child["state"] == OperationState.FAILED
+    assert "Disk full writing metadata" in child["error"]
+    assert journal.get_entry("parent")["result"] == parent
     assert os.path.exists(dst_dir / "cat.jpg")
+    assert (dst_dir / "cat.jpg").read_bytes() == b"cat photo data"
+    assert not src_file.exists()
