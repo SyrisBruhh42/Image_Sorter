@@ -63,6 +63,23 @@ def write_json(path: Path, value) -> None:
     path.write_text(json.dumps(value, sort_keys=True, indent=2) + "\n", encoding="utf-8")
 
 
+def helper_freeze_command(python: str, job: Path, captured: Path, component_id: str) -> list[str]:
+    if component_id not in COLLECT:
+        raise ValueError("Only executable components have a frozen helper")
+    command = [python, "-m", "PyInstaller", "--noconfirm", "--clean", "--onedir",
+               "--name", "helper", "--distpath", str(job / "frozen"),
+               "--workpath", str(job / "freeze-work"), "--specpath", str(job),
+               "--paths", str(captured / "src")]
+    # These are noninteractive readers, not a GUI or terminal REPL. Removing
+    # readline before dependency discovery also removes its unused native GPL
+    # library; deleting only the shared library after freezing would be unsafe.
+    for module in ("PyQt6", "readline"):
+        command += ["--exclude-module", module]
+    for module in COLLECT[component_id]:
+        command += ["--collect-all", module]
+    return command + [str(captured / "src/imagesorter/component_worker.py")]
+
+
 def run(command: list[str], log: Path, *, cwd: Path | None = None) -> None:
     print(json.dumps({"stage": "command", "program": command[0], "log": str(log)}), flush=True)
     with log.open("ab") as output:
@@ -278,13 +295,7 @@ def build(component_id: str, output: Path, release_tag: str, version: str,
         run([python, "-m", "pip", "install", "--require-hashes", "--no-index",
              "--find-links", str(wheels), "-r", str(lock)], log)
         run([python, "-m", "pip", "check"], log)
-        command = [python, "-m", "PyInstaller", "--noconfirm", "--clean", "--onedir",
-                   "--name", "helper", "--distpath", str(job / "frozen"),
-                   "--workpath", str(job / "freeze-work"), "--specpath", str(job),
-                   "--paths", str(captured / "src"), "--exclude-module", "PyQt6"]
-        for module in COLLECT[component_id]:
-            command += ["--collect-all", module]
-        command.append(str(captured / "src/imagesorter/component_worker.py"))
+        command = helper_freeze_command(python, job, captured, component_id)
         run(command, log)
         # Dereference PyInstaller's library symlinks inside this owned build tree.
         shutil.copytree(job / "frozen/helper", payload, dirs_exist_ok=True, symlinks=False)

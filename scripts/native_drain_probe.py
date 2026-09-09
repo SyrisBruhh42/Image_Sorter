@@ -35,7 +35,50 @@ def reference(path):
     return {"path": str(Path(path).resolve()), "sha256": digest(path)}
 
 
-def run(artifact, output, backend):
+def runtime_observation(kind, artifact, service_pid, module_origin, profile, *, proc_root=Path("/proc")):
+    """Observe the installed-wheel or frozen service without inventing pinning."""
+    process = proc_root / str(service_pid)
+    executable = (process / "exe").resolve(strict=True)
+    facts = {"mode": "installed-wheel" if kind == "wheel" else "frozen-pinned",
+             "service_executable": str(executable), "checks": {}}
+    if kind != "wheel":
+        facts["checks"]["independent_pinned_runtime"] = executable.is_relative_to(
+            (profile / "data" / "ImageSorter" / "runtime").resolve())
+        return facts
+
+    # The final wheel gate deliberately uses a dedicated non-editable venv.
+    # An /usr/bin/env trampoline or editable checkout is not equivalent evidence.
+    artifact = artifact.resolve(strict=True)
+    with artifact.open("rb") as handle:
+        first_line = handle.readline(4097)
+    if len(first_line) > 4096 or not first_line.startswith(b"#!/"):
+        raise ValueError("Wheel drain requires a bounded absolute interpreter shebang")
+    interpreter = Path(os.fsdecode(first_line[2:].strip()))
+    if not interpreter.is_absolute() or not interpreter.is_file() or interpreter.parent != artifact.parent:
+        raise ValueError("Wheel launcher must use its own installed venv interpreter")
+    runtime = artifact.parent.parent
+    configuration = runtime / "pyvenv.cfg"
+    if artifact.parent.name != "bin" or not configuration.is_file():
+        raise ValueError("Wheel drain requires a dedicated installed virtual environment")
+    origin = Path(module_origin).resolve(strict=True)
+    relative = origin.relative_to(runtime)
+    if (origin.name != "__init__.py" or origin.parent.name != "imagesorter" or
+            not any(part in {"site-packages", "dist-packages"} for part in relative.parts)):
+        raise ValueError("Wheel package origin is not the installed imagesorter package")
+    command = [os.fsdecode(part) for part in (process / "cmdline").read_bytes().split(b"\0") if part]
+    environment = dict(part.split(b"=", 1) for part in (process / "environ").read_bytes().split(b"\0") if b"=" in part)
+    expected = [str(interpreter), "-m", "imagesorter.bootstrap", "--mutation-service", "--journal",
+                str(profile / "data" / "ImageSorter" / "operation_journal.db")]
+    facts.update(runtime_root=str(runtime), interpreter=str(interpreter), package_origin=str(origin),
+                 service_command=command, files=[reference(executable), reference(configuration), reference(origin)])
+    facts["checks"].update({"installed_interpreter_matches_service": interpreter.resolve(strict=True) == executable,
+                           "installed_package_origin": True,
+                           "installed_service_command": command[:len(expected)] == expected,
+                           "no_python_import_override": not environment.get(b"PYTHONPATH") and not environment.get(b"PYTHONHOME")})
+    return facts
+
+
+def run(artifact, output, backend, kind="onedir"):
     artifact = artifact.resolve(strict=True)
     if output.exists():
         raise ValueError("Evidence directory must be new")
@@ -62,7 +105,7 @@ def run(artifact, output, backend):
     service_pid = gui_pid = None
     result = {"schema_version": 1, "kind": "packaged-owner-drain-probe", "complete": False,
               "artifact": reference(artifact), "profile_root": str(profile), "fixtures_before": original,
-              "observed_at": time.time(), "checks": {}}
+              "observed_at": time.time(), "artifact_kind": kind, "checks": {}}
     received = b""
 
     def messages_until(predicate, timeout=30):
@@ -106,11 +149,13 @@ def run(artifact, output, backend):
         connection.sendall(encode({"type": "hello"}))
         service = messages_until(lambda row: row.get("type") == "ready")
         service_pid = service["pid"]
-        pinned_executable = Path(os.readlink(f"/proc/{service_pid}/exe"))
-        result.update(gui_pid=gui_pid, service_pid=service_pid, pinned_executable=str(pinned_executable),
+        runtime = runtime_observation(kind, artifact, service_pid, painted["module_origin"], profile)
+        result.update(gui_pid=gui_pid, service_pid=service_pid, runtime=runtime,
                       build_identity=document.get("build_identity"), module_origin=painted["module_origin"])
         result["checks"]["actual_backend_and_paint"] = painted["backend"] == backend and painted["filepath"] == str(source)
-        result["checks"]["independent_pinned_runtime"] = pinned_executable.is_relative_to(profile / "data" / "ImageSorter" / "runtime")
+        result["checks"].update(runtime["checks"])
+        if kind != "wheel":
+            result["pinned_executable"] = runtime["service_executable"]
         started = time.monotonic()
         os.kill(gui_pid, signal.SIGTERM)
         process.wait(timeout=8)
@@ -129,6 +174,8 @@ def run(artifact, output, backend):
         result["checks"]["durable_operation_after_gui_exit"] = terminal["state"] == "completed"
         copied = Path(terminal["destination_path"])
         result["checks"]["exact_pair_and_originals"] = (digest(copied), digest(Path(str(copied) + ".txt"))) == (original[0]["sha256"], original[1]["sha256"]) and original == [reference(source), reference(sidecar)]
+        if kind == "wheel":
+            result["checks"]["installed_runtime_files_unchanged"] = all(reference(item["path"]) == item for item in runtime["files"])
     except Exception as exc:
         result["error"] = f"{type(exc).__name__}: {exc}"
     finally:
@@ -158,8 +205,9 @@ def main():
     parser.add_argument("--artifact", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--backend", choices=["xcb", "offscreen"], default="xcb")
+    parser.add_argument("--kind", choices=["wheel", "onedir", "appimage"], default="onedir")
     args = parser.parse_args()
-    result = run(args.artifact, args.output.resolve(), args.backend)
+    result = run(args.artifact, args.output.resolve(), args.backend, args.kind)
     print(json.dumps({"passed": result["passed"], "receipt": str(args.output / "drain.json"), "complete": False}))
     return 0 if result["passed"] else 1
 
