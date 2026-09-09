@@ -33,6 +33,14 @@ licensing, recovery, CI and remote-state gates pass.
 
 ### Changed
 
+- CUDA activation and inference explicitly disable TF32 and internal provider
+  retries; the host validates effective precision before accepting GPU results.
+  Legacy GPU helpers without the precision contract use one explicit CPU
+  fallback. Full precision may reduce throughput; it does not promise bitwise
+  CPU/GPU equality. The original numerical acceptance tolerance is unchanged.
+- Rebuilt all five local helper packs as `1.0.0+20260909.r10` from the clean
+  precision checkpoint. The catalogue remains local-qualification-only; older
+  archives and their failed or incomplete evidence remain preserved.
 - Consolidated the eight 2026 unification task branches while retaining merge
   ancestry.
 - Corrected Python support to 3.10+ and made package versioning single-source.
