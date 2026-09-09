@@ -28,6 +28,25 @@ def _arm_deadline(seconds):
         signal.setitimer(signal.ITIMER_REAL, seconds)
 
 
+def _checked_cuda_options(session) -> str:
+    """Reject construction/run fallback or an unconfirmed CUDA precision mode."""
+    providers = session.get_providers()
+    options = session.get_provider_options()
+    if (not isinstance(providers, list) or "CUDAExecutionProvider" not in providers or
+            not isinstance(options, dict) or
+            not isinstance(options.get("CUDAExecutionProvider"), dict) or
+            type(options["CUDAExecutionProvider"].get("use_tf32")) is not str or
+            options["CUDAExecutionProvider"]["use_tf32"] != "0"):
+        raise ValueError("CUDA full-precision mode was not confirmed; CPU fallback required")
+    return options["CUDAExecutionProvider"]["use_tf32"]
+
+
+def _cuda_precision(before: str, after: str) -> dict:
+    return {"policy_version": 1, "requested_use_tf32": "0",
+            "observed_use_tf32_before": before, "observed_use_tf32_after": after,
+            "internal_fallback_disabled": True}
+
+
 def _gpu_compute_probe() -> dict:
     """Run a tiny dynamic-input MatMul, without downloading a model or driver."""
     import numpy as np
@@ -55,15 +74,21 @@ def _gpu_compute_probe() -> dict:
     options.intra_op_num_threads = 2
     with tempfile.TemporaryDirectory(prefix=".cuda-probe-", dir=Path.cwd()) as directory:
         options.profile_file_prefix = str(Path(directory) / "probe")
-        session = ort.InferenceSession(model, sess_options=options, providers=["CUDAExecutionProvider", "CPUExecutionProvider"])
+        session = ort.InferenceSession(model, sess_options=options,
+            providers=["CUDAExecutionProvider", "CPUExecutionProvider"],
+            provider_options=[{"use_tf32": "0"}, {}], enable_fallback=False)
+        session.disable_fallback()
+        precision_before = _checked_cuda_options(session)
         expected = np.asarray([[1., 2.], [3., 4.]], dtype=np.float32)
         actual = session.run(None, {"A": expected, "B": np.eye(2, dtype=np.float32)})[0]
+        precision_after = _checked_cuda_options(session)
         profile = Path(session.end_profiling()).read_bytes()
         count = sum(item.get("args", {}).get("provider") == "CUDAExecutionProvider" for item in json.loads(profile))
         if not np.array_equal(actual, expected) or count == 0:
             raise ValueError("CUDA activation did not execute the expected compute node")
         return {"cuda_compute_events": count, "profile_sha256": hashlib.sha256(profile).hexdigest(),
-                "actual_providers": session.get_providers()}
+                "actual_providers": session.get_providers(),
+                "cuda_precision": _cuda_precision(precision_before, precision_after)}
 
 
 def probe(component_id: str) -> dict:
@@ -225,10 +250,20 @@ def infer(request: dict, component_id: str) -> tuple[dict, bytes]:
     with tempfile.TemporaryDirectory(prefix=".inference-profile-", dir=Path.cwd()) as profile_dir:
         options.profile_file_prefix = str(Path(profile_dir) / "ort")
         providers = ["CUDAExecutionProvider", "CPUExecutionProvider"] if gpu else ["CPUExecutionProvider"]
-        session = ort.InferenceSession(str(model), sess_options=options, providers=providers)
+        provider_options = [{"use_tf32": "0"}, {}] if gpu else [{}]
+        session = ort.InferenceSession(str(model), sess_options=options,
+                                       providers=providers, provider_options=provider_options,
+                                       enable_fallback=False)
+        if gpu:
+            # Disable initialization retry as well as Python's run-time retry;
+            # effective-provider checks also reject any silent CPU substitution.
+            session.disable_fallback()
+            precision_before = _checked_cuda_options(session)
         _arm_deadline(30)
         values = np.asarray(session.run(None, {session.get_inputs()[0].name: tensor})[0]).reshape(-1)
         _arm_deadline(0)
+        if gpu:
+            precision_after = _checked_cuda_options(session)
         if not np.isfinite(values).all():
             raise ValueError("Inference produced non-finite values")
         if len(values) == len(labels) + 1:
@@ -253,10 +288,13 @@ def infer(request: dict, component_id: str) -> tuple[dict, bytes]:
             events = sum(item.get("args", {}).get("provider") == "CUDAExecutionProvider" for item in records)
             if events == 0:
                 raise ValueError("No profiled CUDA compute execution; CPU fallback required")
-        return {"tags": tags, "provider": providers[0], "cuda_compute_events": events,
+        result = {"tags": tags, "provider": providers[0], "cuda_compute_events": events,
                 "actual_providers": session.get_providers(), "compute_nodes": nodes,
                 "profile_sha256": profile_digest,
-                "tensor_sha256": hashlib.sha256(tensor.tobytes()).hexdigest(), "payload_length": 0}, b""
+                "tensor_sha256": hashlib.sha256(tensor.tobytes()).hexdigest(), "payload_length": 0}
+        if gpu:
+            result["cuda_precision"] = _cuda_precision(precision_before, precision_after)
+        return result, b""
 
 
 def decode_frames(request: dict, component_id: str) -> tuple[dict, bytes]:

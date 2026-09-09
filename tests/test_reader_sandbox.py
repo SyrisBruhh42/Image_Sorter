@@ -102,18 +102,41 @@ print(json.dumps({"denied": denied, "policy": policy}))
     assert (scratch / "output").read_bytes() == b"bounded result"
 
 
-def test_non_private_or_symbolic_scratch_is_rejected_before_restriction(tmp_path):
-    from imagesorter.reader_sandbox import ReaderIsolationError, restrict_leaf_reader
-    scratch = tmp_path / "scratch"
-    scratch.mkdir(mode=0o755)
-    with pytest.raises(ReaderIsolationError, match="private"):
-        restrict_leaf_reader(scratch)
-    link = tmp_path / "alias"
-    link.symlink_to(scratch, target_is_directory=True)
-    with pytest.raises(ReaderIsolationError, match="non-symlink"):
-        restrict_leaf_reader(link)
-    # Invalid input must not accidentally confine the caller.
-    (tmp_path / "still-ordinary-test-runner").write_text("unchanged authority")
+@pytest.mark.parametrize("creation_umask", [0o022, 0o077])
+def test_non_private_or_symbolic_scratch_is_rejected_before_restriction(tmp_path, creation_umask):
+    # Containment is irreversible. Even malformed-input checks belong in a
+    # disposable child, and mkdir's requested mode is not its effective mode.
+    program = r'''
+import os, sys
+from pathlib import Path
+from imagesorter.reader_sandbox import ReaderIsolationError, restrict_leaf_reader
+root = Path(sys.argv[1])
+os.umask(int(sys.argv[2]))
+scratch = root / "scratch"
+scratch.mkdir(mode=0o755)
+scratch.chmod(0o755)
+assert scratch.stat().st_mode & 0o777 == 0o755
+try:
+ restrict_leaf_reader(scratch)
+except ReaderIsolationError as error:
+ assert "private" in str(error), str(error)
+else:
+ raise AssertionError("Non-private scratch was accepted")
+link = root / "alias"
+link.symlink_to(scratch, target_is_directory=True)
+try:
+ restrict_leaf_reader(link)
+except ReaderIsolationError as error:
+ assert "non-symlink" in str(error), str(error)
+else:
+ raise AssertionError("Symbolic scratch was accepted")
+# Invalid input must not accidentally confine even the disposable caller.
+(root / "still-ordinary-test-runner").write_text("unchanged authority")
+'''
+    result = subprocess.run([sys.executable, "-B", "-c", program, str(tmp_path), str(creation_umask)],
+                            capture_output=True, text=True, timeout=10)
+    assert result.returncode == 0, result.stderr
+    assert (tmp_path / "still-ordinary-test-runner").read_text() == "unchanged authority"
 
 
 @pytest.mark.parametrize("authority", ["thread", "writable-fd", "socket-fd"])

@@ -196,6 +196,15 @@ def verify_gpu_execution(gpu):
     need(type(gpu) is dict, "GPU reply must be an object")
     need(gpu.get("ok") is True and gpu.get("error") is None and gpu.get("fallback_reason") is None,
          "GPU execution reply was not successful")
+    precision = gpu.get("cuda_precision")
+    precision_keys = {"policy_version", "requested_use_tf32", "observed_use_tf32_before",
+                      "observed_use_tf32_after", "internal_fallback_disabled"}
+    need(type(precision) is dict and set(precision) == precision_keys
+         and type(precision["policy_version"]) is int and precision["policy_version"] == 1
+         and all(type(precision[key]) is str and precision[key] == "0" for key in
+                 ("requested_use_tf32", "observed_use_tf32_before", "observed_use_tf32_after"))
+         and precision["internal_fallback_disabled"] is True,
+         "GPU evidence lacks observed full-precision CUDA policy")
     need(not {"node_providers", "session_providers"} & set(gpu),
          "Legacy GPU provider aliases are not canonical evidence")
     providers = gpu.get("actual_providers")

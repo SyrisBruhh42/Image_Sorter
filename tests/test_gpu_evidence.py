@@ -8,6 +8,9 @@ from scripts import qualification_schema as SCHEMA
 
 def reply():
     return {"ok": True, "provider": "CUDAExecutionProvider", "cuda_compute_events": 2,
+            "cuda_precision": {"policy_version": 1, "requested_use_tf32": "0",
+                               "observed_use_tf32_before": "0", "observed_use_tf32_after": "0",
+                               "internal_fallback_disabled": True},
             "actual_providers": ["CUDAExecutionProvider", "CPUExecutionProvider"],
             "compute_nodes": [{"name": "conv_kernel_time", "provider": "CUDAExecutionProvider"},
                               {"name": "shape_kernel_time", "provider": "CPUExecutionProvider"},
@@ -114,4 +117,46 @@ def test_compute_list_is_bounded():
     document = reply()
     document["compute_nodes"] = [document["compute_nodes"][0]] * 100001
     with pytest.raises(SCHEMA.QualificationError):
+        SCHEMA.verify_gpu_execution(document)
+
+
+def test_historical_gpu_reply_without_precision_is_not_new_release_evidence():
+    document = reply()
+    del document["cuda_precision"]
+    with pytest.raises(SCHEMA.QualificationError, match="full-precision"):
+        SCHEMA.verify_gpu_execution(document)
+
+
+@pytest.mark.parametrize("value", [None, False, True, "fp32", {}, [], {"use_tf32": "0"}])
+def test_gpu_precision_requires_its_versioned_observed_contract(value):
+    document = reply()
+    document["cuda_precision"] = value
+    with pytest.raises(SCHEMA.QualificationError, match="full-precision"):
+        SCHEMA.verify_gpu_execution(document)
+
+
+@pytest.mark.parametrize(("key", "value"), [
+    ("policy_version", True), ("policy_version", "1"), ("policy_version", 1.0),
+    ("policy_version", 0), ("policy_version", 2),
+    ("requested_use_tf32", "1"), ("requested_use_tf32", 0), ("requested_use_tf32", False),
+    ("observed_use_tf32_before", "1"), ("observed_use_tf32_before", 0),
+    ("observed_use_tf32_before", False), ("observed_use_tf32_before", None),
+    ("observed_use_tf32_after", "1"), ("observed_use_tf32_after", 0),
+    ("observed_use_tf32_after", False), ("observed_use_tf32_after", None),
+    ("internal_fallback_disabled", False), ("internal_fallback_disabled", 1),
+    ("internal_fallback_disabled", "true"), ("internal_fallback_disabled", None),
+    ("undeclared", True),
+])
+def test_gpu_precision_cannot_be_forged_by_coercion_or_changed_session(key, value):
+    document = reply()
+    document["cuda_precision"][key] = value
+    with pytest.raises(SCHEMA.QualificationError, match="full-precision"):
+        SCHEMA.verify_gpu_execution(document)
+
+
+@pytest.mark.parametrize("key", list(reply()["cuda_precision"]))
+def test_every_gpu_precision_observation_is_required(key):
+    document = reply()
+    del document["cuda_precision"][key]
+    with pytest.raises(SCHEMA.QualificationError, match="full-precision"):
         SCHEMA.verify_gpu_execution(document)

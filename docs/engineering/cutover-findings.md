@@ -178,3 +178,38 @@ remain unchanged. Preserved E client-rendering, optional-scenario and shutdown
 results are not relabeled as a later-source full native qualification. The
 locked desktop, missing acceptance coverage and unresolved distribution rights
 remain explicit gates.
+
+## Final-test precision finding — 2026-09-09
+
+| ID | Confirmed finding | Control / repair | Evidence and remaining boundary |
+| --- | --- | --- | --- |
+| GPU-01 | E/r9 used ONNX Runtime's default TF32 math. All three packaged routes produced the same top-ten CPU/GPU score error `0.0008931681513786316`, exceeding the test's predeclared `1e-5` bound despite identical inputs, tensors, models, labels and ranked labels. | Explicit full-precision CUDA session options; effective option checks before and after inference; no internal provider fallback. The host and new qualification gate require typed precision attestations and reject legacy/malformed GPU replies through the existing explicit CPU fallback. | Independent exact-library countertest repeated default and TF32-disabled CUDA, using a CPU comparison across all 1,000 outputs: disabling TF32 reduced maximum error to `7.37607479095459e-7`; GPU-runtime CPU matched the base CPU vector exactly. New helper/core builds and their native numerical checks are still required. This is a declared-tolerance failure, not proof of image corruption or classification accuracy. |
+
+The preserved packaged discrepancy audit is
+`test-evidence/packaged-ai-equivalence-E-r2/independent-discrepancy-review/receipt.json`,
+SHA-256 `988c495f55441e26b02e87055f2d4dfebaeb026acfa5d5c6de0f922da5b6efef`.
+The isolated precision countertest is
+`test-evidence/cuda-precision-diagnostic-r2/report.json`, SHA-256
+`8b9e2d36028f85a831f251e44f955d0ec0026dd5040feb56f2e9dd6aa13fd6c9`.
+The normal AppImage's helper-attempt count was not traced; wheel/onedir raw
+process traces establish one failed GPU process followed by one CPU process,
+with fallback scores equal to the baseline. Same-PID PyInstaller bootstrap
+re-execs are retained, not mistaken for distinct inference processes.
+
+The first external precision diagnostic lacked the leaf reader's isolation and
+mapped a normal ONNX cache file. Its record has no pre-run cache baseline, so
+creation or modification of that cache cannot be excluded; no cleanup of a
+possibly pre-existing cache was attempted. This observer-isolation incident is
+preserved separately in
+`test-evidence/cuda-precision-diagnostic-r1/observer-incident.json`, SHA-256
+`ec6d693ca74a7850d6fe038a37c1c866c24d4c9ecfd712cb63802a53d8abdcc0`.
+It is not evidence that the shipped sandboxed reader mutated that path.
+
+The original F checkout and E artifacts remain unchanged. Precision remediation
+uses a separate local worktree so source paths already named by immutable
+evidence remain recoverable. The original bundle, profiles, r9 packs, all failed
+observer results and the unchanged `1e-5` numerical oracle are preserved.
+Actual Dolphin/Open With passed for all three E routes and 36 additional E
+headless format cases passed, but neither result certifies future repaired
+artifacts. Remaining unlocked-desktop tests, normal-AppImage first-launch
+tracing, complete native coverage and redistribution gates still block cutover.

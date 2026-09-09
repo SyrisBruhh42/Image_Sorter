@@ -198,6 +198,9 @@ def qualified_manifest(root):
     case_records = []
     mutation = json_file("mutation.json", {"schema_version": 1, "operation_id": "test", "state": "completed"})
     gpu = json_file("gpu.json", {"ok": True, "provider": "CUDAExecutionProvider", "cuda_compute_events": 1,
+                                "cuda_precision": {"policy_version": 1, "requested_use_tf32": "0",
+                                                   "observed_use_tf32_before": "0", "observed_use_tf32_after": "0",
+                                                   "internal_fallback_disabled": True},
                                 "actual_providers": ["CUDAExecutionProvider"], "compute_nodes": [{"name": "test", "provider": "CUDAExecutionProvider"}],
                                 "tensor_sha256": "a" * 64, "profile_sha256": "b" * 64})
     for artifact in artifacts:

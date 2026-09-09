@@ -29,6 +29,25 @@ MAX_BATCH_FRAMES = 8
 MAX_BATCH_BYTES = 64 * 1024 * 1024
 
 
+def _validate_cuda_precision(metadata: dict) -> None:
+    precision = metadata.get("cuda_precision")
+    expected = {"policy_version", "requested_use_tf32", "observed_use_tf32_before",
+                "observed_use_tf32_after", "internal_fallback_disabled"}
+    providers = metadata.get("actual_providers")
+    if (not isinstance(precision, dict) or set(precision) != expected or
+            type(precision.get("policy_version")) is not int or precision["policy_version"] != 1 or
+            precision.get("internal_fallback_disabled") is not True or
+            any(type(precision.get(field)) is not str or precision[field] != "0" for field in
+                ("requested_use_tf32", "observed_use_tf32_before", "observed_use_tf32_after")) or
+            metadata.get("provider") != "CUDAExecutionProvider" or
+            not isinstance(providers, list) or not 1 <= len(providers) <= 2 or
+            any(type(provider) is not str or provider not in {"CUDAExecutionProvider", "CPUExecutionProvider"}
+                for provider in providers) or
+            len(set(providers)) != len(providers) or "CUDAExecutionProvider" not in providers or
+            type(metadata.get("cuda_compute_events")) is not int or metadata["cuda_compute_events"] <= 0):
+        raise ComponentError("NVIDIA helper did not attest full-precision CUDA with internal fallback disabled; update the component or use CPU")
+
+
 def _validate_frame(metadata: dict, payload: bytes, expected_frame: int, *, inspect_only: bool = False) -> None:
     width, height, stride = (metadata.get(field) for field in ("width", "height", "stride"))
     if (not all(type(n) is int and n > 0 for n in (width, height, stride)) or
@@ -283,6 +302,9 @@ def infer_component(filepath: str, model_dir: str, *, hardware: bool = True,
                                        **_policy_request(descriptor))
                     metadata, _ = _run([str(installed / descriptor["entrypoint"])], gpu_request,
                                        cwd=work, timeout=90)
+                    # This host-side check also rejects installed/rolled-back
+                    # legacy helpers. Only this outer boundary owns one retry.
+                    _validate_cuda_precision(metadata)
                     metadata.update(component_version=descriptor["version"], component_sha256=descriptor["sha256"])
                     return _inference_receipt(metadata, resolved_model, manager, None, model_version=model_version)
             except (ComponentError, OSError) as exc:

@@ -163,6 +163,41 @@ and an actually observed `forced_fallback_reason`. Preserve both CPU/GPU outputs
 profiling records and timing/memory measurements in supporting evidence. Provider
 enumeration alone cannot satisfy execution evidence.
 
+The new GPU precision policy also requires the additive `cuda_precision` object:
+
+```json
+{
+  "policy_version": 1,
+  "requested_use_tf32": "0",
+  "observed_use_tf32_before": "0",
+  "observed_use_tf32_after": "0",
+  "internal_fallback_disabled": true
+}
+```
+
+Every field has the exact shown type and value, with no missing or extra keys.
+The worker observes the CUDA session's effective `use_tf32` setting before and
+after inference, and disables ONNX Runtime's internal fallback. GPU failure or
+unverifiable precision returns through the application's separately observed CPU
+helper, not a hidden retry inside the GPU process. The host rejects legacy GPU
+replies missing this policy, including retained r9 rollback versions; their
+archives remain recoverable and CPU operation remains available.
+
+This is not a promise of bitwise CPU/GPU equality. Preserve a predeclared
+numerical tolerance and real outputs. The 2026-09-09 test declared `1e-5` before
+execution: the preserved E/r9 result failed at `0.0008931681513786316`. Do not
+raise that tolerance or relabel the old result. A separate exact-runtime
+countertest with TF32 disabled reduced the observed full-vector error to
+`7.37607479095459e-7`; it establishes the repair rationale, not qualification of
+newly built packs. The packaged IPC exposes only ten ranked scores; distinguish
+that comparison from a diagnostic that captures all 1,000 outputs.
+
+[ONNX Runtime documents the default TF32 precision/performance tradeoff and
+per-session control](https://onnxruntime.ai/docs/execution-providers/CUDA-ExecutionProvider.html#use_tf32).
+Pinning full precision can reduce GPU throughput. Benchmark actual new artifacts;
+do not invent a speed guarantee or silently enable reduced precision to pass a
+performance target.
+
 ## Failure and maintenance
 
 Changing a source, binary, installed dependency, component descriptor, fixture,

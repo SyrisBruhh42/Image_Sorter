@@ -154,6 +154,15 @@ corresponding actual result, exact executed helper identity and enforced
 NVIDIA-only declared devices, and denied external metadata/network/mutation IPC;
 CPU/codecs require ABI 3+ with no device-write exception. Model CPU results must
 identify the exact model/labels. Fallback alone cannot qualify a GPU helper.
+New-release GPU results additionally require the strict, additive
+`cuda_precision` policy documented in `qualification-evidence.md`: explicit
+TF32 disablement, effective session options observed before and after inference,
+and disabled internal provider fallback. Legacy r9 receipts remain historical
+evidence; they cannot satisfy this new precision gate. Their archives are not
+deleted, but the new host uses its explicit CPU fallback when a retained GPU
+helper cannot attest the policy. All changed helper/core bytes require new
+catalogue, source-adoption, artifact and qualification identities. Never change
+an old receipt or widen its predeclared numerical tolerance to make it pass.
 It currently fails closed because the local catalogue and unresolved evidence
 are not publication eligible. There is intentionally no automatic fabricated
 review or success fallback. A reviewed evidence-staging workflow is still
