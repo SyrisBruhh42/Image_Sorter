@@ -92,9 +92,12 @@ claim that unrelated desktop daemons did not use the network.
 
 Each output contains `smoke.json`, hashed traces/logs, a diagnostic receipt, correct
 `sample-1.jpg.txt` sidecar, and a disposable `.desktop` launcher whose Exec carries
-the explicit profile and `%F`. Use that exact launcher for Dolphin acceptance;
-do not register it as a real-user default application. If that GUI route is not
-traced, its no-network status remains unverified rather than inherited from CLI.
+the explicit profile and `%F`. For Dolphin acceptance, create a separate launcher
+from that template with a fresh explicit profile and receipt path, then record
+its exact bytes before use. Reusing a completed smoke launcher would overwrite
+its already-hashed readiness receipt. Do not register either launcher as a
+real-user default application. If that GUI route is not traced, its no-network
+status remains unverified rather than inherited from CLI.
 
 ## Acceptance cases
 

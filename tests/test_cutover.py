@@ -418,9 +418,13 @@ def test_ci_aggregate_rejects_missing_or_skipped_jobs(tmp_path):
     git(tmp_path, "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "--allow-empty", "-m", "fixture")
     env = {**os.environ, "CI_CHECK_HEAD_SHA": CANDIDATE, "CI_REPOSITORY_ID": "123", "CI_WORKFLOW_RUN_ID": "1", "CI_RUN_ATTEMPT": "1"}
 
-    for outcome, expected in (("success", 0), ("skipped", 1), ("failure", 1), ("cancelled", 1)):
+    for outcome, expected in (("success", 0), ("skipped", 1), ("failure", 1),
+                              ("cancelled", 1), ("neutral", 1), ("missing", 1)):
         results = {name: {"result": "success"} for name in jobs}
-        results["quality"]["result"] = outcome
+        if outcome == "missing":
+            del results["quality"]
+        else:
+            results["quality"]["result"] = outcome
         result = subprocess.run([sys.executable, "-c", code], env={**env, "JOB_RESULTS": json.dumps(results)}, capture_output=True, cwd=tmp_path)
         assert result.returncode == expected, result.stderr
 

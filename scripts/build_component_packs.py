@@ -21,7 +21,6 @@ import tarfile
 import tempfile
 import time
 import urllib.request
-import venv
 import zipfile
 from pathlib import Path
 
@@ -66,7 +65,7 @@ def write_json(path: Path, value) -> None:
 def helper_freeze_command(python: str, job: Path, captured: Path, component_id: str) -> list[str]:
     if component_id not in COLLECT:
         raise ValueError("Only executable components have a frozen helper")
-    command = [python, "-m", "PyInstaller", "--noconfirm", "--clean", "--onedir",
+    command = [python, "-I", "-m", "PyInstaller", "--noconfirm", "--clean", "--onedir",
                "--name", "helper", "--distpath", str(job / "frozen"),
                "--workpath", str(job / "freeze-work"), "--specpath", str(job),
                "--paths", str(captured / "src")]
@@ -80,11 +79,47 @@ def helper_freeze_command(python: str, job: Path, captured: Path, component_id: 
     return command + [str(captured / "src/imagesorter/component_worker.py")]
 
 
+def clean_build_environment(work: Path) -> dict[str, str]:
+    """Keep subprocess imports, installer settings and caches inside this job.
+
+    A private venv alone does not isolate PYTHONPATH or the current directory:
+    pip otherwise sees an unrelated checkout's egg-info as an installed package.
+    Never restore a frozen parent's original library path for a controlled build.
+    """
+    blocked = {"VIRTUAL_ENV", "VIRTUAL_ENV_PROMPT", "APPIMAGE", "APPDIR", "OWD",
+               "_MEIPASS2", "LIBRARY_PATH", "CFLAGS", "CXXFLAGS", "CPPFLAGS",
+               "LDFLAGS", "CPATH", "C_INCLUDE_PATH", "CPLUS_INCLUDE_PATH",
+               "CMAKE_PREFIX_PATH", "CMAKE_TOOLCHAIN_FILE", "PKG_CONFIG_PATH",
+               "PKG_CONFIG_LIBDIR", "PKG_CONFIG_SYSROOT_DIR"}
+    prefixes = ("PYTHON", "PIP_", "PYINSTALLER_", "_PYI_", "LD_", "DYLD_",
+                "QT_", "QML", "CONDA", "IMAGESORTER_")
+    result = {key: value for key, value in os.environ.items()
+              if key not in blocked and not key.startswith(prefixes)}
+    private = work.resolve() / ".build-environment"
+    paths = {"HOME": private / "home", "XDG_CONFIG_HOME": private / "config",
+             "XDG_DATA_HOME": private / "data", "XDG_CACHE_HOME": private / "cache",
+             "XDG_STATE_HOME": private / "state", "TMPDIR": private / "tmp"}
+    for key, path in paths.items():
+        path.mkdir(parents=True, mode=0o700, exist_ok=True)
+        result[key] = str(path)
+    result.update(PATH=os.defpath, TMP=result["TMPDIR"], TEMP=result["TMPDIR"],
+                  LC_ALL="C.UTF-8", PYTHONNOUSERSITE="1", PYTHONSAFEPATH="1",
+                  PIP_CONFIG_FILE=os.devnull, PIP_DISABLE_PIP_VERSION_CHECK="1",
+                  PIP_NO_INPUT="1", PIP_NO_CACHE_DIR="1",
+                  PYINSTALLER_RESET_ENVIRONMENT="1")
+    return result
+
+
 def run(command: list[str], log: Path, *, cwd: Path | None = None) -> None:
+    work = (cwd or log.parent).resolve()
+    environment = clean_build_environment(work)
     print(json.dumps({"stage": "command", "program": command[0], "log": str(log)}), flush=True)
     with log.open("ab") as output:
         output.write((json.dumps(command) + "\n").encode())
-        subprocess.run(command, cwd=cwd or ROOT, stdout=output, stderr=subprocess.STDOUT, check=True)
+        output.write((json.dumps({"cwd": str(work), "environment_policy": "isolated-build-v1"}) + "\n").encode())
+        output.flush()
+        subprocess.run(command, cwd=work, env=environment,
+                       stdout=output, stderr=subprocess.STDOUT, check=True)
 
 
 def wheel_inputs(wheels: Path, lock: Path, payload: Path) -> list[dict]:
@@ -278,7 +313,7 @@ def build(component_id: str, output: Path, release_tag: str, version: str,
             shutil.rmtree(payload / "licenses")
         else:
             wheels.mkdir()
-            run([sys.executable, "-m", "pip", "download", "--only-binary=:all:",
+            run([sys.executable, "-I", "-m", "pip", "download", "--only-binary=:all:",
                  "--dest", str(wheels), "PyInstaller", *SPECS[component_id]], log)
         if component_id == "codec.heif-avif":
             if heif_build is None:
@@ -290,11 +325,11 @@ def build(component_id: str, output: Path, release_tag: str, version: str,
             native_build = raw_inputs(raw_build, wheels, payload)
         dependencies = wheel_inputs(wheels, lock, payload)
         environment = job / "venv"
-        venv.EnvBuilder(with_pip=True).create(environment)
+        run([sys.executable, "-I", "-m", "venv", str(environment)], log)
         python = str(environment / "bin/python")
-        run([python, "-m", "pip", "install", "--require-hashes", "--no-index",
+        run([python, "-I", "-m", "pip", "install", "--require-hashes", "--no-index",
              "--find-links", str(wheels), "-r", str(lock)], log)
-        run([python, "-m", "pip", "check"], log)
+        run([python, "-I", "-m", "pip", "check"], log)
         command = helper_freeze_command(python, job, captured, component_id)
         run(command, log)
         # Dereference PyInstaller's library symlinks inside this owned build tree.
