@@ -94,3 +94,57 @@ def test_frozen_drain_still_requires_private_pinned_runtime(tmp_path):
     result = probe.runtime_observation("appimage", tmp_path / "ImageSorter.AppImage", 123, "/tmp/.mount_example/package", profile, proc_root=process.parent)
     assert result["mode"] == "frozen-pinned"
     assert result["checks"] == {"independent_pinned_runtime": True}
+
+
+def mount_line(mount):
+    escaped = str(mount).replace(" ", r"\040")
+    return f"100 22 0:80 / {escaped} ro - fuse.ImageSorter ImageSorter ro\n"
+
+
+@pytest.mark.parametrize("which", ["mount", "directory", "both"])
+def test_mount_cleanup_waits_for_both_kernel_and_directory(tmp_path, which):
+    mount = tmp_path / ".mount_example space"
+    mount.mkdir()
+    info = tmp_path / "mountinfo"
+    info.write_text(mount_line(mount))
+    ticks = [0.0]
+
+    def advance(seconds):
+        ticks[0] += seconds
+        if ticks[0] >= 0.05:
+            if which in {"mount", "both"}:
+                info.write_text("")
+            if which in {"directory", "both"} and mount.exists():
+                mount.rmdir()
+
+    result = probe.wait_for_mount_teardown(mount, timeout=0.1, mountinfo=info,
+                                          monotonic=lambda: ticks[0], sleep=advance)
+    assert result["passed"] is (which == "both")
+    assert result["observations"][0]["kernel_mount_present"] is True
+    assert result["observations"][0]["directory_present"] is True
+    assert result["elapsed_ms"] == (50 if which == "both" else 100)
+
+
+def test_mount_read_failure_is_not_success(tmp_path):
+    result = probe.wait_for_mount_teardown(tmp_path / ".mount_missing", mountinfo=tmp_path / "absent")
+    assert result["passed"] is False and "FileNotFoundError" in result["error"]
+
+
+def test_malformed_mountinfo_is_not_success(tmp_path):
+    info = tmp_path / "mountinfo"
+    info.write_text("malformed\n")
+    result = probe.wait_for_mount_teardown(tmp_path / ".mount_missing", mountinfo=info)
+    assert result["passed"] is False and "Malformed" in result["error"]
+
+
+def test_nonmounted_route_is_explicitly_not_required():
+    assert probe.wait_for_mount_teardown(None) == {
+        "mount": None, "deadline_ms": 5000, "required": False,
+        "observations": [], "passed": True, "elapsed_ms": 0,
+    }
+
+
+@pytest.mark.parametrize("timeout", [0, -1, 5.01, True, float("nan")])
+def test_mount_wait_cannot_exceed_five_seconds(timeout):
+    with pytest.raises(ValueError, match="deadline"):
+        probe.wait_for_mount_teardown(None, timeout=timeout)

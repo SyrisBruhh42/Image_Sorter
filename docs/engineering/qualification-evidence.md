@@ -118,6 +118,17 @@ KDE-14 also requires measured `gui_shutdown_ms` ≤5,000,
 `all_processes_stopped:true`. GUI exit alone cannot establish these fields. Do
 not kill the mutation owner to manufacture a timing pass.
 
+The normal-AppImage drain probe records its actual `.mount_` path and observes
+both disappearance from kernel mount information and removal of the temporary
+directory. Runtime cleanup is asynchronous after GUI exit: allow a separate
+maximum 5,000 ms observation window, recording every sample and elapsed time in
+`mount_teardown`. This does not extend the GUI deadline, force an unmount, or
+terminate the surviving writer. Missing or unreadable mount evidence fails the
+check. Wheel and extracted routes explicitly record this check as not required;
+they cannot establish normal FUSE-mount cleanup. The paired mutation is submitted
+only after this bounded observation, and its exact source/sidecar bytes and final
+owner exit must still be verified.
+
 ## Component observations
 
 Every component case requires the exact `component_manifest_sha256` and criteria

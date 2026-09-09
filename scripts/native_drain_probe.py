@@ -12,6 +12,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import signal
 import socket
 import subprocess
@@ -33,6 +34,42 @@ def digest(path):
 
 def reference(path):
     return {"path": str(Path(path).resolve()), "sha256": digest(path)}
+
+
+def wait_for_mount_teardown(mount, *, timeout=5.0, mountinfo=Path("/proc/self/mountinfo"),
+                            monotonic=time.monotonic, sleep=time.sleep):
+    """Observe both kernel unmount and directory removal; never force either."""
+    if isinstance(timeout, bool) or not 0 < timeout <= 5.0:
+        raise ValueError("Unmount observation deadline must be in (0, 5] seconds")
+    started = monotonic()
+    observation = {"mount": str(mount) if mount else None, "deadline_ms": round(timeout * 1000),
+                   "required": mount is not None, "observations": [], "passed": mount is None}
+    if mount is None:
+        observation["elapsed_ms"] = 0
+        return observation
+    try:
+        while True:
+            mounted = False
+            for line in mountinfo.read_text().splitlines():
+                fields = line.split()
+                if len(fields) < 6:
+                    raise ValueError("Malformed kernel mount record")
+                target = re.sub(r"\\([0-7]{3})", lambda match: chr(int(match[1], 8)), fields[4])
+                mounted |= target == str(mount)
+            facts = {"elapsed_ms": round((monotonic() - started) * 1000),
+                     "kernel_mount_present": mounted, "directory_present": mount.exists()}
+            observation["observations"].append(facts)
+            if not mounted and not facts["directory_present"]:
+                observation["passed"] = True
+                break
+            remaining = timeout - (monotonic() - started)
+            if remaining <= 0:
+                break
+            sleep(min(0.025, remaining))
+    except (OSError, ValueError) as exc:
+        observation["error"] = f"{type(exc).__name__}: {exc}"
+    observation["elapsed_ms"] = round((monotonic() - started) * 1000)
+    return observation
 
 
 def runtime_observation(kind, artifact, service_pid, module_origin, profile, *, proc_root=Path("/proc")):
@@ -165,7 +202,8 @@ def run(artifact, output, backend, kind="onedir"):
         origin = Path(painted["module_origin"])
         mount = next((parent for parent in origin.parents if parent.name.startswith(".mount_")), None)
         result["appimage_mount"] = str(mount) if mount else None
-        result["checks"]["appimage_mount_closed"] = mount is None or not mount.exists()
+        result["mount_teardown"] = wait_for_mount_teardown(mount)
+        result["checks"]["appimage_mount_closed"] = result["mount_teardown"]["passed"]
         request = {"operation_id": "drain-probe-" + uuid.uuid4().hex, "action": "copy", "source_path": str(source),
                    "destination_path": str(destination), "task_options": {}}
         connection.sendall(encode({"type": "submit", "request": request}))
