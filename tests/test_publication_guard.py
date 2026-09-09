@@ -292,27 +292,45 @@ def test_actual_reader_policy_must_match_execution_not_just_descriptor(gpu, chan
             guard.verify_reader_policy(reply, descriptor)
 
 
-@pytest.mark.parametrize("change", [None, "missing-results", "different-fixture", "inferred-input", "different-helper"])
+@pytest.mark.parametrize("change", [None, "missing-results", "different-fixture", "inferred-input", "different-helper",
+                                  "missing-input", "input-none", "input-boolean", "input-number",
+                                  "input-uppercase", "input-malformed", "input-short", "missing-input-other-fixture",
+                                  "missing-ok", "failed-ok", "numeric-ok", "string-ok", "error-present"])
 def test_native_format_evidence_binds_real_reply_policy_and_fixture(tmp_path, change):
     descriptor = {"id": "codec.heif-avif", "version": "1", "sha256": "a" * 64}
     fixture = tmp_path / "fixture.heif"
     fixture.write_bytes(b"synthetic fixture")
-    reply = {"component_id": descriptor["id"], "component_version": "1", "component_sha256": "a" * 64,
+    reply = {"ok": True, "component_id": descriptor["id"], "component_version": "1", "component_sha256": "a" * 64,
+             "input_sha256": ref(fixture)["sha256"],
              "reader_isolation": {"enforced": True, "policy_version": 1, "landlock_abi": 3,
                  "network_and_mutation_ipc": "denied", "external_metadata_writes": "denied",
                  "own_task_proc_writes": False, "device_write_paths": [], "scratch": "/disposable/scratch"}}
     if change == "inferred-input":
         reply["input_sha256"] = "b" * 64
+    elif change in {"missing-input", "missing-input-other-fixture"}:
+        reply.pop("input_sha256")
+    elif change in {"input-none", "input-boolean", "input-number", "input-uppercase", "input-malformed", "input-short"}:
+        reply["input_sha256"] = {"input-none": None, "input-boolean": True, "input-number": 123,
+                                "input-uppercase": ref(fixture)["sha256"].upper(), "input-malformed": "z" * 64,
+                                "input-short": ref(fixture)["sha256"][:-1]}[change]
+    elif change == "missing-ok":
+        reply.pop("ok")
+    elif change in {"failed-ok", "numeric-ok", "string-ok"}:
+        reply["ok"] = {"failed-ok": False, "numeric-ok": 1, "string-ok": "true"}[change]
+    elif change == "error-present":
+        reply["error"] = "Decoder failed"
     elif change == "different-helper":
         reply["component_version"] = "2"
     envelope = {"kind": "reader-result-observation", "fixture": ref(fixture),
                 "reply": write_json(tmp_path / "reply.json", reply)}
-    if change == "different-fixture":
+    if change in {"different-fixture", "missing-input-other-fixture"}:
         other = tmp_path / "other.heif"
         other.write_bytes(b"other fixture")
         envelope["fixture"] = ref(other)
     observation = {"formats": {"heif": {"fixture": ref(fixture)}},
                    "reader_results": [write_json(tmp_path / "envelope.json", envelope)]}
+    if change == "missing-input-other-fixture":
+        observation["formats"]["heif"]["fixture"] = envelope["fixture"]
     if change == "missing-results":
         observation.pop("reader_results")
     native = {"components": [{"id": descriptor["id"], "manifest": write_json(tmp_path / "descriptor.json", descriptor)}],

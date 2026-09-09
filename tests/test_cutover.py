@@ -197,9 +197,9 @@ def qualified_manifest(root):
     ids = {f"KDE-{i:02d}" for i in range(1, 15)} | {f"COMPONENT:{name}" for name in COMPONENT_IDS}
     case_records = []
     mutation = json_file("mutation.json", {"schema_version": 1, "operation_id": "test", "state": "completed"})
-    gpu = json_file("gpu.json", {"provider": "CUDAExecutionProvider", "cuda_compute_events": 1,
-                                "session_providers": ["CUDAExecutionProvider"], "node_providers": [{"node": "test", "provider": "CUDAExecutionProvider"}],
-                                "tensor_sha256": "a" * 64})
+    gpu = json_file("gpu.json", {"ok": True, "provider": "CUDAExecutionProvider", "cuda_compute_events": 1,
+                                "actual_providers": ["CUDAExecutionProvider"], "compute_nodes": [{"name": "test", "provider": "CUDAExecutionProvider"}],
+                                "tensor_sha256": "a" * 64, "profile_sha256": "b" * 64})
     for artifact in artifacts:
         for index, name in enumerate(sorted(ids)):
             observation = {**identity, "kind": "operator-observation", "id": name,
@@ -715,7 +715,7 @@ def test_semantic_native_gate_rejects_hash_consistent_false_claims(tmp_path, con
             elif contradiction == "missing_raw_format":
                 value["formats"].pop("nef")
             else:
-                rewrite_reference(value["gpu_result"], lambda gpu: gpu.update(cuda_compute_events=0, node_providers=[]))
+                rewrite_reference(value["gpu_result"], lambda gpu: gpu.update(cuda_compute_events=0, compute_nodes=[]))
         rewrite_reference(case["observation"], change_observation)
     path.write_text(json.dumps(receipt))
     with pytest.raises(GateError, match="semantics"):

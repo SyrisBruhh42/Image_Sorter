@@ -191,6 +191,41 @@ def verify_smoke(artifact, root, source_sha, source_tree):
         need(smoke.get(field) is True, f"Missing native observation: {field}")
 
 
+def verify_gpu_execution(gpu):
+    """Verify the canonical single-inference CPU/CUDA profile from our helper."""
+    need(type(gpu) is dict, "GPU reply must be an object")
+    need(gpu.get("ok") is True and gpu.get("error") is None and gpu.get("fallback_reason") is None,
+         "GPU execution reply was not successful")
+    need(not {"node_providers", "session_providers"} & set(gpu),
+         "Legacy GPU provider aliases are not canonical evidence")
+    providers = gpu.get("actual_providers")
+    need(type(providers) is list and 1 <= len(providers) <= 2
+         and all(type(value) is str and value in {"CUDAExecutionProvider", "CPUExecutionProvider"} for value in providers)
+         and len(set(providers)) == len(providers) and "CUDAExecutionProvider" in providers,
+         "GPU evidence lacks a valid actual CUDA session")
+    events, nodes = gpu.get("cuda_compute_events"), gpu.get("compute_nodes")
+    need(type(gpu.get("provider")) is str and gpu["provider"] == "CUDAExecutionProvider" and type(events) is int and events > 0
+         and type(nodes) is list and 1 <= len(nodes) <= 100000,
+         "GPU evidence lacks typed positive node execution")
+    names, cuda_nodes = set(), 0
+    for node in nodes:
+        need(type(node) is dict and set(node) == {"name", "provider"},
+             "GPU compute node must contain its exact name and provider")
+        name, provider = node["name"], node["provider"]
+        need(type(name) is str and 0 < len(name) <= 4096 and name.strip() == name
+             and bool(name.strip()) and chr(0) not in name and name not in names,
+             "GPU compute node name is missing, malformed or duplicated")
+        need(type(provider) is str and provider in providers,
+             "GPU compute node provider was not in the actual session")
+        names.add(name)
+        cuda_nodes += provider == "CUDAExecutionProvider"
+    need(cuda_nodes == events, "GPU event count contradicts named CUDA compute nodes")
+    for key in ("tensor_sha256", "profile_sha256"):
+        value = gpu.get(key)
+        need(type(value) is str and bool(HEX64.fullmatch(value)),
+             f"GPU evidence lacks its exact {key}")
+
+
 def verify_observation(case, artifact, component_refs, root, source_sha, source_tree):
     observation, base = record(case.get("observation"), root)
     source_identity(observation, source_sha, source_tree)
@@ -240,10 +275,7 @@ def verify_observation(case, artifact, component_refs, root, source_sha, source_
                 reference(formats[name].get("fixture"), base)
         if component_id == "provider.onnx-nvidia":
             gpu, _ = record(observation.get("gpu_result"), base)
-            need(gpu.get("provider") == "CUDAExecutionProvider" and type(gpu.get("cuda_compute_events")) is int
-                 and gpu["cuda_compute_events"] > 0 and bool(gpu.get("node_providers"))
-                 and "CUDAExecutionProvider" in gpu.get("session_providers", [])
-                 and HEX64.fullmatch(gpu.get("tensor_sha256", "")), "GPU evidence lacks actual node execution")
+            verify_gpu_execution(gpu)
             need(number(observation.get("cpu_gpu_max_abs_error")) and number(observation.get("cpu_gpu_tolerance"), 0, .01)
                  and observation["cpu_gpu_max_abs_error"] <= observation["cpu_gpu_tolerance"]
                  and bool(observation.get("forced_fallback_reason")), "GPU equivalence/fallback evidence failed")

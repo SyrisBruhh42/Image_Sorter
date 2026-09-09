@@ -149,8 +149,15 @@ frame/timing observations in supporting records. Missing fixtures remain an
 unpassed acceptance gate, not a reason to silently reduce advertised coverage.
 
 NVIDIA observations additionally reference `gpu_result`, which must record
-actual `CUDAExecutionProvider` use, positive `cuda_compute_events`, nonempty
-`node_providers`, actual `session_providers`, and an input `tensor_sha256`.
+an explicitly successful reply (`ok:true`, no error or fallback reason), actual
+`CUDAExecutionProvider` use, and the helper's canonical `actual_providers` and
+`compute_nodes` fields. The actual session must contain CUDA and may contain CPU;
+each compute node has a unique nonempty `name` and a provider in that session.
+The positive integer `cuda_compute_events` must equal the number of named CUDA
+nodes. Exact lowercase SHA-256 `tensor_sha256` and `profile_sha256` values are
+required. Legacy `node_providers`/`session_providers` aliases are rejected, not
+guessed or synthesized. These are consistency checks on the preserved reply;
+hashes alone are not independent proof of an operator's observations.
 Record computed `cpu_gpu_max_abs_error`, declared `cpu_gpu_tolerance` (≤0.01),
 and an actually observed `forced_fallback_reason`. Preserve both CPU/GPU outputs,
 profiling records and timing/memory measurements in supporting evidence. Provider

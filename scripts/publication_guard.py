@@ -451,8 +451,11 @@ def verify_native_readers(native, catalog_bytes, base):
             reference(envelope.get("fixture"), envelope_base)
             fixture_sha = envelope["fixture"]["sha256"]
             reply, _ = record(envelope.get("reply"), envelope_base)
-            if "input_sha256" in reply:
-                need(reply["input_sha256"] == fixture_sha, "Native reader result identifies another fixture")
+            need(reply.get("ok") is True and reply.get("error") is None,
+                 "Native reader result was not successful")
+            input_sha = reply.get("input_sha256")
+            need(type(input_sha) is str and bool(HEX64.fullmatch(input_sha)) and input_sha == fixture_sha,
+                 "Native reader result lacks its exact executed fixture digest")
             cpu = reply.get("component_id") == "core.cpu"
             need(not cpu or component_id in {"ai.mobilenet-v2", "provider.onnx-nvidia"},
                  "CPU inference cannot stand in for an optional decoder")

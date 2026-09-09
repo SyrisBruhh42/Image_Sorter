@@ -162,3 +162,19 @@ CUDA/cuDNN packages, under explicit extras. None of these controls supplies lega
 clearance or certifies an unbuilt final artifact. A bounded final reader-policy
 review found no additional confirmed safety escape after ISO-02's repair; it is
 not an exhaustive kernel/driver or availability-isolation certification.
+
+## Verifier-only checkpoint — preserved E application evidence
+
+| ID | Confirmed finding | Control / repair status | Evidence / outstanding acceptance |
+| --- | --- | --- | --- |
+| EVD-04 | The helper preserved actual GPU session/node facts as `actual_providers` and `compute_nodes`, but the final verifier expected stale aliases and accepted arbitrary truthy node data. This was a verification-contract defect, not missing GPU execution in the preserved E run. | Canonical successful reply only; exact CPU/CUDA session types, unique named nodes, consistent positive CUDA count, tensor/profile digests, and no failed/fallback status. Legacy aliases are rejected. | `tests/test_gpu_evidence.py` rejects type confusion, enumeration-only claims, duplicate/invented nodes, miscounts, malformed digests and contradictory status. Actual E reply retained 100 named CUDA events and exact session/model/component identities. Independent adversarial review and corrected raw-reply checks do not satisfy still-unperformed full native, equivalence/fallback or publication gates. |
+| EVD-05 | A fixture envelope could substitute unrelated bytes after omitting the optional `input_sha256`; the shared reader gate also failed to require an explicitly successful reply. | Every fixture-bearing reader reply must have `ok:true`, no error, and an exact lowercase 64-character input digest matching the preserved fixture. Probe-only replies cannot qualify a fixture. | `test_native_format_evidence_binds_real_reply_policy_and_fixture` covers missing/wrong/malformed/type-confused digests, substituted fixtures and failed status. Independent frozen-E counterexample receipt `test-evidence/gpu-fixture-counterexample-E/receipt.json`, SHA256 `66060955bcb5329889d9bfd67db302619258b427d6f035ed584af74952116084`, demonstrated the omission bypass using copied actual GPU and GIF replies at the `verify_native_readers` stage only; no original receipt or application artifact was changed. |
+
+The targeted verifier/observer/cutover/publication suite passed 283 tests in
+2.58 seconds (`test-evidence/gpu-verifier-F/source-targeted-tests.xml` in the
+external evidence root). This checkpoint changes verification code, tests and
+documentation only; helper/application bytes and existing E artifact identities
+remain unchanged. Preserved E client-rendering, optional-scenario and shutdown
+results are not relabeled as a later-source full native qualification. The
+locked desktop, missing acceptance coverage and unresolved distribution rights
+remain explicit gates.

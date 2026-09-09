@@ -144,8 +144,11 @@ release rollback choices. The clean pack source inventory includes
 Each native `COMPONENT:` operator observation must preserve `reader_results`
 references to `reader-result-observation` envelopes, each containing a `fixture`
 file/hash reference and a `reply` file/hash reference to the full returned helper
-metadata. No helper-native input hash is invented: when a reply contains one,
-it must match the preserved fixture. Every recorded format fixture needs a
+metadata. Every fixture-bearing reply must explicitly succeed (`ok:true`, with
+`error` absent or null) and contain its actual `input_sha256`:
+an exact lowercase 64-character SHA-256 string matching the preserved fixture.
+A missing digest, a substituted fixture, or a probe-only reply cannot qualify;
+no helper-native input hash may be invented. Every recorded format fixture needs a
 corresponding actual result, exact executed helper identity and enforced
 `reader_isolation` policy. GPU records require ABI 6+, exact provider identity,
 NVIDIA-only declared devices, and denied external metadata/network/mutation IPC;
