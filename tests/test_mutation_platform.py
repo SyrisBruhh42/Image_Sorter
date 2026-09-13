@@ -1,6 +1,7 @@
 """Unsupported native mutations fail before admission or filesystem changes."""
 import hashlib
 import json
+import os
 import stat
 from pathlib import Path
 from types import SimpleNamespace
@@ -128,6 +129,43 @@ def _wait_for_review_image(qtbot, viewer, records, index):
         pytest.fail(f"Image was not presented: {json.dumps(diagnostic, default=str)}; wait error: {exc}")
 
 
+def _set_distinct_fixture_timestamps(path):
+    """Make Windows creation/change semantics distinct without sleeping."""
+    birth_ns, modified_ns = 946684800000000000, 978307200000000000
+    if os.name == "nt":
+        import ctypes
+        from ctypes import wintypes
+
+        kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel.CreateFileW.argtypes = (wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD,
+                                       ctypes.c_void_p, wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE)
+        kernel.CreateFileW.restype = wintypes.HANDLE
+        kernel.SetFileTime.argtypes = (wintypes.HANDLE, ctypes.POINTER(wintypes.FILETIME),
+                                      ctypes.POINTER(wintypes.FILETIME), ctypes.POINTER(wintypes.FILETIME))
+        kernel.SetFileTime.restype = wintypes.BOOL
+        kernel.CloseHandle.argtypes = (wintypes.HANDLE,)
+        kernel.CloseHandle.restype = wintypes.BOOL
+        # FILE_WRITE_ATTRIBUTES, share read/write/delete, OPEN_EXISTING. This
+        # handle changes only our generated fixture before its before snapshot.
+        handle = kernel.CreateFileW(str(path), 0x100, 7, None, 3, 0, None)
+        if handle == wintypes.HANDLE(-1).value:
+            raise ctypes.WinError(ctypes.get_last_error())
+        try:
+            ticks = birth_ns // 100 + 116444736000000000
+            creation = wintypes.FILETIME(ticks & 0xffffffff, ticks >> 32)
+            if not kernel.SetFileTime(handle, ctypes.byref(creation), None, None):
+                raise ctypes.WinError(ctypes.get_last_error())
+        finally:
+            if not kernel.CloseHandle(handle):
+                raise ctypes.WinError(ctypes.get_last_error())
+    os.utime(path, ns=(modified_ns, modified_ns))
+    info = path.stat()
+    assert info.st_mtime_ns == modified_ns
+    if os.name == "nt":
+        assert getattr(info, "st_birthtime_ns", info.st_ctime_ns) == birth_ns
+        assert birth_ns != info.st_mtime_ns
+
+
 def test_actual_png_reader_preserves_binary_pixels_and_source_identity(tmp_path, qapp):
     from PIL import Image
 
@@ -140,6 +178,7 @@ def test_actual_png_reader_preserves_binary_pixels_and_source_identity(tmp_path,
     expected = bytes((13, 10, 26, 255, 26, 13, 10, 255, 10, 26, 13, 255,
                       0, 255, 13, 255, 26, 0, 10, 255, 255, 26, 0, 255))
     Image.frombytes("RGBA", (3, 2), expected).save(source)
+    _set_distinct_fixture_timestamps(source)
     before = source.read_bytes(), source.stat().st_mode
     metadata, pixels = run_reader({"action": "decode", "request_id": "native-binary-pixels", "filepath": str(source)})
     assert pixels == expected
@@ -163,6 +202,7 @@ def test_actual_image_review_and_gui_refusals_preserve_files_and_undo(
     target.mkdir()
     for index, color in enumerate(('red', 'blue')):
         Image.new('RGB', (96, 64), color).save(source / f'{index}.png')
+        _set_distinct_fixture_timestamps(source / f'{index}.png')
     before = {p.name: (p.read_bytes(), p.stat().st_mode) for p in source.iterdir()}
     settings = SettingsManager(filepath=str(tmp_path / 'settings.json'))
     settings.set('directories', 'source', str(source))

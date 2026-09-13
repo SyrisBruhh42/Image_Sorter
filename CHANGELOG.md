@@ -84,3 +84,8 @@ source acceptance never certifies a native or redistributable release.
 - Worker request bookkeeping and enrichment cancellation now follow successful admission.
 - The viewer and decoder use the same default component-store contract for cache identity, preserving Windows base-image display without relaxing component verification.
 - Preserved the second candidate's hosted failures. Its Python 3.10–3.12, X11, pinned CPU inference and artifact jobs passed; Windows/macOS smoke failures still required these repairs and a new exact-candidate run.
+
+### Source integration continuation: Windows file identity
+
+- Preserve consistent five-field image identity on Windows when pathname and open-file timestamp APIs expose different creation/change-time semantics. Linux/macOS identity handling and mutation journal formats remain unchanged.
+- Retain the third candidate's mixed Windows hosted results and add deterministic timestamp/identity regressions before another qualified integration attempt.

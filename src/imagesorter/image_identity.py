@@ -16,7 +16,26 @@ def source_identity(path):
     info = os.stat(path, follow_symlinks=False)
     if not stat.S_ISREG(info.st_mode):
         raise ValueError("Cache inputs must be regular non-symlink files")
-    return stat_identity(info)
+    if os.name != "nt":
+        return stat_identity(info)
+
+    # CPython Windows pathname stat can expose creation time as ctime while
+    # fstat exposes change time. Match the reader's complete handle identity;
+    # never discard or tolerate drift in either API's five-field observation.
+    descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0))
+    try:
+        opened = os.fstat(descriptor)
+        current = os.stat(path, follow_symlinks=False)
+        final = os.fstat(descriptor)
+        if not all(stat.S_ISREG(item.st_mode) for item in (opened, current, final)):
+            raise ValueError("Cache inputs must be regular non-symlink files")
+        path_identity, handle_identity = stat_identity(info), stat_identity(opened)
+        if (path_identity != stat_identity(current) or handle_identity != stat_identity(final)
+                or path_identity[:4] != handle_identity[:4]):
+            raise ValueError("Source changed during cache identity lookup")
+        return handle_identity
+    finally:
+        os.close(descriptor)
 
 
 @lru_cache(maxsize=4)
