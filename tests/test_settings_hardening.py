@@ -194,7 +194,14 @@ def test_paths_unwritable_directory_fallback(tmp_path, monkeypatch):
     def mock_mkdir(self, *args, **kwargs):
         raise OSError(13, "Permission denied")
 
+    # This case exercises ordinary native fallback, not the explicit profile's
+    # fail-closed contract. Every native default still points into this fixture.
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path / "private-home"))
+    monkeypatch.setattr("imagesorter.paths.tempfile.gettempdir", lambda: str(tmp_path / "fallback"))
+    for name in ("APPDATA", "LOCALAPPDATA", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME", "XDG_STATE_HOME"):
+        monkeypatch.setenv(name, str(tmp_path / name.lower()))
     monkeypatch.setattr(Path, "mkdir", mock_mkdir)
+    monkeypatch.delenv("IMAGESORTER_PROFILE_ROOT", raising=False)
 
     with warnings.catch_warnings(record=True) as w:
         warnings.simplefilter("always")
@@ -211,6 +218,9 @@ def test_paths_unwritable_directory_fallback(tmp_path, monkeypatch):
         assert "data" in str(data_dir)
         assert "cache" in str(cache_dir)
         assert "logs" in str(logs_dir)
+        fallback = tmp_path / "fallback" / expected_part
+        assert (config_dir, data_dir, cache_dir, logs_dir) == tuple(
+            fallback / category for category in ("config", "data", "cache", "logs"))
 
         # Runtime warnings should have been recorded
         assert len(w) >= 4

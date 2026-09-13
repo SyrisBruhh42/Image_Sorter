@@ -10,6 +10,7 @@ from PyQt6.QtCore import QCoreApplication, QObject, QThread, pyqtSignal
 from . import file_safety
 from .mutation_client import MutationClient
 from .operation_contracts import TaskOptions
+from .platform_capabilities import require_mutation_support
 from .reader_process import run_reader
 
 _compute_provenance = file_safety.fingerprint
@@ -60,6 +61,7 @@ class QueueWorker(QObject):
         """Each new operation already receives its own validated settings snapshot."""
 
     def add_task(self, task_type, filepath, dest_folder=None, undo_token=None, *, operation_id=None, task_options=None):
+        require_mutation_support()
         if self._closing:
             raise RuntimeError("Image Sorter is closing")
         if len(self.client.pending) >= self.client.MAX_PENDING:
@@ -116,6 +118,7 @@ class QueueWorker(QObject):
 
     def add_recovery_task(self, record, *, task_options=None):
         """Request one authoritative rollback; no filesystem recovery occurs here."""
+        require_mutation_support()
         if self._closing or self.client.pending:
             self.signals.progress.emit("Wait for accepted file operations to settle before requesting recovery")
             return None

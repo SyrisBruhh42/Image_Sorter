@@ -7,6 +7,15 @@ currently `0.1.0.dev0`.
 
 ### Source integration, 2026-09-13
 
+- Repair hosted qualification defects: self-contained streaming hashes support
+  Python 3.10; platform-path tests cover Linux, Windows and macOS with private
+  profiles; asynchronous UI tests prove thread/event behavior without fixed
+  machine-speed assertions.
+- Refuse unsupported Windows durable sorting, Undo and metadata work before
+  admission or file changes. Keep experimental image review/settings usable;
+  verify real image display and refusal behavior in the required native smoke.
+  Preserve POSIX directory sync and reader containment without compatibility shims.
+
 - Preserve all original GitHub branches through a separately gated source-only
   integration into a new protected `main`; retain binary/native release gates.
 - Isolate late file-operation results by view generation, keep rejected Undo

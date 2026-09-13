@@ -92,6 +92,9 @@ jobs:
         shell: bash
         env:
           QT_QPA_PLATFORM: offscreen
+          # macOS intentionally ignores XDG. Isolate import-time logging and
+          # child processes before pytest's per-test profile fixture takes over.
+          IMAGESORTER_PROFILE_ROOT: ${{ runner.temp }}/imagesorter-native-smoke
           XDG_CONFIG_HOME: ${{ runner.temp }}/config
           XDG_DATA_HOME: ${{ runner.temp }}/data
           XDG_CACHE_HOME: ${{ runner.temp }}/cache
@@ -99,7 +102,17 @@ jobs:
           APPDATA: ${{ runner.temp }}/appdata
           LOCALAPPDATA: ${{ runner.temp }}/localappdata
         run: |
-          python -m pytest tests/test_core.py tests/test_settings_hardening.py tests/test_accessibility.py tests/test_concurrency.py
+          python - <<'PYTHON'
+          import os
+          from pathlib import Path
+          from imagesorter.paths import get_config_dir, get_data_dir, get_cache_dir, get_logs_dir
+          profile = Path(os.environ["IMAGESORTER_PROFILE_ROOT"]).resolve()
+          directories = [get_config_dir(), get_data_dir(), get_cache_dir(), get_logs_dir()]
+          if not all(directory.resolve().is_relative_to(profile) for directory in directories):
+              raise RuntimeError("Native smoke state escaped its explicit temporary profile")
+          print(f"Native smoke profile verified: {profile}")
+          PYTHON
+          python -m pytest tests/test_core.py tests/test_settings_hardening.py tests/test_accessibility.py tests/test_concurrency.py tests/test_mutation_platform.py
 
   linux-artifacts:
     name: Wheel, onedir, and AppImage

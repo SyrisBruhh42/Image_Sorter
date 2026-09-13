@@ -10,6 +10,10 @@ def isolated_test_xdg(tmp_path, monkeypatch):
         directory = tmp_path / "xdg" / category.lower()
         directory.mkdir(parents=True)
         monkeypatch.setenv(f"XDG_{category}_HOME", str(directory))
+    if sys.platform in {"win32", "darwin"}:
+        # Native platforms do not use XDG. Keep each test's ordinary application
+        # state private without changing HOME or the production path contract.
+        monkeypatch.setenv("IMAGESORTER_PROFILE_ROOT", str(tmp_path / "native-profile"))
 
 
 @pytest.hookimpl(tryfirst=True)

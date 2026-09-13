@@ -25,6 +25,7 @@ from .operation_contracts import (
     validate_undo_token,
 )
 from .operation_journal import OperationJournal
+from .platform_capabilities import mutation_unavailable_reason, require_mutation_support
 
 
 class OperationEngine:
@@ -44,6 +45,8 @@ class OperationEngine:
 
     def execute(self, request: dict[str, Any], *, cancelled: Callable[[], bool] | None = None) -> dict[str, Any]:
         """Run once; identical requests replay their persisted terminal receipt."""
+        if reason := mutation_unavailable_reason():
+            return self._result(request, OperationState.FAILED, error=reason)
         with self._lock:
             entry, _created = self.journal.accept(request)
             request = entry["request"]
@@ -638,6 +641,7 @@ class OperationEngine:
 
     def cleanup_retained(self, operation_id: str, *, now: float | None = None) -> int:
         """Explicit housekeeping only; unresolved/changed bytes never expire."""
+        require_mutation_support()
         with self._lock:
             entry = self.journal.get_entry(operation_id)
             if not entry or (not entry.get("resolved_by") and entry["state"] not in (OperationState.COMPLETED, OperationState.COMPLETED_WITH_WARNING, OperationState.FAILED, OperationState.CANCELLED)):

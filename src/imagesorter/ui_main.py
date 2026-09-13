@@ -1671,7 +1671,11 @@ class MainViewer(QMainWindow):
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, QMessageBox.StandardButton.No)
         if answer != QMessageBox.StandardButton.Yes:
             return None
-        operation_id = self.worker.add_recovery_task(record, task_options=TaskOptions(view_generation=self.load_generation))
+        try:
+            operation_id = self.worker.add_recovery_task(record, task_options=TaskOptions(view_generation=self.load_generation))
+        except (RuntimeError, OverflowError, OSError) as exc:
+            self.statusBar().showMessage(f'Recovery was not queued: {exc}', 7000)
+            return None
         if operation_id:
             self._recovery_generations[operation_id] = self.load_generation
         return operation_id

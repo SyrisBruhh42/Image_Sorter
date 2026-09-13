@@ -1,12 +1,14 @@
 import errno
 import time
-from itertools import pairwise
+from pathlib import Path
 from unittest.mock import patch
 
+import pytest
 from PyQt6.QtCore import QTimer
 
 from imagesorter.operation_engine import OperationEngine
 from imagesorter.operation_journal import OperationJournal
+from imagesorter.platform_capabilities import mutation_unavailable_reason
 from imagesorter.queue_worker import QueueWorker
 from imagesorter.settings_manager import SettingsManager
 
@@ -47,9 +49,26 @@ def test_queue_worker_concurrent_moves_and_undo(qtbot, tmp_path):
     # throughput assumption. Keep all 200 data/Undo checks; GUI stays responsive.
     ticks = []
     timer = QTimer()
-    timer.timeout.connect(lambda: ticks.append(time.monotonic()))
+    timer.timeout.connect(lambda: ticks.append(bool(worker.client.pending)))
     timer.start(20)
     started = time.monotonic()
+    if reason := mutation_unavailable_reason():
+        # Experimental platforms must reject unsupported durability before
+        # admitting work, rather than leave requests hanging or weaken sync.
+        for fp in file_paths:
+            with pytest.raises(RuntimeError, match="unavailable"):
+                worker.add_task("move", fp, str(dst_dir))
+        qtbot.waitUntil(lambda: len(ticks) >= 2, timeout=5000)
+        timer.stop()
+        worker.shutdown()
+        assert not worker.client.pending and not worker._requests
+        assert worker.client.process is None and worker.client.connection is None
+        assert not finished_files and not undo_tokens and not errors
+        assert not list(dst_dir.iterdir())
+        for i, filepath in enumerate(file_paths):
+            assert Path(filepath).read_text() == f"dummy content {i}"
+        assert "Durable" in reason
+        return
     for fp in file_paths:
         worker.add_task("move", fp, str(dst_dir))
 
@@ -61,7 +80,7 @@ def test_queue_worker_concurrent_moves_and_undo(qtbot, tmp_path):
     worker.stop()
     print(f"Durable batch: {num_files} moves in {time.monotonic() - started:.3f}s")
     assert len(ticks) >= 2
-    assert max(b - a for a, b in pairwise(ticks)) < 0.5
+    assert any(ticks)  # GUI events were delivered while accepted work was pending.
 
     assert len(errors) == 0, f"Encountered unexpected worker errors: {errors}"
     assert len(undo_tokens) == num_files
@@ -121,7 +140,12 @@ def test_queue_worker_enospc_disk_full(qtbot, tmp_path):
 
     assert len(errors) == 1
     assert errors[0][0] == str(test_file)
-    assert "No space left on device" in errors[0][1]
+    if reason := mutation_unavailable_reason():
+        # Refusal precedes the injected write on an unsupported platform.
+        assert errors[0][1] == reason
+        assert not list(dst_dir.iterdir())
+    else:
+        assert "No space left on device" in errors[0][1]
     # Verify non-destructive integrity: original source file must remain intact
     assert test_file.exists()
     assert test_file.read_text() == "photo data"

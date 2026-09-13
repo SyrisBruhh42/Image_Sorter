@@ -9,6 +9,7 @@ import piexif
 
 from .file_safety import sync_directory
 from .logger import logger
+from .platform_capabilities import require_mutation_support
 
 
 class MetadataRecoveryError(OSError):
@@ -124,6 +125,8 @@ def write_metadata(
     sanitized = sanitize_tags(tags)
     if not sanitized:
         return
+    if write_exif or write_sidecar:
+        require_mutation_support()
 
     real_image_path = os.path.realpath(filepath)
     if not os.path.isfile(real_image_path) or os.path.islink(filepath):

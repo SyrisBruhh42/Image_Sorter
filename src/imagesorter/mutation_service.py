@@ -16,6 +16,7 @@ import threading
 import time
 from pathlib import Path
 
+from .platform_capabilities import require_mutation_support
 from .worker_protocol import (
     MAX_MESSAGE_BYTES,
     decode,
@@ -108,6 +109,7 @@ def main(args=None) -> int:
     parser.add_argument("--journal", required=True)
     parser.add_argument("--startup-fd", type=int)
     options = parser.parse_args(args)
+    require_mutation_support()
     _pin_runtime()
     from .operation_engine import OperationEngine
     from .operation_journal import OperationJournal

@@ -28,8 +28,11 @@ from imagesorter.worker_protocol import decode, encode, service_address, verify_
 
 
 def digest(path):
-    with Path(path).open("rb") as source:
-        return hashlib.file_digest(source, "sha256").hexdigest()
+    digest = hashlib.sha256()
+    with Path(path).open("rb") as stream:
+        for block in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
 
 
 def reference(path):

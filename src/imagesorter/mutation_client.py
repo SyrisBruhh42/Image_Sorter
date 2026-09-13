@@ -11,6 +11,7 @@ import weakref
 from PyQt6.QtCore import QObject, QTimer, pyqtSignal
 
 from .paths import get_data_dir, get_logs_dir
+from .platform_capabilities import mutation_unavailable_reason, require_mutation_support
 from .worker_protocol import (
     MAX_MESSAGE_BYTES,
     decode,
@@ -49,10 +50,13 @@ class MutationClient(QObject):
         self._startup_write = None
         self._timer = QTimer(self)
         self._timer.timeout.connect(self.poll)
-        self._timer.start(50)
+        self.unavailable_reason = mutation_unavailable_reason()
+        if self.unavailable_reason is None:
+            self._timer.start(50)
         _clients.add(self)
 
     def submit(self, request):
+        require_mutation_support()
         if self._closed:
             raise RuntimeError("Application is closing")
         if len(self.pending) >= self.MAX_PENDING and request["operation_id"] not in self.pending:
@@ -62,6 +66,8 @@ class MutationClient(QObject):
             self._outgoing += encode({"type": "submit", "request": request})
 
     def _connect(self):
+        if self.unavailable_reason is not None:
+            return
         connection = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         try:
             connection.connect(service_address(self.journal_path))
@@ -92,7 +98,7 @@ class MutationClient(QObject):
         self._outgoing = encode({"type": "hello"})
 
     def poll(self):
-        if self._closed:
+        if self._closed or self.unavailable_reason is not None:
             return
         if self.connection is None:
             self._connect()

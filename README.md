@@ -2,7 +2,10 @@
 
 Keyboard-first desktop image review and sorting for Linux, built with Python and
 PyQt6. Ubuntu 24.04 LTS with KDE Plasma/X11 is the primary target. Windows and
-macOS currently receive experimental smoke coverage.
+macOS receive experimental smoke coverage. Windows review and settings are
+experimental; durable sorting, Undo and metadata writes are unavailable there
+and are refused before admission or file changes. A Windows mutation backend
+requires separate qualification.
 
 [![CI](https://github.com/SyrisBruhh42/Image_Sorter/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/SyrisBruhh42/Image_Sorter/actions/workflows/ci.yml)
 [![Source: MIT](https://img.shields.io/badge/Source-MIT-yellow.svg)](LICENSE)

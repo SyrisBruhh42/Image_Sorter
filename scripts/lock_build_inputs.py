@@ -18,6 +18,14 @@ import zipfile
 from pathlib import Path
 
 
+def sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with Path(path).open("rb") as stream:
+        for block in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, required=True)
@@ -39,7 +47,7 @@ def main():
             if len(names) != 1:
                 raise ValueError("Ambiguous wheel metadata")
             metadata = email.message_from_bytes(archive.read(names[0]))
-        digest = hashlib.file_digest(path.open("rb"), "sha256").hexdigest()
+        digest = sha256_file(path)
         name, version = metadata["Name"], metadata["Version"]
         if installed.get(name) != version:
             raise ValueError(f"Resolved wheel differs from tested environment: {name}")

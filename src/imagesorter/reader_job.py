@@ -38,7 +38,11 @@ def _snapshot(source: str, directory: Path, *, identity_out=None) -> tuple[Path,
             raise ValueError("Reader input changed during snapshot")
         if identity_out is not None:
             identity_out["source_identity"] = list(identity(before))
-    destination.chmod(0o400)
+    # POSIX leaf containment uses read-only snapshots. Windows has no qualified
+    # leaf sandbox yet; its read-only attribute would also prevent cleanup of
+    # this private copy after the reader exits. Never change the original mode.
+    if os.name == "posix":
+        destination.chmod(0o400)
     return destination, digest.hexdigest()
 
 def execute(request: dict) -> dict:

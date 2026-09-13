@@ -150,3 +150,38 @@ evidence. The final receipt explicitly distinguishes source complete, binary
 publication not performed, and native release qualification incomplete. Until a
 receipt records those outcomes, this document describes the contract, not a claim
 that remote execution succeeded.
+
+
+## Hosted qualification findings and continuation
+
+The initial repaired candidate `e9a2bee201f1db093434725e84ef84ae604eba40`
+passed 1,020 local tests, but its first hosted runs exposed additional defects.
+Those failed runs remain historical evidence; their skipped dependent jobs do
+not count as acceptance. A new immutable continuation is required for the repairs.
+
+- Five standalone verification/build recipes used `hashlib.file_digest`, which
+  does not exist in Python 3.10. They now use bounded streaming SHA-256 without
+  adding uncaptured recipe dependencies or changing integrity expectations.
+- A platform-path test asserted Linux XDG locations on Windows/macOS. Tests now
+  exercise all native path contracts explicitly; native jobs use private profiles
+  and verify production path resolution stays inside them.
+- Fixed 0.5-second UI construction assumptions failed under hosted load. Real
+  worker barriers, thread identity and Qt event delivery now prove asynchronous
+  behavior. Deliberately synchronous implementations fail those regressions.
+- Windows lacks this mutation service's qualified Unix-socket, locking and
+  directory-durability implementation. Requests previously hung at socket startup;
+  direct metadata writes reached unsupported directory sync after file work.
+  Windows sorting, Undo and metadata writes now fail before admission/file changes.
+  Direct service startup and retained-material cleanup also refuse unsupported
+  execution; recovery admission errors leave records/history intact and reach the
+  UI as a clear status rather than an uncaught callback exception.
+  The experimental Windows smoke verifies actual image review, settings, preserved
+  bytes/history, responsive refusal of 200 requests, and no stranded helper or queue.
+  Linux/POSIX smoke retains all 200 actual move/Undo transactions and disk-full
+  preservation tests. Directory durability and POSIX reader isolation are unchanged.
+
+Windows read-only scratch attributes are omitted for private reader copies so
+successful reads can be cleaned up; original permissions are unchanged. Native
+reader containment on Windows/macOS remains unqualified. Full Windows file
+mutation support requires a separately designed and qualified backend and is not
+asserted by source integration. All mandatory hosted job groups still must pass.
