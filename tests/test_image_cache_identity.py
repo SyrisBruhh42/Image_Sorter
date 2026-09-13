@@ -1,6 +1,7 @@
 """Cache hits bind current bytes, decoder activation, frame and preview identity."""
 import os
 
+import pytest
 from PIL import Image
 from PyQt6.QtGui import QImage, QPixmap
 
@@ -85,6 +86,7 @@ def test_decoder_catalogue_reuse_still_observes_live_activation(tmp_path, monkey
     class Manager:
         def __init__(self, **kwargs):
             constructed.append(kwargs)
+            self.root = tmp_path.resolve()
 
         def active_path(self, _component_id):
             return active[0]
@@ -99,5 +101,19 @@ def test_decoder_catalogue_reuse_still_observes_live_activation(tmp_path, monkey
         assert len(constructed) == 1
         active[0] = None
         assert image_identity.decoder_identity("image.apng") == ("core.qt", "base")
+    finally:
+        image_identity._identity_manager.cache_clear()
+
+
+def test_decoder_identity_rejects_profile_switch_during_lookup(tmp_path, monkeypatch):
+    from imagesorter import component_manager, paths
+
+    original, changed = tmp_path / "original", tmp_path / "changed"
+    monkeypatch.setattr(paths, "get_components_dir", lambda: original)
+    monkeypatch.setattr(component_manager, "get_components_dir", lambda: changed)
+    image_identity._identity_manager.cache_clear()
+    try:
+        with pytest.raises(ValueError, match="Component profile changed"):
+            image_identity.decoder_identity("image.png")
     finally:
         image_identity._identity_manager.cache_clear()

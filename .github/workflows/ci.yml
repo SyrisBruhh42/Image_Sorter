@@ -112,7 +112,11 @@ jobs:
               raise RuntimeError("Native smoke state escaped its explicit temporary profile")
           print(f"Native smoke profile verified: {profile}")
           PYTHON
-          python -m pytest tests/test_core.py tests/test_settings_hardening.py tests/test_accessibility.py tests/test_concurrency.py tests/test_mutation_platform.py
+          native_tests=(tests/test_core.py tests/test_settings_hardening.py tests/test_accessibility.py tests/test_concurrency.py tests/test_mutation_platform.py)
+          if [[ "$RUNNER_OS" == "macOS" ]]; then
+            native_tests+=(tests/test_native_socket_address.py tests/test_native_socket_lifecycle.py)
+          fi
+          python -m pytest "${native_tests[@]}"
 
   linux-artifacts:
     name: Wheel, onedir, and AppImage

@@ -10,6 +10,7 @@ import select
 import selectors
 import shutil
 import socket
+import stat
 import sys
 import tempfile
 import threading
@@ -104,6 +105,18 @@ def _pin_runtime() -> None:
     environment.pop("LD_LIBRARY_PATH_ORIG", None)
     os.execve(executable, [str(executable), "--mutation-service", *sys.argv[sys.argv.index("--mutation-service") + 1:]], environment)
 
+def _remove_stale_socket(address: str) -> None:
+    """Called only after the journal lock; never remove unrelated endpoint files."""
+    if address.startswith("\0"):
+        return
+    try:
+        info = os.lstat(address)
+    except FileNotFoundError:
+        return
+    if not stat.S_ISSOCK(info.st_mode) or info.st_uid != os.getuid():
+        raise RuntimeError("Mutation socket path contains an unrelated or unsafe entry; preserved it")
+    os.unlink(address)
+
 def main(args=None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--journal", required=True)
@@ -135,8 +148,7 @@ def main(args=None) -> int:
         journal.reconcile_interrupted_operations(force=True)
         engine = OperationEngine(journal)
         address = service_address(options.journal)
-        if not address.startswith("\0") and os.path.exists(address):
-            os.unlink(address)
+        _remove_stale_socket(address)
         listener.bind(address)
         listener.listen(8)
         listener.setblocking(False)

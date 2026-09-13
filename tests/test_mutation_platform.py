@@ -1,4 +1,7 @@
 """Unsupported native mutations fail before admission or filesystem changes."""
+import hashlib
+import json
+import stat
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -89,7 +92,66 @@ def test_missing_unix_sockets_is_an_explicit_capability_failure(monkeypatch):
         platform_capabilities.require_mutation_support()
 
 
-def test_actual_image_review_and_gui_refusals_preserve_files_and_undo(qtbot, tmp_path, unsupported):
+@pytest.fixture(params=["native", "windows-directory-mode"])
+def component_directory_mode(request, monkeypatch):
+    from imagesorter import component_manager, image_identity
+
+    image_identity._identity_manager.cache_clear()
+    if request.param == "windows-directory-mode":
+        # Simulate only the directory permission evidence exposed by Windows.
+        # Keep the real manager, Qt, reader process, source stat, and bytes.
+        mode_api = SimpleNamespace(**{name: getattr(stat, name) for name in dir(stat)})
+        mode_api.S_IMODE = lambda mode: 0o777 if stat.S_ISDIR(mode) else stat.S_IMODE(mode)
+        monkeypatch.setattr(component_manager, "stat", mode_api)
+        from imagesorter.paths import get_components_dir
+        with pytest.raises(component_manager.ComponentError, match="private"):
+            component_manager.ComponentManager(root=get_components_dir())
+    yield request.param
+    image_identity._identity_manager.cache_clear()
+
+
+def _wait_for_review_image(qtbot, viewer, records, index):
+    try:
+        qtbot.waitUntil(lambda: viewer.current_index == index and viewer.viewer.isVisible()
+                       and not viewer.viewer.original_pixmap.isNull(), timeout=10000)
+    except Exception as exc:
+        from imagesorter.image_identity import cache_key
+        path = viewer.images[index] if index < len(viewer.images) else None
+        try:
+            identity = repr(cache_key(path)) if path else "No current image"
+        except Exception as identity_error:
+            identity = f"{type(identity_error).__name__}: {identity_error}"
+        diagnostic = {"current_index": viewer.current_index, "expected_index": index,
+                      "status": viewer.statusBar().currentMessage(), "empty_label": viewer.empty_label.text(),
+                      "cache_identity": identity, "recent_reader_results": records[-4:],
+                      "decode_contexts": {key: repr(value) for key, value in viewer._decode_contexts.items()}}
+        pytest.fail(f"Image was not presented: {json.dumps(diagnostic, default=str)}; wait error: {exc}")
+
+
+def test_actual_png_reader_preserves_binary_pixels_and_source_identity(tmp_path, qapp):
+    from PIL import Image
+
+    from imagesorter.image_identity import cache_key, matches_metadata
+    from imagesorter.reader_process import run_reader
+
+    source = tmp_path / "binary-pixels.png"
+    # CR, LF, and DOS EOF values expose text-mode translation in either the
+    # original snapshot or returned RGBA descriptor, on an actual native run.
+    expected = bytes((13, 10, 26, 255, 26, 13, 10, 255, 10, 26, 13, 255,
+                      0, 255, 13, 255, 26, 0, 10, 255, 255, 26, 0, 255))
+    Image.frombytes("RGBA", (3, 2), expected).save(source)
+    before = source.read_bytes(), source.stat().st_mode
+    metadata, pixels = run_reader({"action": "decode", "request_id": "native-binary-pixels", "filepath": str(source)})
+    assert pixels == expected
+    assert (metadata["width"], metadata["height"], metadata["stride"]) == (3, 2, 12)
+    assert metadata["input_sha256"] == hashlib.sha256(before[0]).hexdigest()
+    assert metadata["decoder_identity"] == ["core.qt", "base"]
+    assert matches_metadata(cache_key(source), metadata), metadata
+    assert (source.read_bytes(), source.stat().st_mode) == before
+
+
+def test_actual_image_review_and_gui_refusals_preserve_files_and_undo(
+        qtbot, tmp_path, unsupported, component_directory_mode):
     from PIL import Image
     from PyQt6.QtCore import Qt
     from PyQt6.QtWidgets import QApplication
@@ -107,9 +169,12 @@ def test_actual_image_review_and_gui_refusals_preserve_files_and_undo(qtbot, tmp
     settings.set('hotkeys', 'M', {'action': 'move', 'folder': str(target), 'auto_advance': True})
     viewer = MainViewer(settings)
     qtbot.addWidget(viewer)
+    records = []
+    viewer.loader.image_ready.connect(lambda result: records.append(
+        {key: value for key, value in result.items() if key != "image"}))
     viewer.show()
     QApplication.setActiveWindow(viewer)
-    qtbot.waitUntil(lambda: viewer.viewer.isVisible() and not viewer.viewer.original_pixmap.isNull(), timeout=10000)
+    _wait_for_review_image(qtbot, viewer, records, 0)
     assert viewer.viewer.original_pixmap.width() == 96
     viewer.viewer.setFocus()
     qtbot.keyClick(viewer, Qt.Key.Key_M)
@@ -124,7 +189,7 @@ def test_actual_image_review_and_gui_refusals_preserve_files_and_undo(qtbot, tmp
     assert {p.name: (p.read_bytes(), p.stat().st_mode) for p in source.iterdir()} == before
     assert not list(target.iterdir())
     qtbot.keyClick(viewer, Qt.Key.Key_Right)
-    qtbot.waitUntil(lambda: viewer.current_index == 1 and viewer.viewer.isVisible(), timeout=10000)
+    _wait_for_review_image(qtbot, viewer, records, 1)
     assert '1.png' in viewer.windowTitle()
 
 

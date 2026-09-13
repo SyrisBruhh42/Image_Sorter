@@ -5,6 +5,7 @@ import hashlib
 import json
 import os
 import socket
+import stat
 import sys
 from pathlib import Path
 
@@ -42,11 +43,39 @@ def worker_environment() -> dict[str, str]:
     env["PYTHONDONTWRITEBYTECODE"] = "1"
     return env
 
+def _checked_socket_base(path: Path = Path("/tmp")) -> Path:
+    # macOS TMPDIR and application profiles can exceed sockaddr_un.sun_path.
+    # Resolve the legitimate /tmp -> /private/tmp link, then trust only the
+    # system-owned sticky directory rather than a caller-controlled TMPDIR.
+    base = path.resolve(strict=True)
+    info = base.lstat()
+    if not stat.S_ISDIR(info.st_mode) or info.st_uid != 0 or not info.st_mode & stat.S_ISVTX:
+        raise PermissionError("Mutation socket base must be a system-owned sticky directory")
+    return base
+
+
+def _private_socket_directory() -> Path:
+    directory = _checked_socket_base() / f"imagesorter-sockets-{os.getuid()}"
+    try:
+        directory.mkdir(mode=0o700)
+    except FileExistsError:
+        pass
+    info = directory.lstat()
+    if (not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid() or
+            stat.S_IMODE(info.st_mode) != 0o700):
+        raise PermissionError("Mutation socket directory must be owned by the current user with mode 0700 and no symlink")
+    return directory
+
+
 def service_address(db_path: str) -> str:
     digest = hashlib.sha256(os.path.realpath(db_path).encode()).hexdigest()[:32]
     if sys.platform.startswith("linux"):
         return f"\0imagesorter-{os.getuid()}-{digest}"
-    return str(Path(db_path).parent / "mutation.sock")
+    address = str(_private_socket_directory() / f"{digest}.sock")
+    # Darwin's sun_path holds 104 bytes including its terminating NUL.
+    if len(os.fsencode(address)) > 103:
+        raise ValueError("Mutation socket address exceeds the supported pathname limit")
+    return address
 
 def verify_peer(connection: socket.socket) -> None:
     if hasattr(socket, "SO_PEERCRED"):

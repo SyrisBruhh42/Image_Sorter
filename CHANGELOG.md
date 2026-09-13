@@ -77,3 +77,10 @@ source acceptance never certifies a native or redistributable release.
   malformed metadata, sidecar conflicts, and ambiguous recovery state.
 - Model and AppImage build-tool downloads are pinned and SHA-256 verified before
   activation or execution.
+
+### Source integration continuation: native startup and image identity
+
+- Repaired macOS pathname sockets for long isolated profile paths using a short, private, user-owned endpoint directory. Linux abstract sockets are unchanged. Unrelated endpoint files are preserved, and connection failures retain operation IDs with visible diagnostics.
+- Worker request bookkeeping and enrichment cancellation now follow successful admission.
+- The viewer and decoder use the same default component-store contract for cache identity, preserving Windows base-image display without relaxing component verification.
+- Preserved the second candidate's hosted failures. Its Python 3.10–3.12, X11, pinned CPU inference and artifact jobs passed; Windows/macOS smoke failures still required these repairs and a new exact-candidate run.

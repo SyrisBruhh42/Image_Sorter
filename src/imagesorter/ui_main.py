@@ -1254,7 +1254,7 @@ class MainViewer(QMainWindow):
         try:
             admitted = self.worker.add_task(action, filepath, dest_folder, operation_id=op_id,
                                            task_options=TaskOptions(view_generation=self.load_generation))
-        except (RuntimeError, OverflowError, OSError) as exc:
+        except (RuntimeError, OverflowError, OSError, ValueError, TypeError) as exc:
             self.pending_ops.pop(op_id, None)
             self.statusBar().showMessage(f'Operation was not queued: {exc}', 5000)
             return None
@@ -1555,7 +1555,7 @@ class MainViewer(QMainWindow):
                                            original if action != 'copy' else None,
                                            undo_token=token, operation_id=op_id,
                                            task_options=TaskOptions(view_generation=self.load_generation))
-        except (RuntimeError, OverflowError, OSError) as exc:
+        except (RuntimeError, OverflowError, OSError, ValueError, TypeError) as exc:
             self.pending_ops.pop(op_id, None)
             self.statusBar().showMessage(f'Undo was not queued: {exc}', 5000)
             return
@@ -1673,7 +1673,7 @@ class MainViewer(QMainWindow):
             return None
         try:
             operation_id = self.worker.add_recovery_task(record, task_options=TaskOptions(view_generation=self.load_generation))
-        except (RuntimeError, OverflowError, OSError) as exc:
+        except (RuntimeError, OverflowError, OSError, ValueError, TypeError) as exc:
             self.statusBar().showMessage(f'Recovery was not queued: {exc}', 7000)
             return None
         if operation_id:

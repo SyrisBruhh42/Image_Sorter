@@ -27,7 +27,13 @@ def _identity_manager(root, catalogue, catalogue_identity):
     independently validate and lease the exact installed component version.
     """
     from .component_manager import ComponentManager
-    return ComponentManager(root=Path(root), catalog_path=Path(catalogue))
+    # Match the reader's default-profile contract. The root argument partitions
+    # this cache by profile; it is not an explicit component-store override,
+    # whose stricter POSIX permission check is unsuitable for Windows mode bits.
+    manager = ComponentManager(catalog_path=Path(catalogue))
+    if manager.root != Path(root).resolve():
+        raise ValueError("Component profile changed during cache identity lookup")
+    return manager
 
 
 def decoder_identity(path):

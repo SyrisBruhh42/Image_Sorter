@@ -80,6 +80,7 @@ class QueueWorker(QObject):
         request = {"operation_id": operation_id, "action": task_type,
                    "source_path": filepath, "destination_path": dest_folder,
                    "undo_token": undo_token, "task_options": options}
+        self.client.submit(request)
         if task_type.startswith("undo") and undo_token:
             parent_id = self._enrichment_tokens.get(undo_token.get("token_id"))
             if parent_id:
@@ -91,7 +92,6 @@ class QueueWorker(QObject):
                 if original.get("destination_path") == filepath or reader.filepath == filepath:
                     reader.requestInterruption()
         self._requests[operation_id] = request
-        self.client.submit(request)
         return operation_id
 
     def _result(self, result):
@@ -134,8 +134,8 @@ class QueueWorker(QObject):
         request = {"operation_id": operation_id, "action": "recover", "source_path": record["source_path"],
                    "target_operation_id": record["operation_id"], "recovery_action": "rollback",
                    "task_options": options}
-        self._requests[operation_id] = request
         self.client.submit(request)
+        self._requests[operation_id] = request
         return operation_id
 
     def _start_enrichment(self, operation_id, filepath, snapshot):

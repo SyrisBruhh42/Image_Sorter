@@ -233,14 +233,22 @@ def test_real_metadata_child_failure_keeps_gui_primary_undo(qtbot, review):
     assert original.read_bytes() == original_bytes and not (target / '0.jpg').exists()
 
 
-def test_undo_admission_refusal_preserves_token_for_retry(qtbot, review, monkeypatch):
+@pytest.mark.parametrize("rejection", ["queue_full", "oversized", "non_json"])
+def test_undo_admission_refusal_preserves_token_for_retry(qtbot, review, monkeypatch, rejection):
     viewer, source, target, _other = review
     press(qtbot, viewer, Qt.Key.Key_J)
     qtbot.waitUntil(lambda: len(viewer.history) == 1, timeout=10000)
     token = copy.deepcopy(viewer.history[-1])
     with monkeypatch.context() as patch:
-        patch.setattr(viewer.worker.client, 'MAX_PENDING', 0)
+        if rejection == "queue_full":
+            patch.setattr(viewer.worker.client, 'MAX_PENDING', 0)
+        else:
+            snapshot = viewer.settings.snapshot()
+            snapshot['invalid_request'] = 'x' * (1024 * 1024 + 1) if rejection == 'oversized' else object()
+            patch.setattr(viewer.settings, 'snapshot', lambda: snapshot)
         press(qtbot, viewer, Qt.Key.Key_Z, Qt.KeyboardModifier.ControlModifier)
+        assert not viewer.worker.client.pending and not viewer.worker._requests
+        assert not viewer._undo_inflight
         assert viewer.history == [token]
         assert (target / '0.jpg').exists() and not (source / '0.jpg').exists()
     press(qtbot, viewer, Qt.Key.Key_Z, Qt.KeyboardModifier.ControlModifier)
@@ -397,3 +405,21 @@ def test_editor_focus_keeps_escape_and_undo_inside_editor(qtbot, review):
     undo_menu_action.trigger()
     settled(qtbot, viewer)
     assert not viewer.history and not (target / '0.jpg').exists()
+
+
+@pytest.mark.parametrize('invalid_value', ['x' * (1024 * 1024 + 1), object()], ids=['oversized', 'non-json'])
+def test_primary_serialization_refusal_leaves_image_interactive(qtbot, review, monkeypatch, invalid_value):
+    viewer, source, target, _other = review
+    original_bytes = (source / '0.jpg').read_bytes()
+    with monkeypatch.context() as patch:
+        snapshot = viewer.settings.snapshot()
+        snapshot['invalid_request'] = invalid_value
+        patch.setattr(viewer.settings, 'snapshot', lambda: snapshot)
+        press(qtbot, viewer, Qt.Key.Key_M)
+        assert viewer._held_move is None and not viewer.pending_ops and not viewer.history
+        assert not viewer.worker.client.pending and not viewer.worker._requests
+        assert 'Operation was not queued' in viewer.statusBar().currentMessage()
+        assert (source / '0.jpg').read_bytes() == original_bytes and not (target / '0.jpg').exists()
+    press(qtbot, viewer, Qt.Key.Key_M)
+    qtbot.waitUntil(lambda: viewer._held_move is not None and viewer._held_move.completed, timeout=10000)
+    assert (target / '0.jpg').read_bytes() == original_bytes

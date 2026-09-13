@@ -48,6 +48,7 @@ class MutationClient(QObject):
         self._closed = False
         self._last_spawn = 0.0
         self._startup_write = None
+        self._startup_error = None
         self._timer = QTimer(self)
         self._timer.timeout.connect(self.poll)
         self.unavailable_reason = mutation_unavailable_reason()
@@ -61,16 +62,19 @@ class MutationClient(QObject):
             raise RuntimeError("Application is closing")
         if len(self.pending) >= self.MAX_PENDING and request["operation_id"] not in self.pending:
             raise OverflowError("File-operation backlog is full; wait for accepted operations to finish")
+        payload = encode({"type": "submit", "request": request})
+        service_address(self.journal_path)  # Refuse unsafe socket preparation before admission.
         self.pending[request["operation_id"]] = request
         if self._ready:
-            self._outgoing += encode({"type": "submit", "request": request})
+            self._outgoing += payload
 
     def _connect(self):
         if self.unavailable_reason is not None:
             return
+        address = service_address(self.journal_path)
         connection = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         try:
-            connection.connect(service_address(self.journal_path))
+            connection.connect(address)
             verify_peer(connection)
         except OSError:
             connection.close()
@@ -101,9 +105,22 @@ class MutationClient(QObject):
         if self._closed or self.unavailable_reason is not None:
             return
         if self.connection is None:
-            self._connect()
-            if self.connection is None:
+            try:
+                self._connect()
+            except (OSError, RuntimeError, ValueError) as exc:
+                detail = f"File-operation service could not connect: {exc}. Pending operation IDs are preserved."
+                if detail != self._startup_error:
+                    self.status.emit(detail)
+                    self._startup_error = detail
                 return
+            if self.connection is None:
+                if self.process is not None and self.process.poll() not in (None, 0):
+                    detail = f"File-operation service exited ({self.process.returncode}); pending operation IDs are preserved. See mutation-service.log."
+                    if detail != self._startup_error:
+                        self.status.emit(detail)
+                        self._startup_error = detail
+                return
+            self._startup_error = None
         try:
             if self._outgoing:
                 try:

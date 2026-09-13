@@ -185,3 +185,13 @@ successful reads can be cleaned up; original permissions are unchanged. Native
 reader containment on Windows/macOS remains unqualified. Full Windows file
 mutation support requires a separately designed and qualified backend and is not
 asserted by source integration. All mandatory hosted job groups still must pass.
+
+## Second hosted checkpoint and native repairs
+
+Candidate `3655b424bb1b4fd1edfe2cf4c7a8192526c3c418` passed 1,077 local tests with no skips. Hosted push run `34788260404` and PR run `34788262580` passed Python 3.10, 3.11 and 3.12 (1,076 tests each; packaging runs separately), X11 (12 tests), pinned CPU inference, and actual wheel/standalone/AppImage build and smoke checks. Both aggregate checks failed because each native matrix had one remaining failure; none of their jobs were skipped. Preserve those failed receipts as evidence.
+
+The macOS isolated profile produced a 160-byte Unix-socket path, exceeding the native pathname limit and leaving 200 operation IDs waiting for a helper that could not bind. The repaired non-Linux POSIX address uses a canonical journal hash under a checked system temporary directory and a private 0700 directory owned by the current user. It rejects unsafe ownership, modes and symlinks. Journal/profile locations and the Linux abstract address remain unchanged. Under the held journal lock, startup removes only an existing socket owned by the same user, preserving unrelated files. Startup failure is visible and pending journal identities remain intact; no unsuccessful operation is manufactured as a success.
+
+Windows decoded-image presentation was blocked by a mismatch between viewer cache identity and reader component-store construction. The viewer now uses the same default-store contract as the reader, retaining the profile root in its cache partition. Component payload, compatibility, permission and execution checks are unchanged. Windows durable mutation remains explicitly unavailable.
+
+Native smoke retains its original test selection and adds real pathname-socket cases on macOS. Local tests also exercise endpoint preservation, real long-profile move/Undo, actual generated-image presentation and failed-admission bookkeeping. These repairs require a new immutable continuation, successful exact-candidate hosted checks, actual-merge checks and independent checkout validation before default switching. They do not qualify a full native release.
