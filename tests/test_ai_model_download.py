@@ -199,7 +199,7 @@ def test_ui_settings_validation_and_control_states(qtbot, tmp_path):
             # UI should uncheck and disable the checkbox because files are invalid
             assert win.chk_ai_enable.isChecked() is False
             assert win.chk_ai_enable.isEnabled() is False
-            assert win.btn_download_model.text() == "Download Model"
+            assert win.btn_download_model.text() == "Manage AI Model…"
             assert win.btn_download_model.isEnabled() is True
 
             # Download opens the managed component controls; it never invokes
@@ -225,11 +225,11 @@ def test_ui_settings_validation_and_control_states(qtbot, tmp_path):
             # Re-initialize or refresh status
             win.refresh_ai_model_status()
             qtbot.waitUntil(
-                lambda: win.btn_download_model.text() == "Model Downloaded",
+                lambda: win.btn_download_model.text() == "Manage AI Model…",
                 timeout=3000,
             )
-            assert win.btn_download_model.text() == "Model Downloaded"
-            assert win.btn_download_model.isEnabled() is False
+            assert win.btn_download_model.text() == "Manage AI Model…"
+            assert win.btn_download_model.isEnabled() is True
             assert win.chk_ai_enable.isEnabled() is True
 
 

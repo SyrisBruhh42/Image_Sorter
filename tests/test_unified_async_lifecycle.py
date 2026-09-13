@@ -56,7 +56,7 @@ def test_model_integrity_check_does_not_block_settings_dialog(qtbot, tmp_path):
         assert window.btn_download_model.text() == "Checking Model…"
         release.set()
         qtbot.waitUntil(
-            lambda: window.btn_download_model.text() == "Download Model",
+            lambda: window.btn_download_model.text() == "Manage AI Model…",
             timeout=3000,
         )
 

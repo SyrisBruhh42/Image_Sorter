@@ -35,3 +35,18 @@ def test_declined_recovery_does_not_submit(qtbot, tmp_path, monkeypatch):
     monkeypatch.setattr(QMessageBox, "question", lambda *args: QMessageBox.StandardButton.No)
     assert viewer.request_recovery(record) is None
     assert not viewer.worker.client.pending
+
+
+def test_recovery_submission_preserves_view_generation(qtbot, tmp_path, monkeypatch):
+    from imagesorter.operation_contracts import TaskOptions
+
+    viewer = MainViewer(SettingsManager(filepath=str(tmp_path / "settings.json")), initial_paths=[])
+    qtbot.addWidget(viewer)
+    submitted = []
+    monkeypatch.setattr(viewer.worker.client, "submit", submitted.append)
+    record = {"operation_id": "owned", "source_path": str(tmp_path / "original.jpg"),
+              "state": "recovery_required", "manifest": {"version": 2, "mode": "move"}}
+    operation_id = viewer.worker.add_recovery_task(record, task_options=TaskOptions(view_generation=42))
+    assert submitted[0]["operation_id"] == operation_id
+    assert submitted[0]["task_options"]["view_generation"] == 42
+    assert submitted[0]["task_options"]["settings_snapshot"] == viewer.settings.snapshot()

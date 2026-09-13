@@ -275,3 +275,26 @@ def test_cpu_only_selection_never_attempts_gpu(host_boundary):
     result = infer_host(host_boundary, hardware=False)
     assert host_boundary["calls"] == ["core.cpu"]
     assert "cuda_precision" not in result and result["fallback_reason"] is None
+
+
+@pytest.mark.parametrize("threshold, expected", [(0.0, ["cat", "dog", "bird"]), (0.5, ["cat"]), (1.0, [])])
+def test_active_helper_filters_canonical_ranked_predictions(worker_boundary, threshold, expected):
+    _, request = worker_boundary
+    request["threshold"] = threshold
+    result, _ = component_worker.infer(request, "core.cpu")
+    assert [row["tag"] for row in result["tags"]] == expected
+
+
+def test_active_helper_includes_threshold_boundary_and_caps_ten(worker_boundary, monkeypatch):
+    _, request = worker_boundary
+    labels = Path(request["model_dir"]) / "labels.txt"
+    labels.write_text("".join(f"label-{i}\n" for i in range(12)))
+    request["labels_sha256"] = hashlib.sha256(labels.read_bytes()).hexdigest()
+    # Twelve equal probabilities isolate inclusive comparison and the fixed top-ten cap.
+    scores = np.full((1, 12), 1 / 12, dtype=np.float32)
+    request["threshold"] = float(scores[0, 0])
+    session = sys.modules["onnxruntime"].InferenceSession
+    monkeypatch.setattr(session, "run", lambda *_args: [scores])
+    result, _ = component_worker.infer(request, "core.cpu")
+    assert len(result["tags"]) == 10
+    assert all(row["score"] == request["threshold"] for row in result["tags"])

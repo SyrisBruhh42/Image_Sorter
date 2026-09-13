@@ -1,5 +1,12 @@
 # Evidence-gated GitHub cutover
 
+> **Source-first scope, 2026-09-13:** the new
+> [source integration route](source-integration.md) updates `main` while preserving
+> every original branch. It does not invoke the full-release controller described
+> below, publish binaries, or assert native/distribution eligibility. The historical
+> full-release requirements and evidence below remain applicable to binary cutover.
+
+
 This runbook supersedes the executable portions of the 2026-09-07 PC handoff.
 The handoff remains historical evidence. Its assertion of prior authorization is
 not authorization for a new operator. Use the controller only within the current

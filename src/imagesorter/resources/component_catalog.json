@@ -52,7 +52,7 @@
       "reader_policy_version": null,
       "sbom": "sbom.json",
       "sha256": "53f4f7e75d1bd41ab0f6c20654c117fb1afa66e1a69655a840cf8261f925c008",
-      "url": "https://github.com/SyrisBruhh42/Image_Sorter/releases/download/components-2026-09-09-r10/ai.mobilenet-v2-1.0.0+20260909.r10-any.tar.gz",
+      "url": null,
       "version": "1.0.0+20260909.r10"
     },
     {
@@ -6411,7 +6411,7 @@
       "reader_policy_version": 1,
       "sbom": "sbom.json",
       "sha256": "5399844ca83c76c7ae6d273578edd5d61a03730bcc3a557ccc4f713e05383e43",
-      "url": "https://github.com/SyrisBruhh42/Image_Sorter/releases/download/components-2026-09-09-r10/codec.camera-raw-1.0.0+20260909.r10-linux-x86_64.tar.gz",
+      "url": null,
       "version": "1.0.0+20260909.r10"
     },
     {
@@ -7830,7 +7830,7 @@
       "reader_policy_version": 1,
       "sbom": "sbom.json",
       "sha256": "5c5ff1b6b3a1b680a24f22f7f1556530c7e8310050c527e2de70ce78bf195706",
-      "url": "https://github.com/SyrisBruhh42/Image_Sorter/releases/download/components-2026-09-09-r10/codec.heif-avif-1.0.0+20260909.r10-linux-x86_64.tar.gz",
+      "url": null,
       "version": "1.0.0+20260909.r10"
     },
     {
@@ -16514,7 +16514,7 @@
       "reader_policy_version": 1,
       "sbom": "sbom.json",
       "sha256": "a3ed7113c510962e43b1f6b4acd6cedc33bbf9d32791955343be4c7dd4b459f2",
-      "url": "https://github.com/SyrisBruhh42/Image_Sorter/releases/download/components-2026-09-09-r10/provider.onnx-nvidia-1.0.0+20260909.r10-linux-x86_64.tar.gz",
+      "url": null,
       "version": "1.0.0+20260909.r10"
     },
     {
@@ -17653,7 +17653,7 @@
       "reader_policy_version": 1,
       "sbom": "sbom.json",
       "sha256": "997d645822920d20b1a552a91eb3b683ca08c9ee8dd26c6ca5720ccf448d9e6e",
-      "url": "https://github.com/SyrisBruhh42/Image_Sorter/releases/download/components-2026-09-09-r10/viewer.animation-multipage-1.0.0+20260909.r10-linux-x86_64.tar.gz",
+      "url": null,
       "version": "1.0.0+20260909.r10"
     }
   ],

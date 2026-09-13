@@ -10,9 +10,11 @@ macOS currently receive experimental smoke coverage.
 
 ## Current capabilities
 
-The cutover candidate is under qualification. Implemented behavior below is not
-a claim that publication, the full native matrix, or the GitHub cutover has
-passed. See the [qualification gates](docs/engineering/integration-status.md).
+This beta source integrates the local safety, recovery, viewer and optional-component
+improvements. Source integration and downloadable releases have separate gates:
+this update publishes source only. Full native desktop and binary distribution
+qualification remain incomplete. See [source integration](docs/engineering/source-integration.md)
+and the [qualification history](docs/engineering/integration-status.md).
 
 - Open one or more images or scan a selected directory.
 - Review with keyboard navigation, zoom, pan, a compact HUD, clipping warnings,
@@ -27,8 +29,12 @@ passed. See the [qualification gates](docs/engineering/integration-status.md).
   journal and versioned file-set manifests. Unresolved material is retained;
   journal replay is paginated rather than deleting safety history to bound it.
 - Optionally write merged tags to JPEG EXIF XPKeywords and/or `.txt` sidecars.
-- Optionally download and run a pinned MobileNetV2 ONNX model. Model weights and
-  labels are not bundled and no first-run download occurs.
+- Optionally import and run a pinned MobileNetV2 ONNX model. Model weights and
+  labels are not bundled; online component downloads are unavailable in this
+  source-only delivery. No first-run download occurs.
+- Keep a moved image visible when Auto Advance is off. Its held preview is read-only;
+  Next/Previous resumes the source queue, and Undo restores normal interaction.
+- Keep the current folder independent of operations that finish after a folder change.
 
 The file-operation safeguards reduce accidental loss, but this is beta software.
 Use test copies until it has been qualified with your own filesystem and backup
@@ -42,7 +48,7 @@ opt-in packs; only catalogued, platform-compatible versions can be activated:
 
 | Component | Behavior |
 | --- | --- |
-| `ai.mobilenet-v2` | Hash-verified model and labels, explicit download/pack import or verified legacy import; isolated CPU inference. |
+| `ai.mobilenet-v2` | Hash-verified model and labels through pack or verified legacy import; isolated CPU inference. |
 | `provider.onnx-nvidia` | Separate CUDA/cuDNN runtime, actual compute probe and one explicit CPU fallback; never replaces the driver. |
 | `codec.heif-avif` | Decoder-only HEIF/HEIC and Pillow AVIF, with orientation, transparency, color conversion and resource bounds. |
 | `codec.camera-raw` | CR2, NEF, ARW, DNG, ORF, RW2, PEF, RAF and SRW previews through LibRaw; camera-specific unsupported variants receive errors. |
@@ -51,10 +57,13 @@ opt-in packs; only catalogued, platform-compatible versions can be activated:
 Install, cancel, enable/disable, verify, update, rollback, remove and interrupted
 installation recovery are explicit actions. Opening the application or Components
 does not access the network. Failed updates preserve the working version; active
-readers hold removal leases. The source-controlled catalogue may intentionally be
-empty while release qualification or distribution rights are unresolved.
+readers hold removal leases. All five catalogue descriptors remain available, with
+unchanged archive identities, but online Install/Update is disabled until reviewed
+release assets exist. Use **Import pack…** or **Import existing model…** for verified
+local inputs. Installed compatible packs remain usable. A fresh source clone does
+not include these optional binaries or depend on another machine's profile.
 
-## Install for development
+## Clean local installation
 
 Prerequisites are Python 3.10 or newer and the Qt runtime libraries required by
 your display backend. On Ubuntu 24.04:
@@ -66,8 +75,11 @@ git clone https://github.com/SyrisBruhh42/Image_Sorter.git
 cd Image_Sorter
 python3 -m venv .venv
 source .venv/bin/activate
-python -m pip install -e ".[dev]"
+python -m pip install .
 ```
+
+For development and tests, use `python -m pip install -e ".[dev]"` instead.
+Neither installation includes optional component packs or model weights.
 
 Launch it with a configured source directory, an image, or a directory:
 
@@ -105,10 +117,18 @@ their fixed behavior.
 
 ## Optional local AI
 
-Open Settings → AI & Metadata and choose **Download Model**. The downloader uses
-pinned HTTPS URLs, writes to a temporary file, verifies SHA-256, and atomically
-activates the model and label files under the application data directory. AI is
-off by default and ordinary image review remains available without those files.
+Open Settings → Components and import a checksum-verified model pack or existing
+pinned model/label directory. Enable that component, then enable AI in AI & Metadata.
+AI is off by default; ordinary image review works without a model. The confidence
+control ranges from 0 to 1 (default 0.5); the active component pipeline returns up
+to ten labels with scores greater than or equal to the threshold. Classification
+runs after move/copy, with the primary transfer committed before enrichment.
+
+The retained legacy `model_path` setting is deprecated and does not select arbitrary
+models. Model selection uses the verified component store. The image-details AI
+option displays activity status, not a persistent tag editor or tag browser.
+Catalogue versions, prerequisites and the historical proposed download locations
+are documented in [source integration](docs/engineering/source-integration.md).
 
 The base Python dependency set includes CPU ONNX Runtime. GPU libraries live only
 in the separate provider pack. Actual provider, fallback and component/model
@@ -154,9 +174,10 @@ python build_desktop.py
 
 `python build_desktop.py` creates a PyInstaller onedir build under
 `dist/ImageSorter/`. On Linux x86_64, `python build_desktop.py --appimage`
-additionally requires a verified
-AppImage. The build script downloads only the pinned `appimagetool` 1.9.1 binary,
-verifies its digest, and fails if the requested artifact is absent.
+also builds and verifies an AppImage. The build script downloads the pinned
+`appimagetool` 1.9.1 and AppImage runtime inputs, verifies their digests, and fails
+if the requested artifact is absent. These commands build locally; they publish
+no artifacts.
 
 Ubuntu 24.04 may require `libfuse2t64` to mount an AppImage. Extraction is the
 FUSE-free fallback:

@@ -19,7 +19,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from .component_manager import ComponentManager
+from .component_manager import DOWNLOAD_UNAVAILABLE, ComponentManager
 from .component_runtime import component_job_command
 
 
@@ -29,6 +29,7 @@ class ComponentsPanel(QWidget):
         self.setAccessibleName("Optional components")
         self.process = None
         self.pending_output = b""
+        self.component_status = {}
         layout = QVBoxLayout(self)
         description = QLabel("Install only the capabilities you choose. The base sorter works offline without downloads.")
         description.setWordWrap(True)
@@ -63,7 +64,11 @@ class ComponentsPanel(QWidget):
         self.cancel_button.clicked.connect(self.cancel)
         row.addWidget(self.cancel_button)
         layout.addLayout(row)
-        self.status_label = QLabel("No network activity occurs until Install is requested.")
+        self.download_label = QLabel()
+        self.download_label.setWordWrap(True)
+        self.download_label.setAccessibleName("Component download availability")
+        layout.addWidget(self.download_label)
+        self.status_label = QLabel("No network activity occurs until an available download is requested.")
         self.status_label.setWordWrap(True)
         self.status_label.setAccessibleName("Component operation status")
         layout.addWidget(self.status_label)
@@ -71,7 +76,16 @@ class ComponentsPanel(QWidget):
         self.provider_label.setWordWrap(True)
         self.provider_label.setAccessibleName("Actual inference provider and fallback")
         layout.addWidget(self.provider_label)
+        self.component.currentTextChanged.connect(self.update_actions)
+        self.action.currentIndexChanged.connect(self.update_actions)
         self.refresh()
+
+    def update_actions(self, *_args):
+        entry = self.component_status.get(self.component.currentText(), {})
+        available = entry.get("download_available", False)
+        self.download_label.setText("Verified download available." if available else DOWNLOAD_UNAVAILABLE)
+        self.run_button.setEnabled(self.process is None and
+                                   (self.action.currentData() != "install" or available))
 
     def refresh(self):
         try:
@@ -79,6 +93,7 @@ class ComponentsPanel(QWidget):
         except Exception as exc:
             self.status_label.setText(f"Component store requires attention: {exc}")
             return
+        self.component_status = {entry["id"]: entry for entry in rows}
         selected = self.component.currentText()
         self.component.clear()
         self.table.setRowCount(len(rows))
@@ -90,11 +105,13 @@ class ComponentsPanel(QWidget):
             if entry.get("pending_jobs"):
                 state += f'; {len(entry["pending_jobs"])} pending/recovery record(s)'
             values = [entry["id"], entry["active"] or "—", state,
-                      f'{entry["archive_size"] / 1048576:.1f} MiB', f'{entry["installed_size"] / 1048576:.1f} MiB']
+                      (f'{entry["archive_size"] / 1048576:.1f} MiB' if entry.get("download_available") else "Unavailable"),
+                      f'{entry["installed_size"] / 1048576:.1f} MiB']
             for column, value in enumerate(values):
                 self.table.setItem(index, column, QTableWidgetItem(value))
         self.component.setCurrentText(selected)
         self.table.resizeColumnsToContents()
+        self.update_actions()
         parent = self.parent()
         while parent is not None:
             worker = getattr(parent, "worker", None)
@@ -108,6 +125,9 @@ class ComponentsPanel(QWidget):
 
     def apply(self):
         action = self.action.currentData()
+        if action == "install" and not self.component_status.get(self.component.currentText(), {}).get("download_available"):
+            self.download_label.setText(DOWNLOAD_UNAVAILABLE)
+            return
         if action in {"install", "remove", "rollback"}:
             text = ("Download and activate the selected verified component?" if action == "install" else
                     "Apply this component change? Active file operations and recovery material are preserved.")
@@ -179,6 +199,14 @@ class ComponentsPanel(QWidget):
         if code == 0:
             self.status_label.setText("Component operation completed and verified.")
         self.refresh()
+        if code == 0:
+            parent = self.parent()
+            while parent is not None:
+                if hasattr(parent, "refresh_ai_model_status"):
+                    if not parent._close_pending:
+                        parent.refresh_ai_model_status()
+                    break
+                parent = parent.parent()
 
     def cancel(self):
         if self.process:

@@ -5,6 +5,20 @@ currently `0.1.0.dev0`.
 
 ## Unreleased
 
+### Source integration, 2026-09-13
+
+- Preserve all original GitHub branches through a separately gated source-only
+  integration into a new protected `main`; retain binary/native release gates.
+- Isolate late file-operation results by view generation, keep rejected Undo
+  requests in history, and ignore duplicate or older metadata token revisions.
+- Honor move Auto Advance with a held read-only preview and explicit navigation;
+  route Escape through one fullscreen/Zen/exit handler.
+- Expose the existing AI confidence threshold and persist tooltip/AI-status controls.
+- Retain five verified optional component descriptors and local imports while
+  disabling unavailable online downloads. No model, runtime pack or binary is
+  published by the source integration route.
+
+
 ### Added
 
 - A single OS-locked mutation service with durable operation acceptance,
@@ -19,8 +33,9 @@ currently `0.1.0.dev0`.
 - Exact source and build-input attestation, hostile-input regressions, VM
   interruption harnesses, and an immutable-plan/append-only GitHub controller.
 
-These cutover additions remain unpublished candidates until all required native,
-licensing, recovery, CI and remote-state gates pass.
+Binary delivery of these additions remains behind native, licensing and exact
+artifact gates. Source integration uses its separate source/CI/remote-state gate;
+source acceptance never certifies a native or redistributable release.
 
 - Versioned file-operation results, strict Undo tokens, an operation journal, and
   conservative restart recovery.

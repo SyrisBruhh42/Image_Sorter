@@ -28,6 +28,7 @@ from .paths import get_components_dir
 
 CATALOG_VERSION = 1
 HELPER_VERSION = 1
+DOWNLOAD_UNAVAILABLE = "Download unavailable; verified local import supported"
 KNOWN_IDS = frozenset({"ai.mobilenet-v2", "provider.onnx-nvidia", "codec.heif-avif",
                        "codec.camera-raw", "viewer.animation-multipage"})
 _IDENTIFIER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+-]{0,127}$")
@@ -248,6 +249,7 @@ class ComponentManager:
             descriptor = self.catalog.get(component_id)
             entry = registry.get(component_id, {})
             result.append({"id": component_id, "available": descriptor is not None,
+                           "download_available": bool(descriptor and descriptor.get("url") and self._compatible(descriptor)),
                            "version": descriptor.get("version") if descriptor else None,
                            "active": entry.get("active"), "previous": entry.get("previous"),
                            "enabled": entry.get("enabled", False),
@@ -331,9 +333,15 @@ class ComponentManager:
         descriptor = json.loads(descriptor_path.read_text(encoding="utf-8"))
         self._validate_descriptor(descriptor)
         trusted = self.trusted_versions.get((descriptor["id"], descriptor["version"]))
-        if trusted != descriptor or path != self._version_path(descriptor["id"], descriptor["version"]):
+        # Download location is transport metadata, not installed payload identity.
+        # A source update may retire an unpublished URL without rewriting a valid
+        # installed pack. Every other field must still match the shipped trust root.
+        installed_identity = {key: value for key, value in descriptor.items() if key != "url"}
+        trusted_identity = {key: value for key, value in (trusted or {}).items() if key != "url"}
+        if (trusted is None or trusted_identity != installed_identity or
+                path != self._version_path(descriptor["id"], descriptor["version"])):
             raise ComponentError("Installed manifest is not authorized by the shipped catalogue")
-        return descriptor
+        return trusted
 
     def _probe(self, path: Path, descriptor: dict) -> None:
         entrypoint = descriptor.get("entrypoint")
@@ -417,6 +425,8 @@ class ComponentManager:
         descriptor = self.catalog.get(component_id)
         if not descriptor or not self._compatible(descriptor):
             raise ComponentError("No qualified component artifact for this platform")
+        if archive is None and not descriptor.get("url"):
+            raise ComponentError(DOWNLOAD_UNAVAILABLE)
         job = {"id": uuid.uuid4().hex, "component_id": component_id,
                "version": descriptor["version"], "state": "queued", "created": time.time()}
         job_path = self.jobs_dir / (job["id"] + ".json")
@@ -442,8 +452,6 @@ class ComponentManager:
                 if available < required:
                     raise ComponentError("Insufficient space; recovery material was preserved")
                 if archive is None:
-                    if not descriptor.get("url"):
-                        raise ComponentError("Component has no published download URL")
                     transition("downloading")
                     archive = temporary / "download.tar.gz"
                     started = time.monotonic()

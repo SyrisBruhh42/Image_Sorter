@@ -3,11 +3,13 @@ from __future__ import annotations
 import os
 from typing import TYPE_CHECKING, Any
 
-from PyQt6.QtCore import Qt, QThread, QTimer, pyqtSignal
+from PyQt6.QtCore import QEvent, Qt, QThread, QTimer, pyqtSignal
 from PyQt6.QtWidgets import (
+    QApplication,
     QCheckBox,
     QComboBox,
     QDialog,
+    QDoubleSpinBox,
     QFileDialog,
     QFormLayout,
     QHBoxLayout,
@@ -21,6 +23,7 @@ from PyQt6.QtWidgets import (
     QTableWidget,
     QTableWidgetItem,
     QTabWidget,
+    QToolTip,
     QVBoxLayout,
     QWidget,
 )
@@ -72,6 +75,17 @@ class SettingsWindow(QDialog):
         self.setAccessibleName("Image Sorter Configuration Window")
         self.setAccessibleDescription("Tabbed settings interface to configure directories, hotkeys, AI tagging, and system performance.")
         self.init_ui()
+        for widget in [self, *self.findChildren(QWidget)]:
+            widget.installEventFilter(self)
+        self.chk_tooltips.toggled.connect(lambda enabled: None if enabled else QToolTip.hideText())
+
+    def eventFilter(self, watched, event):
+        if event.type() == QEvent.Type.ToolTip and not self.chk_tooltips.isChecked():
+            if not QApplication.keyboardModifiers() & Qt.KeyboardModifier.AltModifier:
+                return True
+        if event.type() == QEvent.Type.ChildAdded and isinstance(event.child(), QWidget):
+            event.child().installEventFilter(self)
+        return super().eventFilter(watched, event)
 
     def init_ui(self) -> None:
         """Builds the tabbed UI for settings."""
@@ -134,7 +148,8 @@ class SettingsWindow(QDialog):
         self.setTabOrder(self.src_btn, self.trash_edit)
         self.setTabOrder(self.trash_edit, self.trash_btn)
         self.setTabOrder(self.trash_btn, self.chk_fullscreen)
-        self.setTabOrder(self.chk_fullscreen, self.chk_tooltips)
+        self.setTabOrder(self.chk_fullscreen, self.chk_show_tags)
+        self.setTabOrder(self.chk_show_tags, self.chk_tooltips)
         self.setTabOrder(self.chk_tooltips, self.theme_combo)
         self.setTabOrder(self.theme_combo, self.font_spin)
         self.setTabOrder(self.font_spin, self.btn_save)
@@ -180,6 +195,13 @@ class SettingsWindow(QDialog):
         self.chk_fullscreen.setToolTip("Launch the application in full screen by default.")
         self.chk_fullscreen.setChecked(self.settings.get('ui', 'fullscreen') or False)
         layout.addRow("UI Mode:", self.chk_fullscreen)
+
+        self.chk_show_tags = QCheckBox("Show AI status in image details")
+        self.chk_show_tags.setAccessibleName("Show AI Status Checkbox")
+        self.chk_show_tags.setAccessibleDescription("Shows whether AI tagging is enabled in the image details.")
+        self.chk_show_tags.setToolTip("Show the AI tagging status in image details; this does not display predicted tags.")
+        self.chk_show_tags.setChecked(self.settings.get('ui', 'show_tags') is not False)
+        layout.addRow("Image Details:", self.chk_show_tags)
 
         self.chk_tooltips = QCheckBox("Enable Helpful Tooltips")
         self.chk_tooltips.setAccessibleName("Enable Tooltips Checkbox")
@@ -247,10 +269,10 @@ class SettingsWindow(QDialog):
         self.chk_ai_enable.setAccessibleDescription("Toggles automatic image classification using ONNX model.")
         self.chk_ai_enable.setToolTip("Automatically analyze images to generate relevant descriptive tags.")
 
-        self.btn_download_model = QPushButton("Download Model")
-        self.btn_download_model.setAccessibleName("Download AI Model Button")
-        self.btn_download_model.setAccessibleDescription("Downloads required MobileNetV2 ONNX model into data directory.")
-        self.btn_download_model.setToolTip("Download the required ONNX model for the AI Auto-Tagger to function.")
+        self.btn_download_model = QPushButton("Manage AI Model…")
+        self.btn_download_model.setAccessibleName("Manage AI Model Button")
+        self.btn_download_model.setAccessibleDescription("Opens Optional Components to manage or import the verified MobileNetV2 model.")
+        self.btn_download_model.setToolTip("Manage or import the verified model in Optional Components. Custom ONNX model paths are not supported.")
         self.btn_download_model.clicked.connect(self.download_ai_model)
 
         self.refresh_ai_model_status()
@@ -258,6 +280,21 @@ class SettingsWindow(QDialog):
         ai_layout.addWidget(self.chk_ai_enable)
         ai_layout.addWidget(self.btn_download_model)
         layout.addRow("AI Tagger:", ai_layout)
+
+        self.confidence_spin = QDoubleSpinBox()
+        self.confidence_spin.setRange(0.0, 1.0)
+        self.confidence_spin.setDecimals(3)
+        self.confidence_spin.setSingleStep(0.05)
+        threshold = self.settings.get('ai_tagger', 'threshold')
+        self.confidence_spin.setValue(0.5 if threshold is None else threshold)
+        self.confidence_spin.setAccessibleName("AI Confidence Threshold")
+        self.confidence_spin.setAccessibleDescription("Minimum confidence from zero to one for generated tags; the default is 0.5.")
+        self.confidence_spin.setToolTip("Keep up to 10 ranked predictions with confidence at or above this value. Higher values produce fewer tags.")
+        layout.addRow("Minimum Tag Confidence:", self.confidence_spin)
+
+        self.model_source_label = QLabel("Use the verified model in Optional Components. Existing model files can be imported there.")
+        self.model_source_label.setWordWrap(True)
+        layout.addRow("Model:", self.model_source_label)
 
         self.chk_exif = QCheckBox("Write Tags to EXIF (XPKeywords)")
         self.chk_exif.setAccessibleName("Write Tags to EXIF Checkbox")
@@ -409,20 +446,18 @@ class SettingsWindow(QDialog):
 
     def _on_model_check_finished(self, is_valid: bool) -> None:
         """Callback when background model check finishes."""
+        self.btn_download_model.setText("Manage AI Model…")
+        self.btn_download_model.setEnabled(True)
         if is_valid:
-            self.btn_download_model.setText("Model Downloaded")
-            self.btn_download_model.setEnabled(False)
             self.chk_ai_enable.setEnabled(True)
             saved_enabled = self.settings.get('ai_tagger', 'enabled') or False
             self.chk_ai_enable.setChecked(saved_enabled)
         else:
-            self.btn_download_model.setText("Download Model")
-            self.btn_download_model.setEnabled(True)
             self.chk_ai_enable.setChecked(False)
             self.chk_ai_enable.setEnabled(False)
 
     def download_ai_model(self) -> None:
-        """Initiates model download in a managed background thread."""
+        """Opens verified component management without downloading or selecting arbitrary paths."""
         self.tabs.setCurrentWidget(self.components_panel)
         self.components_panel.component.setCurrentText("ai.mobilenet-v2")
 
@@ -534,6 +569,7 @@ class SettingsWindow(QDialog):
         ui_sec = self.settings.get('ui') or {}
         ui_sec['fullscreen'] = self.chk_fullscreen.isChecked()
         ui_sec['tooltips_enabled'] = self.chk_tooltips.isChecked()
+        ui_sec['show_tags'] = self.chk_show_tags.isChecked()
         ui_sec['theme'] = self.theme_combo.currentText()
         ui_sec['font_size'] = self.font_spin.value()
         changes['ui'] = ui_sec
@@ -547,6 +583,7 @@ class SettingsWindow(QDialog):
         # 4. AI Tagger Validation
         ai_sec = self.settings.get('ai_tagger') or {}
         ai_sec['enabled'] = self.chk_ai_enable.isChecked()
+        ai_sec['threshold'] = self.confidence_spin.value()
         changes['ai_tagger'] = ai_sec
 
         # 5. Advanced Validation

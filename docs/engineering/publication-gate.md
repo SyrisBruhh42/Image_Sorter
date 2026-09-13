@@ -1,5 +1,12 @@
 # Publication evidence boundary
 
+> **Source-first scope, 2026-09-13:** the new
+> [source integration route](source-integration.md) updates `main` while preserving
+> every original branch. It does not invoke the full-release controller described
+> below, publish binaries, or assert native/distribution eligibility. The historical
+> full-release requirements and evidence below remain applicable to binary cutover.
+
+
 The current optional catalogue is **local qualification only**. It is not a
 distribution approval. Neither successful runtime tests, an upstream download
 URL, a permissive-looking model label, nor `legal_clearance: true` resolves

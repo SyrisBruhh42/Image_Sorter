@@ -1,5 +1,12 @@
 # Integration Status
 
+> **Source-first scope, 2026-09-13:** the new
+> [source integration route](source-integration.md) updates `main` while preserving
+> every original branch. It does not invoke the full-release controller described
+> below, publish binaries, or assert native/distribution eligibility. The historical
+> full-release requirements and evidence below remain applicable to binary cutover.
+
+
 The table below preserves the earlier 2026-09-07 qualification snapshot. It does
 not describe the current repaired checkout. Current implementation and outstanding
 acceptance are tracked in [`cutover-findings.md`](cutover-findings.md); execution

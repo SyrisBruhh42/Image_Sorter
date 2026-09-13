@@ -114,7 +114,7 @@ class QueueWorker(QObject):
         else:
             self._requests.pop(operation_id, None)
 
-    def add_recovery_task(self, record):
+    def add_recovery_task(self, record, *, task_options=None):
         """Request one authoritative rollback; no filesystem recovery occurs here."""
         if self._closing or self.client.pending:
             self.signals.progress.emit("Wait for accepted file operations to settle before requesting recovery")
@@ -125,9 +125,12 @@ class QueueWorker(QObject):
             self.signals.progress.emit("Automatic rollback is unavailable; preserved files require manual review")
             return None
         operation_id = uuid.uuid4().hex
+        options = task_options.to_dict() if isinstance(task_options, TaskOptions) else dict(task_options or {})
+        if options.get("settings_snapshot") is None:
+            options["settings_snapshot"] = self.settings.snapshot()
         request = {"operation_id": operation_id, "action": "recover", "source_path": record["source_path"],
                    "target_operation_id": record["operation_id"], "recovery_action": "rollback",
-                   "task_options": {"settings_snapshot": self.settings.snapshot()}}
+                   "task_options": options}
         self._requests[operation_id] = request
         self.client.submit(request)
         return operation_id
