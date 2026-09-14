@@ -1,9 +1,10 @@
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QColor, QPalette
-from PyQt6.QtWidgets import QLineEdit
+from PyQt6.QtWidgets import QLineEdit, QPushButton
 
 from imagesorter.settings_manager import SettingsManager
 from imagesorter.ui_main import MainViewer
+from imagesorter.ui_settings import SettingsWindow
 
 
 def calculate_relative_luminance(color: QColor) -> float:
@@ -80,3 +81,29 @@ def test_keyboard_focus_isolation(qtbot, tmp_path):
     assert viewer.current_index == 0
     assert line_edit.text().upper() == "SRCLZ"
     assert len(viewer.images) == 2
+
+
+def test_escape_key_dismisses_dialogs(qtbot, tmp_path):
+    settings_file = tmp_path / "settings.json"
+    sm = SettingsManager(filepath=str(settings_file))
+    viewer = MainViewer(sm)
+    qtbot.addWidget(viewer)
+
+    from imagesorter.ui_recovery import RecoveryDialog
+    from imagesorter.ui_settings import SettingsWindow
+
+    # Test SettingsWindow escape key dismissal
+    settings_win = SettingsWindow(sm, parent=viewer)
+    qtbot.addWidget(settings_win)
+    settings_win.show()
+    assert settings_win.isVisible()
+    qtbot.keyClick(settings_win, Qt.Key.Key_Escape)
+    qtbot.waitUntil(lambda: not settings_win.isVisible(), timeout=2000)
+
+    # Test RecoveryDialog escape key dismissal
+    recovery_dialog = RecoveryDialog(viewer)
+    qtbot.addWidget(recovery_dialog)
+    recovery_dialog.show()
+    assert recovery_dialog.isVisible()
+    qtbot.keyClick(recovery_dialog, Qt.Key.Key_Escape)
+    qtbot.waitUntil(lambda: not recovery_dialog.isVisible(), timeout=2000)

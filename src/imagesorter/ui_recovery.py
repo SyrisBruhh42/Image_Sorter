@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import (
     QCheckBox,
     QDialog,
@@ -83,6 +84,12 @@ class RecoveryDialog(QDialog):
         viewer.worker.signals.operation_result.connect(self.result)
         self.refresh()
         viewer.worker.client.refresh_recovery()
+
+    def keyPressEvent(self, event):
+        if event.key() == Qt.Key.Key_Escape:
+            self.reject()
+            return
+        super().keyPressEvent(event)
 
     def refresh(self, _message=None):
         selected = self.selected()

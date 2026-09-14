@@ -179,3 +179,19 @@ def test_downloader_interruption_cancellation(qtbot):
 
     assert not downloader.isRunning()
     assert downloader.interrupted is True
+
+
+def test_clear_button_enabled_on_line_edits(qtbot, tmp_path):
+    settings_file = tmp_path / "settings.json"
+    sm = SettingsManager(filepath=str(settings_file))
+
+    window = SettingsWindow(sm)
+    qtbot.addWidget(window)
+
+    assert window.src_edit.isClearButtonEnabled() is True
+    assert window.trash_edit.isClearButtonEnabled() is True
+
+    window.add_hotkey_row(key="A", action="move", folder="/tmp", auto_advance=True)
+    folder_widget = window.hotkey_table.cellWidget(0, 2)
+    folder_edit = folder_widget.layout().itemAt(0).widget()
+    assert folder_edit.isClearButtonEnabled() is True
