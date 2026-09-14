@@ -241,11 +241,16 @@ def test_text_inputs_clear_button_and_auto_trim(qtbot, tmp_path):
 
 
 def test_settings_hotkey_browse_button_accessibility(qtbot, tmp_path):
+    from unittest.mock import patch
+
+    from PyQt6.QtWidgets import QFileDialog
+
     settings_file = tmp_path / "settings.json"
     sm = SettingsManager(filepath=str(settings_file))
     dialog = SettingsWindow(sm)
     qtbot.addWidget(dialog)
 
+    # Test hotkey row with key provided
     dialog.add_hotkey_row(key="1", action="move", folder="", auto_advance=True)
     row = dialog.hotkey_table.rowCount() - 1
     folder_widget = dialog.hotkey_table.cellWidget(row, 2)
@@ -255,3 +260,32 @@ def test_settings_hotkey_browse_button_accessibility(qtbot, tmp_path):
     assert folder_btn.accessibleName() == "Browse target folder for hotkey 1"
     assert folder_btn.accessibleDescription() == "Opens folder selection dialog for hotkey 1."
     assert folder_btn.toolTip() == "Open folder selection dialog."
+
+    # Test hotkey row with empty key (e.g. newly added row)
+    dialog.add_hotkey_row()
+    empty_row = dialog.hotkey_table.rowCount() - 1
+    action_combo = dialog.hotkey_table.cellWidget(empty_row, 1)
+    empty_folder_widget = dialog.hotkey_table.cellWidget(empty_row, 2)
+    empty_edit = empty_folder_widget.layout().itemAt(0).widget()
+    empty_btn = empty_folder_widget.layout().itemAt(1).widget()
+    advance_cell = dialog.hotkey_table.cellWidget(empty_row, 3)
+    advance_chk = advance_cell.layout().itemAt(0).widget()
+
+    assert action_combo.accessibleName() == "Action for hotkey"
+    assert action_combo.toolTip() == "File action to perform when hotkey is triggered."
+    assert empty_edit.accessibleName() == "Target folder for hotkey"
+    assert empty_edit.toolTip() == "Destination directory path for this hotkey."
+    assert empty_btn.accessibleName() == "Browse target folder for hotkey"
+    assert empty_btn.accessibleDescription() == "Opens folder selection dialog for hotkey."
+    assert empty_btn.toolTip() == "Open folder selection dialog."
+    assert advance_chk.accessibleName() == "Auto Advance for hotkey"
+    assert advance_chk.toolTip() == "Automatically advance to next image after action."
+
+    # Test browse_folder whitespace stripping
+    target_dir = tmp_path / "target_dir"
+    target_dir.mkdir()
+    empty_edit.setText("   ")
+    with patch.object(QFileDialog, "getExistingDirectory", return_value=f"  {target_dir}  "):
+        dialog.browse_folder(empty_edit)
+    assert empty_edit.text() == str(target_dir)
+

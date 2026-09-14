@@ -375,9 +375,9 @@ class SettingsWindow(QDialog):
 
     def browse_folder(self, line_edit: QLineEdit) -> None:
         """Opens directory selection dialog."""
-        folder = QFileDialog.getExistingDirectory(self, "Select Directory", line_edit.text())
+        folder = QFileDialog.getExistingDirectory(self, "Select Directory", line_edit.text().strip())
         if folder:
-            line_edit.setText(os.path.normpath(folder))
+            line_edit.setText(os.path.normpath(folder.strip()))
 
     def add_hotkey_row(self, key: str = "", action: str = "move", folder: str = "", auto_advance: bool = True) -> None:
         """Adds a new row to the hotkey table."""
@@ -390,7 +390,8 @@ class SettingsWindow(QDialog):
         action_combo = QComboBox()
         action_combo.addItems(["move", "copy"])
         action_combo.setCurrentText(action)
-        action_combo.setAccessibleName(f"Action for hotkey {key}")
+        action_combo.setAccessibleName(f"Action for hotkey {key}" if key else "Action for hotkey")
+        action_combo.setToolTip("File action to perform when hotkey is triggered.")
         self.hotkey_table.setCellWidget(row, 1, action_combo)
 
         folder_widget = QWidget()
@@ -400,11 +401,12 @@ class SettingsWindow(QDialog):
         folder_edit = QLineEdit(folder)
         folder_edit.setClearButtonEnabled(True)
         folder_edit.editingFinished.connect(lambda w=folder_edit: w.setText(w.text().strip()))
-        folder_edit.setAccessibleName(f"Target folder for hotkey {key}")
+        folder_edit.setAccessibleName(f"Target folder for hotkey {key}" if key else "Target folder for hotkey")
+        folder_edit.setToolTip("Destination directory path for this hotkey.")
         folder_btn = QPushButton("...")
         folder_btn.setFixedWidth(30)
-        folder_btn.setAccessibleName(f"Browse target folder for hotkey {key}")
-        folder_btn.setAccessibleDescription(f"Opens folder selection dialog for hotkey {key}.")
+        folder_btn.setAccessibleName(f"Browse target folder for hotkey {key}" if key else "Browse target folder for hotkey")
+        folder_btn.setAccessibleDescription(f"Opens folder selection dialog for hotkey {key}." if key else "Opens folder selection dialog for hotkey.")
         folder_btn.setToolTip("Open folder selection dialog.")
         folder_btn.clicked.connect(lambda: self.browse_folder(folder_edit))
 
@@ -415,7 +417,8 @@ class SettingsWindow(QDialog):
 
         advance_chk = QCheckBox()
         advance_chk.setChecked(auto_advance)
-        advance_chk.setAccessibleName(f"Auto Advance for hotkey {key}")
+        advance_chk.setAccessibleName(f"Auto Advance for hotkey {key}" if key else "Auto Advance for hotkey")
+        advance_chk.setToolTip("Automatically advance to next image after action.")
         chk_widget = QWidget()
         chk_layout = QHBoxLayout(chk_widget)
         chk_layout.addWidget(advance_chk)
