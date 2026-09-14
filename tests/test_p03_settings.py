@@ -1,8 +1,8 @@
 import os
 
 import pytest
-from PyQt6.QtCore import QThread
-from PyQt6.QtWidgets import QMessageBox
+from PyQt6.QtCore import Qt, QThread
+from PyQt6.QtWidgets import QDialog, QMessageBox
 
 from imagesorter.paths import _ensure_dir_or_fallback
 from imagesorter.settings_manager import (
@@ -179,3 +179,79 @@ def test_downloader_interruption_cancellation(qtbot):
 
     assert not downloader.isRunning()
     assert downloader.interrupted is True
+
+
+def test_cancel_button_and_escape_dismissal(qtbot, tmp_path):
+    settings_file = tmp_path / "settings.json"
+    sm = SettingsManager(filepath=str(settings_file))
+
+    window = SettingsWindow(sm)
+    qtbot.addWidget(window)
+    window.show()
+
+    # Verify btn_cancel exists and has accessible name/description
+    assert hasattr(window, "btn_cancel")
+    assert window.btn_cancel.accessibleName() == "Cancel Settings Button"
+    assert window.btn_cancel.accessibleDescription() == "Discards all setting changes and closes the window."
+
+    # Test clicking Cancel button rejects the dialog
+    window.chk_tooltips.setChecked(not sm.get("ui", "tooltips_enabled"))
+    qtbot.mouseClick(window.btn_cancel, Qt.MouseButton.LeftButton)
+    assert window.result() == QDialog.DialogCode.Rejected
+
+    # Show new instance and test Escape key dismissal
+    window2 = SettingsWindow(sm)
+    qtbot.addWidget(window2)
+    window2.show()
+
+    qtbot.keyClick(window2, Qt.Key.Key_Escape)
+    assert window2.result() == QDialog.DialogCode.Rejected
+
+
+def test_text_inputs_clear_button_and_auto_trim(qtbot, tmp_path):
+    settings_file = tmp_path / "settings.json"
+    sm = SettingsManager(filepath=str(settings_file))
+
+    window = SettingsWindow(sm)
+    qtbot.addWidget(window)
+
+    # Check clear button enabled status
+    assert window.src_edit.isClearButtonEnabled() is True
+    assert window.trash_edit.isClearButtonEnabled() is True
+
+    # Check auto-trimming on editingFinished
+    window.src_edit.setText("   /path/to/source   ")
+    window.src_edit.editingFinished.emit()
+    assert window.src_edit.text() == "/path/to/source"
+
+    window.trash_edit.setText("   /path/to/trash   ")
+    window.trash_edit.editingFinished.emit()
+    assert window.trash_edit.text() == "/path/to/trash"
+
+    # Check hotkey folder edit row
+    window.add_hotkey_row(key="M", action="move", folder="", auto_advance=True)
+    folder_widget = window.hotkey_table.cellWidget(0, 2)
+    folder_edit = folder_widget.layout().itemAt(0).widget()
+
+    assert folder_edit.isClearButtonEnabled() is True
+
+    folder_edit.setText("   /path/to/target   ")
+    folder_edit.editingFinished.emit()
+    assert folder_edit.text() == "/path/to/target"
+
+
+def test_settings_hotkey_browse_button_accessibility(qtbot, tmp_path):
+    settings_file = tmp_path / "settings.json"
+    sm = SettingsManager(filepath=str(settings_file))
+    dialog = SettingsWindow(sm)
+    qtbot.addWidget(dialog)
+
+    dialog.add_hotkey_row(key="1", action="move", folder="", auto_advance=True)
+    row = dialog.hotkey_table.rowCount() - 1
+    folder_widget = dialog.hotkey_table.cellWidget(row, 2)
+    assert folder_widget is not None
+    folder_btn = folder_widget.layout().itemAt(1).widget()
+
+    assert folder_btn.accessibleName() == "Browse target folder for hotkey 1"
+    assert folder_btn.accessibleDescription() == "Opens folder selection dialog for hotkey 1."
+    assert folder_btn.toolTip() == "Open folder selection dialog."
