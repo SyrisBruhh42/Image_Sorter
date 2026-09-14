@@ -1,0 +1,12 @@
+include build_support.py
+include ImageSorter.spec
+include build_desktop.py
+include run_app.py
+include *.md
+recursive-include scripts *.py *.sh
+recursive-include hooks *.py
+recursive-include docs *
+recursive-include requirements *.md *.lock
+recursive-include tests *.py
+recursive-include .github/workflows *.yml
+recursive-include src/imagesorter/resources *

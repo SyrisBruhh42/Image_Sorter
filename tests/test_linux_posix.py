@@ -30,17 +30,11 @@ def test_portable_flag_detection(monkeypatch, tmp_path):
     assert is_portable_mode()
 
 
-def test_freedesktop_and_mime_spec(tmp_path):
-    import build
+def test_freedesktop_desktop_entry(tmp_path):
+    import build_desktop as build
     build.generate_freedesktop_artifacts(tmp_path)
-    build.generate_appimage_builder_script(tmp_path)
 
     desktop_file = tmp_path / "imagesorter.desktop"
-    mime_file = tmp_path / "imagesorter-mime.xml"
-    script_file = tmp_path / "build_appimage.sh"
 
     assert desktop_file.exists()
-    assert mime_file.exists()
-    assert script_file.exists()
     assert "Exec=ImageSorter %F" in desktop_file.read_text(encoding="utf-8")
-    assert "application/x-imagesorter-project" in mime_file.read_text(encoding="utf-8")

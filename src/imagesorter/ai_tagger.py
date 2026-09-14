@@ -1,9 +1,7 @@
 from __future__ import annotations
 
 import hashlib
-import multiprocessing as mp
 import os
-import shutil
 import ssl
 import tempfile
 import urllib.error
@@ -12,40 +10,27 @@ from abc import ABC, abstractmethod
 
 import numpy as np
 import onnxruntime as ort
-import piexif
 import psutil
 from PIL import Image
 from PyQt6.QtCore import QThread, pyqtSignal
 
 from .hardware_scan import get_prioritized_providers
 from .logger import logger
+from .metadata_io import write_metadata
+from .model_assets import LABELS_SHA256, LABELS_URL, MODEL_SHA256, MODEL_URL
 from .paths import get_data_dir
 
-# Set process start method to 'spawn' for safe CUDA/multiprocessing compliance
-try:
-    if mp.get_start_method(allow_none=True) != "spawn":
-        mp.set_start_method("spawn", force=True)
-except RuntimeError as e:
-    logger.debug(f"Multiprocessing start method already set: {e}")
+__all__ = ["AITagger", "BaseVisionEngine", "ModelDownloader", "write_metadata"]
 
-MODEL_URL = "https://huggingface.co/onnx-community/mobilenet_v2_1.0_224-ONNX/resolve/f7f884d9505b4c69f8a260d9967ff7791bafa498/onnx/model.onnx"
-MODEL_SHA256 = "2e731702ec8374128edfc9f7d344c44287e7791bb3c7ae25a628c2c2dec83ce6"
-LABELS_URL = "https://raw.githubusercontent.com/pytorch/hub/a6fc887fbbbda0dd37c440bf8a145f1da6707d6b/imagenet_classes.txt"
-LABELS_SHA256 = "1f386e0d1cb6e28b9c2dac651c3dea6801e98ad1b41a14ce6bb1a093d72069f5"
 
 
 def get_model_dir(model_dir: str | None = None) -> str:
     """Returns the resolved directory path for AI model artifacts."""
     if model_dir is not None:
         return model_dir
-    default_dir = str(get_data_dir() / "models")
-    model_name = "mobilenetv2.onnx"
-    labels_name = "labels.txt"
-    if not (os.path.exists(os.path.join(default_dir, model_name)) and os.path.exists(os.path.join(default_dir, labels_name))):
-        rel_dir = "models"
-        if os.path.exists(os.path.join(rel_dir, model_name)) and os.path.exists(os.path.join(rel_dir, labels_name)):
-            return rel_dir
-    return default_dir
+    from .component_manager import ComponentManager
+    active = ComponentManager().active_path("ai.mobilenet-v2")
+    return str(active) if active else str(get_data_dir() / "components" / "unavailable" / "ai.mobilenet-v2")
 
 
 def is_model_and_labels_valid(model_dir: str | None = None) -> bool:
@@ -83,21 +68,24 @@ def _download_file_secure(
     url: str,
     dest_temp_path: str,
     progress_callback=None,
-    timeout: float = 15.0
+    timeout: float = 15.0,
+    cancellation_check=None
 ) -> None:
-    """Downloads a file using secure TLS 1.2+ HTTPS streaming context in 64KB chunks."""
+    """Downloads a file using secure TLS 1.2+ HTTPS streaming context in 64KB chunks with interruption checks."""
     ctx = ssl.create_default_context(ssl.Purpose.SERVER_AUTH)
     if hasattr(ctx, "minimum_version"):
         ctx.minimum_version = ssl.TLSVersion.TLSv1_2
 
     req = urllib.request.Request(
         url,
-        headers={"User-Agent": "ImageSorter-Enterprise/1.0 (Cross-Platform; x86_64)"}
+        headers={"User-Agent": "ImageSorter/0.1 (optional-model-downloader)"}
     )
     with urllib.request.urlopen(req, context=ctx, timeout=timeout) as response, open(dest_temp_path, "wb") as out_file:
         total_size = int(response.headers.get("Content-Length", 0))
         read_so_far = 0
         while True:
+            if cancellation_check and cancellation_check():
+                raise InterruptedError("Download canceled by request.")
             chunk = response.read(64 * 1024)
             if not chunk:
                 break
@@ -110,7 +98,7 @@ def _download_file_secure(
 
 class ModelDownloader(QThread):
     """
-    Downloads AI models in a background thread with zero-trust SHA256 verification.
+    Downloads AI models in a background thread with zero-trust SHA256 verification and interruption handling.
     """
     progress = pyqtSignal(int)
     finished = pyqtSignal(bool, str)
@@ -127,11 +115,25 @@ class ModelDownloader(QThread):
 
             labels_valid = os.path.exists(self.labels_path) and calculate_sha256(self.labels_path) == LABELS_SHA256
             if not labels_valid:
+                if self.isInterruptionRequested():
+                    self.finished.emit(False, "Download canceled.")
+                    return
                 logger.info(f"Downloading labels to {self.labels_path}")
                 fd, temp_labels_path = tempfile.mkstemp(dir=self.model_dir, prefix="dl_labels_", suffix=".tmp")
                 os.close(fd)
                 try:
-                    _download_file_secure(LABELS_URL, temp_labels_path, timeout=15.0)
+                    if self.isInterruptionRequested():
+                        self.finished.emit(False, "Download canceled.")
+                        return
+                    _download_file_secure(
+                        LABELS_URL,
+                        temp_labels_path,
+                        timeout=15.0,
+                        cancellation_check=self.isInterruptionRequested
+                    )
+                    if self.isInterruptionRequested():
+                        self.finished.emit(False, "Download canceled.")
+                        return
                     checksum = calculate_sha256(temp_labels_path)
                     if checksum != LABELS_SHA256:
                         err_msg = f"Labels Cryptographic Integrity Failure: Expected {LABELS_SHA256}, got {checksum}"
@@ -139,6 +141,9 @@ class ModelDownloader(QThread):
                         self.finished.emit(False, err_msg)
                         return
                     os.replace(temp_labels_path, self.labels_path)
+                except InterruptedError:
+                    self.finished.emit(False, "Download canceled.")
+                    return
                 except Exception as e:
                     raise Exception(f"Network error downloading labels: {e}")
                 finally:
@@ -150,17 +155,27 @@ class ModelDownloader(QThread):
 
             model_valid = os.path.exists(self.model_path) and calculate_sha256(self.model_path) == MODEL_SHA256
             if not model_valid:
+                if self.isInterruptionRequested():
+                    self.finished.emit(False, "Download canceled.")
+                    return
                 logger.info(f"Downloading model to {self.model_path}")
                 fd, temp_path = tempfile.mkstemp(dir=self.model_dir, prefix="dl_model_", suffix=".tmp")
                 os.close(fd)
 
                 try:
+                    if self.isInterruptionRequested():
+                        self.finished.emit(False, "Download canceled.")
+                        return
                     _download_file_secure(
                         MODEL_URL,
                         temp_path,
                         progress_callback=lambda p: self.progress.emit(p),
-                        timeout=15.0
+                        timeout=15.0,
+                        cancellation_check=self.isInterruptionRequested
                     )
+                    if self.isInterruptionRequested():
+                        self.finished.emit(False, "Download canceled.")
+                        return
                     checksum = calculate_sha256(temp_path)
                     logger.info(f"Downloaded model SHA256: {checksum}")
 
@@ -172,6 +187,9 @@ class ModelDownloader(QThread):
 
                     os.replace(temp_path, self.model_path)
                     logger.info("Model download and verification complete.")
+                except InterruptedError:
+                    self.finished.emit(False, "Download canceled.")
+                    return
                 except Exception as e:
                     raise Exception(f"Network error downloading model: {e}")
                 finally:
@@ -180,6 +198,10 @@ class ModelDownloader(QThread):
                             os.remove(temp_path)
                         except OSError:
                             pass
+
+            if self.isInterruptionRequested():
+                self.finished.emit(False, "Download canceled.")
+                return
 
             if is_model_and_labels_valid(self.model_dir):
                 self.finished.emit(True, "Model ready.")
@@ -200,7 +222,7 @@ class BaseVisionEngine(ABC):
         """Loads the vision model into memory."""
 
     @abstractmethod
-    def get_tags(self, image_path: str, top_k: int = 3) -> list[str]:
+    def get_tags(self, image_path: str, top_k: int = 3, *, threshold: float = 0.5) -> list[str]:
         """Returns tags for the specified image."""
 
 
@@ -208,9 +230,11 @@ class AITagger(BaseVisionEngine):
     """
     Implementation of MobileNetV2 ONNX tagger supporting dynamic multi-provider acceleration.
     """
+    API_VERSION: int = 1
 
-    def __init__(self, model_dir: str | None = None) -> None:
+    def __init__(self, model_dir: str | None = None, *, hardware_acceleration: bool = True) -> None:
         self.model_dir: str = get_model_dir(model_dir)
+        self.hardware_acceleration: bool = hardware_acceleration
         self.model_path: str = os.path.join(self.model_dir, "mobilenetv2.onnx")
         self.labels_path: str = os.path.join(self.model_dir, "labels.txt")
         self.session: ort.InferenceSession | None = None
@@ -234,10 +258,6 @@ class AITagger(BaseVisionEngine):
             logger.error(f"Failed to load labels from {self.labels_path}: {e}")
             return
 
-        prioritized_providers = get_prioritized_providers()
-        top_provider = prioritized_providers[0] if prioritized_providers else "CPUExecutionProvider"
-        providers = [top_provider, 'CPUExecutionProvider'] if top_provider != 'CPUExecutionProvider' else ['CPUExecutionProvider']
-
         physical_cores = psutil.cpu_count(logical=False) or 1
         intra_threads = max(1, min(physical_cores, 4))
 
@@ -248,10 +268,17 @@ class AITagger(BaseVisionEngine):
         sess_options.enable_cpu_mem_arena = True
         sess_options.enable_mem_pattern = True
 
+        if not self.hardware_acceleration:
+            providers = ['CPUExecutionProvider']
+        else:
+            prioritized_providers = get_prioritized_providers()
+            top_provider = prioritized_providers[0] if prioritized_providers else "CPUExecutionProvider"
+            providers = [top_provider, 'CPUExecutionProvider'] if top_provider != 'CPUExecutionProvider' else ['CPUExecutionProvider']
+
         try:
             self.session = ort.InferenceSession(self.model_path, sess_options, providers=providers)
-            self.active_provider = self.session.get_providers()[0] if self.session.get_providers() else top_provider
-            logger.info(f"Loaded AI model from {self.model_path} with providers: {providers}")
+            self.active_provider = self.session.get_providers()[0] if self.session.get_providers() else "CPUExecutionProvider"
+            logger.info(f"Loaded AI model from {self.model_path} with active provider {self.active_provider}")
             return
         except Exception as e:
             logger.warning(f"Failed to initialize ONNX session with providers {providers}: {e}")
@@ -267,23 +294,18 @@ class AITagger(BaseVisionEngine):
             self.active_provider = "None"
 
     def preprocess(self, image_path: str) -> np.ndarray | None:
-        """Preprocesses an image tensor for MobileNetV2 inference."""
-        Image.MAX_IMAGE_PIXELS = 50_000_000
+        """
+        Preprocesses an image tensor for MobileNetV2 inference using HuggingFace pinned spec:
+        - EXIF transpose orientation
+        - Shortest-edge resize to 256 using bilinear resampling
+        - Center crop 224x224
+        - Pixel rescale [0.0, 1.0] (/ 255.0)
+        - Mean/std normalization [0.5, 0.5, 0.5]
+        - Output float32 contiguous tensor layout [1, 3, 224, 224]
+        """
         try:
-            with Image.open(image_path) as img:
-                img_rgb = img.convert('RGB')
-                img_resized = img_rgb.resize((224, 224))
-                arr = np.array(img_resized, dtype=np.float32)
-
-            arr /= 255.0
-            mean = np.array([0.485, 0.456, 0.406], dtype=np.float32)
-            std = np.array([0.229, 0.224, 0.225], dtype=np.float32)
-            arr -= mean
-            arr /= std
-
-            arr = np.transpose(arr, (2, 0, 1))
-            tensor = np.ascontiguousarray(arr[np.newaxis, ...], dtype=np.float32)
-            return tensor
+            from .ai_preprocessing import preprocess_image
+            return preprocess_image(image_path)
         except Image.DecompressionBombError as e:
             logger.error(f"Decompression bomb detected in {image_path}: {e}")
             return None
@@ -294,8 +316,8 @@ class AITagger(BaseVisionEngine):
             logger.error(f"Unexpected error preprocessing {image_path}: {e}")
             return None
 
-    def get_tags(self, image_path: str, top_k: int = 3) -> list[str]:
-        """Runs inference on an image and returns top_k tags."""
+    def get_tags(self, image_path: str, top_k: int = 3, *, threshold: float = 0.5) -> list[str]:
+        """Runs inference on an image and returns top_k tags above confidence threshold."""
         if not self.session or not self.labels:
             logger.warning("Attempted to get tags, but model/labels are not loaded.")
             return []
@@ -309,9 +331,10 @@ class AITagger(BaseVisionEngine):
             raw_result = self.session.run(None, {input_name: input_data})
 
             res = raw_result[0][0]
-            res = np.nan_to_num(res, nan=0.0, posinf=0.0, neginf=0.0)
+            res = np.nan_to_num(res, nan=-1e9, posinf=-1e9, neginf=-1e9)
+
             if len(res) == len(self.labels) + 1:
-                # Ignore output index 0 (background class) when model has 1,001 outputs and 1,000 labels
+                # Explicitly strip background class at index 0
                 res = res[1:]
             elif len(res) > len(self.labels):
                 res = res[1 : 1 + len(self.labels)]
@@ -324,149 +347,10 @@ class AITagger(BaseVisionEngine):
                 return []
             probs = exp_res / sum_exp
 
-            top_indices = np.argsort(probs)[-top_k:][::-1]
-            tags = [self.labels[i] for i in top_indices if probs[i] > 0.1]
+            k = max(1, min(top_k, len(self.labels)))
+            top_indices = np.argsort(probs)[-k:][::-1]
+            tags = [self.labels[i] for i in top_indices if probs[i] >= threshold]
             return tags
         except Exception as e:
             logger.error(f"Error during AI inference for {image_path}: {e}")
             return []
-
-
-def _sanitize_tags(tags: list[str]) -> list[str]:
-    """Sanitizes metadata tags: strips control chars, restricts to printable chars, limits to 64 chars per tag and max 30 tags."""
-    sanitized: list[str] = []
-    for tag in tags:
-        if not isinstance(tag, str):
-            continue
-        cleaned = "".join(ch for ch in tag if ch.isprintable() and ch not in ("\r", "\n", "\x00"))
-        cleaned = cleaned.strip()
-        if cleaned:
-            sanitized.append(cleaned[:64])
-        if len(sanitized) >= 30:
-            break
-    return sanitized
-
-
-def write_metadata(
-    filepath: str,
-    tags: list[str],
-    write_exif: bool = True,
-    write_sidecar: bool = False
-) -> None:
-    """
-    Writes metadata tags to EXIF (via atomic temp-file swap) or a sidecar .txt file.
-
-    Args:
-        filepath (str): Target image path.
-        tags (List[str]): List of tag strings.
-        write_exif (bool): Whether to embed tags in EXIF XPKeywords.
-        write_sidecar (bool): Whether to create a sidecar file.
-    """
-    sanitized_tags = _sanitize_tags(tags)
-    if not sanitized_tags:
-        return
-
-    # Write Sidecar (Atomic Write with Path Traversal Boundary Check)
-    if write_sidecar:
-        real_image_path = os.path.realpath(filepath)
-        parent_dir = os.path.dirname(real_image_path)
-        sidecar_path = os.path.join(parent_dir, os.path.basename(real_image_path) + ".txt")
-        real_sidecar = os.path.realpath(sidecar_path)
-
-        if os.path.commonpath([parent_dir, real_sidecar]) != parent_dir:
-            err_msg = f"Path traversal detected: {sidecar_path} escapes {parent_dir}"
-            logger.error(err_msg)
-            raise ValueError(err_msg)
-
-        temp_path: str | None = None
-        try:
-            fd, temp_path = tempfile.mkstemp(dir=parent_dir, prefix="sidecar_", suffix=".tmp")
-            with os.fdopen(fd, 'w', encoding='utf-8') as f:
-                f.write(", ".join(sanitized_tags))
-                f.flush()
-                os.fsync(f.fileno())
-
-            os.replace(temp_path, sidecar_path)
-            logger.debug(f"Wrote sidecar metadata atomically to {sidecar_path}")
-        except OSError as e:
-            logger.error(f"OS error writing sidecar for {filepath}: {e}")
-            if temp_path and os.path.exists(temp_path):
-                try:
-                    os.remove(temp_path)
-                except OSError:
-                    pass
-        except Exception as e:
-            logger.error(f"Unexpected error writing sidecar for {filepath}: {e}")
-            if temp_path and os.path.exists(temp_path):
-                try:
-                    os.remove(temp_path)
-                except OSError:
-                    pass
-
-    # Write EXIF (Atomic piexif insertion via temp file in target directory)
-    if write_exif and filepath.lower().endswith(('.jpg', '.jpeg')):
-        temp_img_path: str | None = None
-        try:
-            tag_string = ";".join(sanitized_tags)
-            xp_keywords = (tag_string + "\x00").encode('utf-16le')
-
-            exif_dict = None
-            try:
-                exif_dict = piexif.load(filepath)
-                if "0th" not in exif_dict:
-                    exif_dict["0th"] = {}
-                exif_dict["0th"][piexif.ImageIFD.XPKeywords] = xp_keywords
-                exif_bytes = piexif.dump(exif_dict)
-            except Exception as load_or_dump_err:
-                logger.warning(
-                    f"Malformed camera EXIF header in {filepath} ({load_or_dump_err}); "
-                    "falling back to pristine 0th IFD."
-                )
-                pristine_exif = {
-                    "0th": {
-                        piexif.ImageIFD.XPKeywords: xp_keywords
-                    },
-                    "Exif": {},
-                    "GPS": {},
-                    "Interop": {},
-                    "1st": {},
-                    "thumbnail": None
-                }
-                exif_bytes = piexif.dump(pristine_exif)
-
-            if len(exif_bytes) > 32768:
-                logger.error(f"EXIF payload ({len(exif_bytes)} bytes) exceeds 32KB limit for {filepath}")
-                return
-
-            dir_name = os.path.dirname(os.path.realpath(filepath)) or "."
-            fd, temp_img_path = tempfile.mkstemp(dir=dir_name, prefix="exif_", suffix=".tmp")
-            os.close(fd)
-
-            # Copy original image to temp file
-            with open(filepath, 'rb') as src, open(temp_img_path, 'wb') as dst:
-                dst.write(src.read())
-
-            piexif.insert(exif_bytes, temp_img_path)
-
-            # Preserve POSIX permissions and mtime before atomic swap
-            try:
-                shutil.copystat(filepath, temp_img_path)
-            except OSError as cs_err:
-                logger.warning(f"Could not copy file stat for {filepath}: {cs_err}")
-
-            os.replace(temp_img_path, filepath)
-            logger.debug(f"Wrote EXIF metadata atomically to {filepath}")
-        except piexif.InvalidImageDataError as e:
-            logger.error(f"Invalid image data for EXIF injection in {filepath}: {e}")
-            if temp_img_path and os.path.exists(temp_img_path):
-                try:
-                    os.remove(temp_img_path)
-                except OSError:
-                    pass
-        except Exception as e:
-            logger.error(f"Unexpected error writing EXIF for {filepath}: {e}")
-            if temp_img_path and os.path.exists(temp_img_path):
-                try:
-                    os.remove(temp_img_path)
-                except OSError:
-                    pass

@@ -9,7 +9,7 @@ if src_dir.exists():
     if src_str not in sys.path:
         sys.path.insert(0, src_str)
 
-from imagesorter.main import main
+from imagesorter.bootstrap import entry
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    raise SystemExit(entry())

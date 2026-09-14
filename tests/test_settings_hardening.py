@@ -121,7 +121,7 @@ def test_hotkeys_dictionary_validation(tmp_path):
                 "auto_advance": False
             },
             "B": "invalid_item_type",
-            "C": {
+            "X": {
                 "action": 123,                 # Non-string action -> fallback "move"
                 "folder": "path\x00with_ctrl",  # Control char -> empty string ""
                 "auto_advance": "not_bool"     # Non-bool auto_advance -> True
@@ -142,10 +142,10 @@ def test_hotkeys_dictionary_validation(tmp_path):
     assert "B" not in hotkeys
     assert "" not in hotkeys
 
-    assert "C" in hotkeys
-    assert hotkeys["C"]["action"] == "move"
-    assert hotkeys["C"]["folder"] == ""
-    assert hotkeys["C"]["auto_advance"] is True
+    assert "X" in hotkeys
+    assert hotkeys["X"]["action"] == "move"
+    assert hotkeys["X"]["folder"] == ""
+    assert hotkeys["X"]["auto_advance"] is True
 
 
 def test_directory_validation_and_unreachable_preservation(tmp_path):
@@ -194,7 +194,14 @@ def test_paths_unwritable_directory_fallback(tmp_path, monkeypatch):
     def mock_mkdir(self, *args, **kwargs):
         raise OSError(13, "Permission denied")
 
+    # This case exercises ordinary native fallback, not the explicit profile's
+    # fail-closed contract. Every native default still points into this fixture.
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path / "private-home"))
+    monkeypatch.setattr("imagesorter.paths.tempfile.gettempdir", lambda: str(tmp_path / "fallback"))
+    for name in ("APPDATA", "LOCALAPPDATA", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME", "XDG_STATE_HOME"):
+        monkeypatch.setenv(name, str(tmp_path / name.lower()))
     monkeypatch.setattr(Path, "mkdir", mock_mkdir)
+    monkeypatch.delenv("IMAGESORTER_PROFILE_ROOT", raising=False)
 
     with warnings.catch_warnings(record=True) as w:
         warnings.simplefilter("always")
@@ -203,12 +210,17 @@ def test_paths_unwritable_directory_fallback(tmp_path, monkeypatch):
         cache_dir = get_cache_dir()
         logs_dir = get_logs_dir()
 
-        # Should fall back to tempdir/ImageSorter/<category>
-        assert "ImageSorter" in str(config_dir)
+        # Should fall back to tempdir/imagesorter-<uid>/<category>
+        uid = os.getuid() if hasattr(os, "getuid") else os.getlogin()
+        expected_part = f"imagesorter-{uid}"
+        assert expected_part in str(config_dir)
         assert "config" in str(config_dir)
         assert "data" in str(data_dir)
         assert "cache" in str(cache_dir)
         assert "logs" in str(logs_dir)
+        fallback = tmp_path / "fallback" / expected_part
+        assert (config_dir, data_dir, cache_dir, logs_dir) == tuple(
+            fallback / category for category in ("config", "data", "cache", "logs"))
 
         # Runtime warnings should have been recorded
         assert len(w) >= 4

@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import sys
 import tempfile
+import uuid
 import warnings
 from pathlib import Path
 
@@ -34,8 +35,8 @@ def get_resource_dir() -> Path:
         Path: Path to static assets or package resources.
     """
     if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
-        return Path(sys._MEIPASS).resolve()
-    return get_app_dir()
+        return Path(sys._MEIPASS).resolve() / "imagesorter" / "resources"
+    return Path(__file__).resolve().parent / "resources"
 
 
 def is_portable_mode() -> bool:
@@ -48,6 +49,8 @@ def is_portable_mode() -> bool:
     Returns:
         bool: True if portable mode is active, False otherwise.
     """
+    if os.environ.get("IMAGESORTER_PROFILE_ROOT"):
+        return False
     return (get_app_dir() / "portable.flag").exists()
 
 
@@ -67,29 +70,54 @@ def _get_valid_env_path(var_name: str) -> Path | None:
     return None
 
 
+def _test_directory_writable(d: Path) -> bool:
+    """Tests actual writability of directory d using a temporary test file."""
+    test_file = d / f".write-test-{os.getpid()}-{uuid.uuid4().hex}"
+    try:
+        fd = os.open(test_file, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        os.close(fd)
+        return True
+    except (OSError, PermissionError):
+        return False
+    finally:
+        try:
+            test_file.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
 def _ensure_dir_or_fallback(target_dir: Path, category: str) -> Path:
     """
-    Ensures that target_dir exists. If an OSError occurs, falls back to
-    <tempdir>/ImageSorter/<category>. Emits a warning if preferred directory fails.
+    Ensures that target_dir exists and is writable. If an OSError occurs or directory
+    is unwritable, falls back to a user-isolated temporary directory:
+    <tempdir>/imagesorter-<uid>/<category>. Emits a warning if preferred directory fails.
 
     Args:
         target_dir (Path): The preferred directory path.
         category (str): Category name ("config", "data", "cache", "logs").
 
     Returns:
-        Path: Created directory path or fallback path.
+        Path: Created and verified directory path or fallback path.
     """
+    explicit_profile = os.environ.get("IMAGESORTER_PROFILE_ROOT")
+    if explicit_profile and not target_dir.resolve().is_relative_to(Path(explicit_profile).resolve()):
+        raise OSError(f"Profile path escapes explicit root: {target_dir}")
     try:
         target_dir.mkdir(parents=True, exist_ok=True)
-        return target_dir
+        if _test_directory_writable(target_dir):
+            return target_dir
+        raise OSError(f"Directory {target_dir} is not writable.")
     except OSError as e:
+        if explicit_profile:
+            raise OSError(f"Explicit profile is unavailable: {target_dir}") from e
         warnings.warn(
-            f"Failed to create preferred directory {target_dir}: {e}. "
+            f"Failed to verify or write to preferred directory {target_dir}: {e}. "
             f"Falling back to temporary directory for category '{category}'.",
             RuntimeWarning,
             stacklevel=2,
         )
-        fallback_dir = Path(tempfile.gettempdir()) / "ImageSorter" / category
+        uid = os.getuid() if hasattr(os, "getuid") else os.getlogin()
+        fallback_dir = Path(tempfile.gettempdir()) / f"imagesorter-{uid}" / category
         try:
             fallback_dir.mkdir(parents=True, exist_ok=True)
         except OSError as fallback_err:
@@ -108,6 +136,8 @@ def get_config_dir() -> Path:
     Returns:
         Path: Path to the configuration directory.
     """
+    if profile := os.environ.get("IMAGESORTER_PROFILE_ROOT"):
+        return _ensure_dir_or_fallback(Path(profile) / "config" / "ImageSorter", "config")
     app_dir = get_app_dir()
     if is_portable_mode():
         config_dir = app_dir / "config"
@@ -137,6 +167,8 @@ def get_data_dir() -> Path:
     Returns:
         Path: Path to the application data directory.
     """
+    if profile := os.environ.get("IMAGESORTER_PROFILE_ROOT"):
+        return _ensure_dir_or_fallback(Path(profile) / "data" / "ImageSorter", "data")
     app_dir = get_app_dir()
     if is_portable_mode():
         data_dir = app_dir / "data"
@@ -166,6 +198,8 @@ def get_cache_dir() -> Path:
     Returns:
         Path: Path to the cache directory.
     """
+    if profile := os.environ.get("IMAGESORTER_PROFILE_ROOT"):
+        return _ensure_dir_or_fallback(Path(profile) / "cache" / "ImageSorter", "cache")
     app_dir = get_app_dir()
     if is_portable_mode():
         cache_dir = app_dir / "cache"
@@ -195,6 +229,8 @@ def get_logs_dir() -> Path:
     Returns:
         Path: Path to the log files directory.
     """
+    if profile := os.environ.get("IMAGESORTER_PROFILE_ROOT"):
+        return _ensure_dir_or_fallback(Path(profile) / "state" / "ImageSorter" / "logs", "logs")
     app_dir = get_app_dir()
     if is_portable_mode():
         logs_dir = app_dir / "logs"
@@ -227,3 +263,15 @@ def get_settings_path() -> Path:
     if is_portable_mode():
         return get_app_dir() / "settings.json"
     return get_config_dir() / "settings.json"
+
+
+def get_components_dir() -> Path:
+    """Return the versioned, user-writable root for optional components."""
+    return _ensure_dir_or_fallback(get_data_dir() / "components", "components")
+
+
+def get_component_cache_dir() -> Path:
+    """Return the staging root for incomplete optional-component downloads."""
+    return _ensure_dir_or_fallback(
+        get_cache_dir() / "component-downloads", "component-downloads"
+    )

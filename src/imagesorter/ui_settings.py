@@ -1,13 +1,15 @@
 from __future__ import annotations
 
 import os
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import QEvent, Qt, QThread, QTimer, pyqtSignal
 from PyQt6.QtWidgets import (
+    QApplication,
     QCheckBox,
     QComboBox,
     QDialog,
+    QDoubleSpinBox,
     QFileDialog,
     QFormLayout,
     QHBoxLayout,
@@ -21,14 +23,37 @@ from PyQt6.QtWidgets import (
     QTableWidget,
     QTableWidgetItem,
     QTabWidget,
+    QToolTip,
     QVBoxLayout,
     QWidget,
 )
 
-from .ai_tagger import ModelDownloader, get_model_dir, is_model_and_labels_valid
-from .hardware_scan import scan_hardware
+if TYPE_CHECKING:
+    from .ai_tagger import ModelDownloader
 from .logger import logger
-from .settings_manager import SettingsManager
+from .settings_manager import (
+    RESERVED_HOTKEYS,
+    SettingsManager,
+    SettingsPersistenceError,
+)
+
+
+class ModelCheckWorker(QThread):
+    """Asynchronously verifies AI model cryptographic integrity off the GUI thread."""
+    check_finished = pyqtSignal(bool)
+
+    def __init__(self, model_dir: str | None = None) -> None:
+        super().__init__()
+        self.model_dir = model_dir
+
+    def run(self) -> None:
+        from .reader_process import run_reader
+        try:
+            result, _ = run_reader({"action": "validate_model", "model_dir": self.model_dir},
+                                   cancelled=self.isInterruptionRequested, timeout=60)
+            self.check_finished.emit(bool(result["valid"]))
+        except Exception:
+            self.check_finished.emit(False)
 
 
 class SettingsWindow(QDialog):
@@ -38,12 +63,29 @@ class SettingsWindow(QDialog):
     def __init__(self, settings_manager: SettingsManager, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.settings = settings_manager
+        self.downloader: ModelDownloader | None = None
+        self.progress: QProgressDialog | None = None
+        self.check_worker: ModelCheckWorker | None = None
+        self._model_refresh_pending = False
+        self._close_pending = False
+        self._pending_result = None
         self.setWindowTitle("Image Sorter Settings")
         self.resize(800, 600)
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.setAccessibleName("Image Sorter Configuration Window")
         self.setAccessibleDescription("Tabbed settings interface to configure directories, hotkeys, AI tagging, and system performance.")
         self.init_ui()
+        for widget in [self, *self.findChildren(QWidget)]:
+            widget.installEventFilter(self)
+        self.chk_tooltips.toggled.connect(lambda enabled: None if enabled else QToolTip.hideText())
+
+    def eventFilter(self, watched, event):
+        if event.type() == QEvent.Type.ToolTip and not self.chk_tooltips.isChecked():
+            if not QApplication.keyboardModifiers() & Qt.KeyboardModifier.AltModifier:
+                return True
+        if event.type() == QEvent.Type.ChildAdded and isinstance(event.child(), QWidget):
+            event.child().installEventFilter(self)
+        return super().eventFilter(watched, event)
 
     def init_ui(self) -> None:
         """Builds the tabbed UI for settings."""
@@ -70,6 +112,9 @@ class SettingsWindow(QDialog):
         self.tab_ai.setAccessibleName("AI & Metadata Configuration Tab")
         self.init_ai_tab()
         self.tabs.addTab(self.tab_ai, "AI & Metadata")
+        from .ui_components import ComponentsPanel
+        self.components_panel = ComponentsPanel(self)
+        self.tabs.addTab(self.components_panel, "Optional Components")
 
         # Advanced/Hardware Tab
         self.tab_advanced = QWidget()
@@ -103,7 +148,8 @@ class SettingsWindow(QDialog):
         self.setTabOrder(self.src_btn, self.trash_edit)
         self.setTabOrder(self.trash_edit, self.trash_btn)
         self.setTabOrder(self.trash_btn, self.chk_fullscreen)
-        self.setTabOrder(self.chk_fullscreen, self.chk_tooltips)
+        self.setTabOrder(self.chk_fullscreen, self.chk_show_tags)
+        self.setTabOrder(self.chk_show_tags, self.chk_tooltips)
         self.setTabOrder(self.chk_tooltips, self.theme_combo)
         self.setTabOrder(self.theme_combo, self.font_spin)
         self.setTabOrder(self.font_spin, self.btn_save)
@@ -149,6 +195,13 @@ class SettingsWindow(QDialog):
         self.chk_fullscreen.setToolTip("Launch the application in full screen by default.")
         self.chk_fullscreen.setChecked(self.settings.get('ui', 'fullscreen') or False)
         layout.addRow("UI Mode:", self.chk_fullscreen)
+
+        self.chk_show_tags = QCheckBox("Show AI status in image details")
+        self.chk_show_tags.setAccessibleName("Show AI Status Checkbox")
+        self.chk_show_tags.setAccessibleDescription("Shows whether AI tagging is enabled in the image details.")
+        self.chk_show_tags.setToolTip("Show the AI tagging status in image details; this does not display predicted tags.")
+        self.chk_show_tags.setChecked(self.settings.get('ui', 'show_tags') is not False)
+        layout.addRow("Image Details:", self.chk_show_tags)
 
         self.chk_tooltips = QCheckBox("Enable Helpful Tooltips")
         self.chk_tooltips.setAccessibleName("Enable Tooltips Checkbox")
@@ -216,10 +269,10 @@ class SettingsWindow(QDialog):
         self.chk_ai_enable.setAccessibleDescription("Toggles automatic image classification using ONNX model.")
         self.chk_ai_enable.setToolTip("Automatically analyze images to generate relevant descriptive tags.")
 
-        self.btn_download_model = QPushButton("Download Model")
-        self.btn_download_model.setAccessibleName("Download AI Model Button")
-        self.btn_download_model.setAccessibleDescription("Downloads required MobileNetV2 ONNX model into data directory.")
-        self.btn_download_model.setToolTip("Download the required ONNX model for the AI Auto-Tagger to function.")
+        self.btn_download_model = QPushButton("Manage AI Model…")
+        self.btn_download_model.setAccessibleName("Manage AI Model Button")
+        self.btn_download_model.setAccessibleDescription("Opens Optional Components to manage or import the verified MobileNetV2 model.")
+        self.btn_download_model.setToolTip("Manage or import the verified model in Optional Components. Custom ONNX model paths are not supported.")
         self.btn_download_model.clicked.connect(self.download_ai_model)
 
         self.refresh_ai_model_status()
@@ -227,6 +280,21 @@ class SettingsWindow(QDialog):
         ai_layout.addWidget(self.chk_ai_enable)
         ai_layout.addWidget(self.btn_download_model)
         layout.addRow("AI Tagger:", ai_layout)
+
+        self.confidence_spin = QDoubleSpinBox()
+        self.confidence_spin.setRange(0.0, 1.0)
+        self.confidence_spin.setDecimals(3)
+        self.confidence_spin.setSingleStep(0.05)
+        threshold = self.settings.get('ai_tagger', 'threshold')
+        self.confidence_spin.setValue(0.5 if threshold is None else threshold)
+        self.confidence_spin.setAccessibleName("AI Confidence Threshold")
+        self.confidence_spin.setAccessibleDescription("Minimum confidence from zero to one for generated tags; the default is 0.5.")
+        self.confidence_spin.setToolTip("Keep up to 10 ranked predictions with confidence at or above this value. Higher values produce fewer tags.")
+        layout.addRow("Minimum Tag Confidence:", self.confidence_spin)
+
+        self.model_source_label = QLabel("Use the verified model in Optional Components. Existing model files can be imported there.")
+        self.model_source_label.setWordWrap(True)
+        layout.addRow("Model:", self.model_source_label)
 
         self.chk_exif = QCheckBox("Write Tags to EXIF (XPKeywords)")
         self.chk_exif.setAccessibleName("Write Tags to EXIF Checkbox")
@@ -268,7 +336,15 @@ class SettingsWindow(QDialog):
     def run_hardware_scan(self) -> None:
         """Runs hardware scanner and displays recommendations."""
         try:
-            hw = scan_hardware()
+            # Inventory is cheap and does not initialize an ONNX session; full
+            # provider execution qualification belongs to the component worker.
+            import psutil
+            hw = {"physical_cores": psutil.cpu_count(logical=False) or 1,
+                  "logical_cores": psutil.cpu_count() or 1,
+                  "memory_total_gb": round(psutil.virtual_memory().total / 1024**3, 2),
+                  "onnx_providers": ["See component qualification"],
+                  "suggestions": {"ai_provider": "Configured by optional provider component",
+                                  "queue_threads": 1}}
             report = (
                 f"<b>Physical Cores:</b> {hw['physical_cores']}<br>"
                 f"<b>Logical Cores:</b> {hw['logical_cores']}<br>"
@@ -347,94 +423,236 @@ class SettingsWindow(QDialog):
             self.add_hotkey_row(key, config.get("action", "move"), config.get("folder", ""), config.get("auto_advance", True))
 
     def refresh_ai_model_status(self) -> None:
-        """Refreshes button and checkbox states based on model and label cryptographic validity."""
-        model_valid = is_model_and_labels_valid()
-        if model_valid:
-            self.btn_download_model.setText("Model Downloaded")
-            self.btn_download_model.setEnabled(False)
+        """Verify optional model files without hashing them on the GUI thread."""
+        if self.check_worker and self.check_worker.isRunning():
+            self._model_refresh_pending = True
+            return
+        self.btn_download_model.setText("Checking Model…")
+        self.btn_download_model.setEnabled(False)
+        self.chk_ai_enable.setEnabled(False)
+        worker = ModelCheckWorker()
+        self.check_worker = worker
+        worker.check_finished.connect(self._on_model_check_finished)
+        worker.finished.connect(self._on_model_check_thread_finished)
+        worker.start()
+
+    def _on_model_check_thread_finished(self) -> None:
+        self.check_worker = None
+        if self._close_pending:
+            self._finish_pending_close()
+        elif self._model_refresh_pending:
+            self._model_refresh_pending = False
+            self.refresh_ai_model_status()
+
+    def _on_model_check_finished(self, is_valid: bool) -> None:
+        """Callback when background model check finishes."""
+        self.btn_download_model.setText("Manage AI Model…")
+        self.btn_download_model.setEnabled(True)
+        if is_valid:
             self.chk_ai_enable.setEnabled(True)
             saved_enabled = self.settings.get('ai_tagger', 'enabled') or False
             self.chk_ai_enable.setChecked(saved_enabled)
         else:
-            self.btn_download_model.setText("Download Model")
-            self.btn_download_model.setEnabled(True)
             self.chk_ai_enable.setChecked(False)
             self.chk_ai_enable.setEnabled(False)
 
     def download_ai_model(self) -> None:
-        """Initiates model download."""
-        reply = QMessageBox.question(self, 'Download Model', 'This will download approx 15MB. Continue?',
-                                     QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
-        if reply == QMessageBox.StandardButton.Yes:
-            self.progress = QProgressDialog("Downloading model...", "Cancel", 0, 100, self)
-            self.progress.setWindowModality(Qt.WindowModality.WindowModal)
+        """Opens verified component management without downloading or selecting arbitrary paths."""
+        self.tabs.setCurrentWidget(self.components_panel)
+        self.components_panel.component.setCurrentText("ai.mobilenet-v2")
 
-            model_dir = get_model_dir()
-            self.downloader = ModelDownloader(model_dir)
-            self.downloader.progress.connect(self.progress.setValue)
-            self.downloader.finished.connect(self.on_download_finished)
-            self.downloader.start()
+    def cancel_download(self) -> None:
+        """Requests interruption for active download without making false success claims."""
+        if self.downloader and self.downloader.isRunning():
+            logger.info("User requested cancellation of model download.")
+            self.downloader.requestInterruption()
 
     def on_download_finished(self, success: bool, msg: str) -> None:
-        """Handles model download completion."""
-        self.progress.close()
-        self.refresh_ai_model_status()
-        if success:
+        """Handles model download completion or cancellation safely."""
+        if self.progress:
+            self.progress.close()
+        if self._close_pending:
+            return  # Closing must not open another modal completion dialog.
+
+        was_cancelled = False
+        if self.downloader and self.downloader.isInterruptionRequested():
+            was_cancelled = True
+
+        if not self._close_pending:
+            self.refresh_ai_model_status()
+
+        if was_cancelled:
+            QMessageBox.information(self, "Download Cancelled", "Model download was cancelled by user.")
+        elif success:
             QMessageBox.information(self, "Success", "Model downloaded and verified successfully! You can now enable AI tagging.")
         else:
             QMessageBox.critical(self, "Error", f"Failed to download model: {msg}")
 
-    def save_settings(self) -> None:
-        """Validates and saves settings."""
-        src_dir = self.src_edit.text()
-        if src_dir and not os.path.exists(src_dir):
-            QMessageBox.warning(self, "Validation Error", f"Source directory does not exist: {src_dir}")
+    def closeEvent(self, event) -> None:
+        """Cancel optional work and close once threads finish, without GUI waits."""
+        downloader_running = bool(self.downloader and self.downloader.isRunning())
+        checker_running = bool(self.check_worker and self.check_worker.isRunning())
+        component_running = bool(self.components_panel.process)
+        if downloader_running or checker_running or component_running:
+            event.ignore()
+            self._close_pending = True
+            self._pending_result = QDialog.DialogCode.Rejected
+            self.setEnabled(False)
+            if self.downloader:
+                self.downloader.requestInterruption()
+            if self.check_worker:
+                self.check_worker.requestInterruption()
+            self.components_panel.cancel()
+            QTimer.singleShot(50, self._finish_pending_close)
             return
+        super().closeEvent(event)
 
-        self.settings.set('directories', 'source', os.path.normpath(src_dir) if src_dir else "")
+    def _finish_pending_close(self) -> None:
+        if not self._close_pending:
+            return
+        if self.components_panel.process or (self.downloader and self.downloader.isRunning()) or (
+            self.check_worker and self.check_worker.isRunning()
+        ):
+            QTimer.singleShot(50, self._finish_pending_close)
+            return
+        self._close_pending = False
+        result, self._pending_result = self._pending_result, None
+        super().done(QDialog.DialogCode.Rejected if result is None else result)
 
-        trash_dir = self.trash_edit.text()
-        self.settings.set('directories', 'trash', os.path.normpath(trash_dir) if trash_dir else "")
+    def done(self, result):
+        if self.components_panel.process or (self.check_worker and self.check_worker.isRunning()) or (
+            self.downloader and self.downloader.isRunning()
+        ):
+            self._close_pending = True
+            self._pending_result = result
+            self.components_panel.cancel()
+            if self.check_worker:
+                self.check_worker.requestInterruption()
+            if self.downloader:
+                self.downloader.requestInterruption()
+            QTimer.singleShot(50, self._finish_pending_close)
+            return
+        super().done(result)
 
-        ui_settings = self.settings.get('ui') or {}
-        ui_settings['fullscreen'] = self.chk_fullscreen.isChecked()
-        ui_settings['theme'] = self.theme_combo.currentText()
-        ui_settings['font_size'] = self.font_spin.value()
-        self.settings.update_section('ui', ui_settings)
+    def save_settings(self) -> None:
+        """
+        Validates all inputs across tabs and applies changes atomically.
+        If validation or persistence fails, reports error and retains user dialog state.
+        """
+        changes: dict[str, dict[str, Any]] = {}
 
-        self.settings.set('ai_tagger', 'enabled', self.chk_ai_enable.isChecked())
-        self.settings.set('metadata', 'write_exif', self.chk_exif.isChecked())
-        self.settings.set('metadata', 'write_sidecar', self.chk_sidecar.isChecked())
-
-        adv_settings = self.settings.get('advanced') or {}
-        adv_settings['worker_threads'] = self.worker_spin.value()
-        self.settings.update_section('advanced', adv_settings)
-
-        hotkeys: dict[str, dict[str, Any]] = {}
-        for row in range(self.hotkey_table.rowCount()):
-            key_item = self.hotkey_table.item(row, 0)
-            if not key_item or not key_item.text().strip():
-                continue
-            key = key_item.text().strip().upper()
-
-            action_combo = self.hotkey_table.cellWidget(row, 1)
-            action = action_combo.currentText()
-
-            folder_widget = self.hotkey_table.cellWidget(row, 2)
-            folder_edit = folder_widget.layout().itemAt(0).widget()
-            folder = folder_edit.text()
-
-            if folder and not os.path.exists(folder):
-                QMessageBox.warning(self, "Validation Error", f"Target folder for hotkey '{key}' does not exist: {folder}")
+        # 1. Directories Validation
+        src_dir = self.src_edit.text().strip()
+        if src_dir:
+            if os.path.isfile(src_dir):
+                QMessageBox.warning(self, "Validation Error", f"Source directory path points to a file, not a directory: {src_dir}")
+                return
+            if not os.path.exists(src_dir):
+                QMessageBox.warning(self, "Validation Error", f"Source directory does not exist: {src_dir}")
                 return
 
+        trash_dir = self.trash_edit.text().strip()
+        if trash_dir:
+            if os.path.isfile(trash_dir):
+                QMessageBox.warning(self, "Validation Error", f"Trash directory path points to a file, not a directory: {trash_dir}")
+                return
+            if not os.path.exists(trash_dir):
+                QMessageBox.warning(self, "Validation Error", f"Trash directory does not exist: {trash_dir}")
+                return
+
+        changes['directories'] = {
+            'source': os.path.normpath(src_dir) if src_dir else "",
+            'trash': os.path.normpath(trash_dir) if trash_dir else ""
+        }
+
+        # 2. UI Validation
+        ui_sec = self.settings.get('ui') or {}
+        ui_sec['fullscreen'] = self.chk_fullscreen.isChecked()
+        ui_sec['tooltips_enabled'] = self.chk_tooltips.isChecked()
+        ui_sec['show_tags'] = self.chk_show_tags.isChecked()
+        ui_sec['theme'] = self.theme_combo.currentText()
+        ui_sec['font_size'] = self.font_spin.value()
+        changes['ui'] = ui_sec
+
+        # 3. Metadata Validation
+        meta_sec = self.settings.get('metadata') or {}
+        meta_sec['write_exif'] = self.chk_exif.isChecked()
+        meta_sec['write_sidecar'] = self.chk_sidecar.isChecked()
+        changes['metadata'] = meta_sec
+
+        # 4. AI Tagger Validation
+        ai_sec = self.settings.get('ai_tagger') or {}
+        ai_sec['enabled'] = self.chk_ai_enable.isChecked()
+        ai_sec['threshold'] = self.confidence_spin.value()
+        changes['ai_tagger'] = ai_sec
+
+        # 5. Advanced Validation
+        adv_sec = self.settings.get('advanced') or {}
+        adv_sec['worker_threads'] = self.worker_spin.value()
+        changes['advanced'] = adv_sec
+
+        # 6. Hotkeys Validation
+        hotkeys: dict[str, dict[str, Any]] = {}
+        seen_keys: set[str] = set()
+
+        for row in range(self.hotkey_table.rowCount()):
+            key_item = self.hotkey_table.item(row, 0)
+            raw_key = key_item.text().strip() if key_item else ""
+            if not raw_key:
+                continue
+
+            key = raw_key.upper()
+            if len(key) != 1:
+                QMessageBox.warning(self, "Validation Error", f"Hotkey '{raw_key}' must be a single character.")
+                return
+
+            if key in RESERVED_HOTKEYS:
+                QMessageBox.warning(self, "Validation Error", f"Hotkey '{key}' is reserved by the application ({', '.join(sorted(RESERVED_HOTKEYS))}).")
+                return
+
+            if key in seen_keys:
+                QMessageBox.warning(self, "Validation Error", f"Duplicate hotkey binding detected for key '{key}'.")
+                return
+            seen_keys.add(key)
+
+            action_combo = self.hotkey_table.cellWidget(row, 1)
+            action = action_combo.currentText() if action_combo else "move"
+
+            folder_widget = self.hotkey_table.cellWidget(row, 2)
+            folder_edit = folder_widget.layout().itemAt(0).widget() if folder_widget else None
+            folder = folder_edit.text().strip() if folder_edit else ""
+
+            if folder:
+                if os.path.isfile(folder):
+                    QMessageBox.warning(self, "Validation Error", f"Target path for hotkey '{key}' points to a file, not a directory: {folder}")
+                    return
+                if not os.path.exists(folder):
+                    QMessageBox.warning(self, "Validation Error", f"Target folder for hotkey '{key}' does not exist: {folder}")
+                    return
+
             chk_widget = self.hotkey_table.cellWidget(row, 3)
-            advance_chk = chk_widget.layout().itemAt(0).widget()
-            auto_advance = advance_chk.isChecked()
+            advance_chk = chk_widget.layout().itemAt(0).widget() if chk_widget else None
+            auto_advance = advance_chk.isChecked() if advance_chk else True
 
-            hotkeys[key] = {"action": action, "folder": os.path.normpath(folder) if folder else "", "auto_advance": auto_advance}
+            hotkeys[key] = {
+                "action": action,
+                "folder": os.path.normpath(folder) if folder else "",
+                "auto_advance": auto_advance
+            }
 
-        self.settings.update_section('hotkeys', hotkeys)
+        changes['hotkeys'] = hotkeys
+
+        # Atomic commit of all section changes
+        try:
+            self.settings.apply_changes(changes)
+        except SettingsPersistenceError as e:
+            logger.error(f"Failed to persist settings from UI dialog: {e}")
+            QMessageBox.critical(self, "Persistence Error", f"Failed to save settings to disk: {e}")
+            return
+        except Exception as e:
+            logger.error(f"Unexpected error applying settings: {e}")
+            QMessageBox.critical(self, "Save Error", f"An unexpected error occurred while saving settings: {e}")
+            return
 
         QMessageBox.information(self, "Success", "Settings saved successfully.")
         self.accept()

@@ -1,9 +1,10 @@
 import os
-import shutil
 import threading
 
 from PyQt6.QtCore import QCoreApplication
 
+from imagesorter.operation_engine import OperationEngine
+from imagesorter.operation_journal import OperationJournal
 from imagesorter.queue_worker import QueueWorker
 from imagesorter.settings_manager import SettingsManager
 
@@ -26,7 +27,11 @@ def test_concurrent_same_name_moves(qtbot, tmp_path):
     file_2.write_text("content of file 2")
 
     finished_paths = []
-    worker.signals.finished.connect(lambda path: finished_paths.append(path))
+    worker.signals.operation_result.connect(
+        lambda result: finished_paths.append(result["destination_path"])
+        if result["state"].startswith("completed")
+        else None
+    )
 
     barrier = threading.Barrier(2)
 
@@ -74,7 +79,11 @@ def test_concurrent_same_name_copies(qtbot, tmp_path):
     file_2.write_text("content of file 2")
 
     finished_paths = []
-    worker.signals.finished.connect(lambda path: finished_paths.append(path))
+    worker.signals.operation_result.connect(
+        lambda result: finished_paths.append(result["destination_path"])
+        if result["state"].startswith("completed")
+        else None
+    )
 
     barrier = threading.Barrier(2)
 
@@ -121,7 +130,11 @@ def test_existing_destination_collision_never_overwrites(qtbot, tmp_path):
     new_file.write_text("new photo content")
 
     finished_paths = []
-    worker.signals.finished.connect(lambda path: finished_paths.append(path))
+    worker.signals.operation_result.connect(
+        lambda result: finished_paths.append(result["destination_path"])
+        if result["state"].startswith("completed")
+        else None
+    )
 
     worker.add_task("move", str(new_file), str(dst_dir))
     worker.stop()
@@ -144,7 +157,11 @@ def test_invalid_destination_rejection(qtbot, tmp_path):
     src_file.write_text("test")
 
     errors = []
-    worker.signals.error.connect(lambda path, msg: errors.append((path, msg)))
+    worker.signals.operation_result.connect(
+        lambda result: errors.append((result["source_path"], result["error"]))
+        if result["state"] == "failed"
+        else None
+    )
 
     # Non-existent destination folder
     worker.add_task("move", str(src_file), str(tmp_path / "non_existent"))
@@ -166,7 +183,11 @@ def test_same_file_rejection(qtbot, tmp_path):
     src_file.write_text("test")
 
     errors = []
-    worker.signals.error.connect(lambda path, msg: errors.append((path, msg)))
+    worker.signals.operation_result.connect(
+        lambda result: errors.append((result["source_path"], result["error"]))
+        if result["state"] == "failed"
+        else None
+    )
 
     worker.add_task("move", str(src_file), str(src_dir))
     worker.stop()
@@ -178,10 +199,6 @@ def test_same_file_rejection(qtbot, tmp_path):
 
 
 def test_cross_device_failure_preservation(qtbot, tmp_path, monkeypatch):
-    settings_file = tmp_path / "settings.json"
-    sm = SettingsManager(filepath=str(settings_file))
-    worker = QueueWorker(sm)
-
     src_dir = tmp_path / "src"
     dst_dir = tmp_path / "dst"
     src_dir.mkdir()
@@ -190,23 +207,20 @@ def test_cross_device_failure_preservation(qtbot, tmp_path, monkeypatch):
     src_file = src_dir / "test.jpg"
     src_file.write_text("important source data")
 
-    errors = []
-    finished = []
-    worker.signals.error.connect(lambda path, msg: errors.append((path, msg)))
-    worker.signals.finished.connect(lambda path: finished.append(path))
+    engine = OperationEngine(OperationJournal(str(tmp_path / "journal.db")))
+    original_write = os.write
 
-    def mock_copyfileobj(f_src, f_dst, length=65536):
-        f_dst.write(f_src.read(10))
+    def interrupted_stage_write(fd, data):
+        original_write(fd, data[:10])
         raise OSError("Simulated disk write failure")
 
-    monkeypatch.setattr(shutil, "copyfileobj", mock_copyfileobj)
-
-    worker.add_task("move", str(src_file), str(dst_dir))
-    worker.stop()
-    QCoreApplication.processEvents()
-
-    assert len(errors) == 1
-    assert len(finished) == 0
+    # The mutation now runs in another process. Inject at its real OS stream
+    # boundary directly, rather than patching the GUI's unused shutil module.
+    monkeypatch.setattr(os, "write", interrupted_stage_write)
+    result = engine.execute({"operation_id": "interrupted-copy", "action": "move",
+                             "source_path": str(src_file), "destination_path": str(dst_dir)})
+    assert result["state"] == "failed"
+    assert "Simulated disk write failure" in result["error"]
     assert src_file.exists()
     assert src_file.read_text() == "important source data"
     assert len(list(dst_dir.glob("*"))) == 0
@@ -225,15 +239,15 @@ def test_undo_copy_replacement_protection(qtbot, tmp_path):
     src_file = src_dir / "test.jpg"
     src_file.write_text("original copy content")
 
-    undo_tokens = []
-    worker.signals.undo_record.connect(lambda token: undo_tokens.append(token))
+    results = []
+    worker.signals.operation_result.connect(results.append)
 
     worker.add_task("copy", str(src_file), str(dst_dir))
     worker.stop()
     QCoreApplication.processEvents()
 
-    assert len(undo_tokens) == 1
-    token = undo_tokens[0]
+    assert len(results) == 1
+    token = results[0]["undo_token"]
     copied_path = token["current"]
 
     # Tamper with copied file to simulate replacement with different content
@@ -241,7 +255,11 @@ def test_undo_copy_replacement_protection(qtbot, tmp_path):
         f.write("replaced content!")
 
     errors = []
-    worker.signals.error.connect(lambda path, msg: errors.append((path, msg)))
+    worker.signals.operation_result.connect(
+        lambda result: errors.append((result["source_path"], result["error"]))
+        if result["state"] == "failed"
+        else None
+    )
 
     worker.add_task("undo_copy", copied_path, token)
     worker.stop()
@@ -265,21 +283,25 @@ def test_undo_move_restore_collision_protection(qtbot, tmp_path):
     src_file = src_dir / "test.jpg"
     src_file.write_text("moved file content")
 
-    undo_tokens = []
-    worker.signals.undo_record.connect(lambda token: undo_tokens.append(token))
+    results = []
+    worker.signals.operation_result.connect(results.append)
 
     worker.add_task("move", str(src_file), str(dst_dir))
     worker.stop()
     QCoreApplication.processEvents()
 
-    assert len(undo_tokens) == 1
-    token = undo_tokens[0]
+    assert len(results) == 1
+    token = results[0]["undo_token"]
 
     # Create a replacement file at original location before undo
     src_file.write_text("unrelated file at original location")
 
     errors = []
-    worker.signals.error.connect(lambda path, msg: errors.append((path, msg)))
+    worker.signals.operation_result.connect(
+        lambda result: errors.append((result["source_path"], result["error"]))
+        if result["state"] == "failed"
+        else None
+    )
 
     worker.add_task("undo_move", token["current"], token)
     worker.stop()
@@ -311,7 +333,11 @@ def test_custom_trash_collision_safety(qtbot, tmp_path):
     file_to_trash.write_text("to be trashed")
 
     finished = []
-    worker.signals.finished.connect(lambda path: finished.append(path))
+    worker.signals.operation_result.connect(
+        lambda result: finished.append(result["destination_path"])
+        if result["state"].startswith("completed")
+        else None
+    )
 
     worker.add_task("trash", str(file_to_trash))
     worker.stop()

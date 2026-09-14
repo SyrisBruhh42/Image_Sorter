@@ -1,16 +1,11 @@
 from __future__ import annotations
 
+import logging
 import os
 import sys
 
-try:
-    from .logger import logger
-    from .settings_manager import SettingsManager
-    from .ui_main import MainViewer
-except ImportError:
-    from imagesorter.logger import logger  # type: ignore
-    from imagesorter.settings_manager import SettingsManager  # type: ignore
-    from imagesorter.ui_main import MainViewer  # type: ignore
+logger = logging.getLogger("ImageSorter")
+MainViewer = None  # Injectable viewer factory; runtime import happens after profile parsing.
 
 
 def configure_linux_platform() -> None:
@@ -46,26 +41,100 @@ def main(argv: list[str] | None = None) -> int:
     Returns:
         int: Exit status code (0 for success, 1 for failure).
     """
-    args = sys.argv if argv is None else argv
+    global MainViewer
+    args = list(sys.argv if argv is None else argv)
+    if any(flag in args[1:] for flag in ("--profile-root", "--reader-job", "--mutation-service", "--component-job", "--native-fixture-job")):
+        from .bootstrap import entry
+        return entry(args)
 
     if any(arg in args[1:] for arg in ("-h", "--help")):
-        print("Usage: imagesorter [options]\n\nOptions:\n  -h, --help  Show this help message and exit")
+        print("Usage: imagesorter [options] [file_or_directory ...]\n\nOptions:\n  -h, --help  Show this help message and exit")
         return 0
 
     configure_linux_platform()
+    if "--diagnostic-receipt" in args:
+        index = args.index("--diagnostic-receipt")
+        from .diagnostics import configure
+        configure(args[index + 1])
+        del args[index:index + 2]
+    exit_after_ready = "--acceptance-exit-after-ready" in args
+    if exit_after_ready:
+        args.remove("--acceptance-exit-after-ready")
+    scenario_name = None
+    if "--diagnostic-scenario" in args:
+        if not os.environ.get("IMAGESORTER_PROFILE_ROOT"):
+            raise ValueError("Native diagnostic scenarios require --profile-root")
+        index = args.index("--diagnostic-scenario")
+        scenario_name = args[index + 1]
+        del args[index:index + 2]
+    from .launch_requests import parse_launch_paths
+    from .paths import get_resource_dir
+    from .settings_manager import SettingsManager
+    if MainViewer is None:
+        from .ui_main import MainViewer
 
     try:
+        from PyQt6.QtGui import QIcon
         from PyQt6.QtWidgets import QApplication
 
-        app = QApplication(args)
+        app = QApplication.instance()
+        if app is None:
+            app = QApplication(args)
+
         app.setApplicationName("Image Sorter")
         app.setOrganizationName("SyrisBruhh42")
 
-        settings = SettingsManager()
-        viewer = MainViewer(settings)
-        viewer.show()
+        # Desktop ID wiring according to Freedesktop spec (imagesorter.desktop)
+        app.setDesktopFileName("imagesorter")
 
-        return int(app.exec())
+        # Set Application Window Icon
+        res_dir = get_resource_dir()
+        icon_path = res_dir / "imagesorter.png"
+        if not icon_path.exists():
+            icon_path = res_dir / "imagesorter.ico"
+        if icon_path.exists():
+            app.setWindowIcon(QIcon(str(icon_path)))
+
+        scenario = None
+        if scenario_name:
+            from .native_scenarios import prepare
+            scenario = prepare(scenario_name)
+        settings = SettingsManager()
+
+        # Parse positional launch arguments (files and folders)
+        initial_paths = parse_launch_paths(args[1:])
+        if scenario:
+            initial_paths = scenario["images"]
+
+        if initial_paths:
+            viewer = MainViewer(settings, initial_paths=initial_paths)
+        else:
+            viewer = MainViewer(settings)
+
+        from .diagnostics import record
+        record("launch_received", arguments=args[1:], normalized_paths=initial_paths,
+               desktop_file_name=app.desktopFileName(), application_icon_present=not app.windowIcon().isNull())
+
+        viewer._acceptance_exit_after_ready = exit_after_ready
+        viewer.show()
+        if scenario:
+            from .native_scenarios import install
+            install(viewer, scenario)
+        import signal
+
+        from PyQt6.QtCore import QTimer
+        # Keep Python's signal bridge serviced by the Qt event loop.
+        signal_timer = QTimer(app)
+        signal_timer.timeout.connect(lambda: None)
+        signal_timer.start(50)
+        previous_term = signal.getsignal(signal.SIGTERM)
+        signal.signal(signal.SIGTERM, lambda *_: viewer.close())
+
+        try:
+            exit_code = int(app.exec())
+            return int(getattr(viewer, "_scenario_exit_code", exit_code))
+        finally:
+            signal.signal(signal.SIGTERM, previous_term)
     except Exception as e:
         logger.exception("Qt initialization failed", exc_info=e)
         sys.stderr.write(
@@ -77,4 +146,5 @@ def main(argv: list[str] | None = None) -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    from .bootstrap import entry
+    raise SystemExit(entry())

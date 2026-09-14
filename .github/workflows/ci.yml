@@ -1,118 +1,244 @@
-name: CI & Packaging
+name: CI
 
 on:
   push:
-    branches: [ feature/image-sorter-app-4050765199291038722, main, master ]
+    branches: [main, integration/unified-main, feature/image-sorter-app-4050765199291038722]
   pull_request:
-    branches: [ feature/image-sorter-app-4050765199291038722, main, master ]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  PIP_DISABLE_PIP_VERSION_CHECK: "1"
+  ONNXRUNTIME_DISABLE_TELEMETRY: "1"
+  DO_NOT_TRACK: "1"
+  HF_HUB_OFFLINE: "1"
+  TRANSFORMERS_OFFLINE: "1"
 
 jobs:
-  test:
-    name: Test (Python ${{ matrix.python-version }})
-    runs-on: ubuntu-latest
+  quality:
+    name: Python ${{ matrix.python-version }} / Ubuntu 24.04
+    runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.9", "3.10", "3.11", "3.12"]
-
+        python-version: ["3.10", "3.11", "3.12"]
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Install system dependencies for Qt
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libegl1 libgl1 libxcb-cursor0 libdbus-1-3
-
-      - name: Set up Python ${{ matrix.python-version }}
-        uses: actions/setup-python@v5
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
-
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -e ".[dev]"
-
-      - name: Dependency check
-        run: |
-          pip check
-
-      - name: Lint check (Ruff)
-        run: |
-          ruff check src/ tests/
-
-      - name: Run tests with coverage
-        env:
-          QT_QPA_PLATFORM: offscreen
-          HOME: ${{ runner.temp }}/home_${{ matrix.python-version }}
-          XDG_CONFIG_HOME: ${{ runner.temp }}/config_${{ matrix.python-version }}
-          XDG_DATA_HOME: ${{ runner.temp }}/data_${{ matrix.python-version }}
-          XDG_CACHE_HOME: ${{ runner.temp }}/cache_${{ matrix.python-version }}
-          XDG_STATE_HOME: ${{ runner.temp }}/state_${{ matrix.python-version }}
-        run: |
-          mkdir -p "$HOME" "$XDG_CONFIG_HOME" "$XDG_DATA_HOME" "$XDG_CACHE_HOME" "$XDG_STATE_HOME"
-          pytest --cov=imagesorter --cov-report=term-missing tests/
-
-  package-and-build:
-    name: Package Wheel & PyInstaller Executable
-    runs-on: ubuntu-latest
-    needs: test
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Install system dependencies for Qt
+          cache: pip
+      - name: Install Qt runtime libraries
         run: |
           sudo apt-get update
-          sudo apt-get install -y libegl1 libgl1 libxcb-cursor0 libdbus-1-3
-
-      - name: Set up Python 3.12
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-
-      - name: Install build and dev dependencies
-        run: |
-          python -m pip install --upgrade pip build wheel
-          pip install -e ".[dev]"
-
-      - name: Build wheel package
-        run: |
-          pip wheel --no-deps --wheel-dir dist .
-
-      - name: Verify package resources in wheel
-        run: |
-          python -c "
-          import zipfile, sys, glob
-          wheels = glob.glob('dist/imagesorter-*.whl')
-          if not wheels:
-              print('No wheel found!')
-              sys.exit(1)
-          with zipfile.ZipFile(wheels[0], 'r') as z:
-              files = z.namelist()
-              print('Wheel files:', files)
-              required = ['imagesorter/resources/imagesorter.png']
-              for req in required:
-                  if not any(f.endswith('imagesorter.png') for f in files):
-                      print(f'Missing required resource matching: {req}')
-                      sys.exit(1)
-          print('Package resource verification successful!')
-          "
-
-      - name: Build PyInstaller standalone executable
-        run: |
-          python3 build.py
-
-      - name: Executable smoke test (--help)
+          sudo apt-get install -y libegl1 libgl1 libxcb-cursor0 libdbus-1-3 squashfs-tools
+      - name: Install project
+        run: python -m pip install -e ".[dev]"
+      - name: Verify dependency graph
+        run: python -m pip check
+      - name: Lint
+        run: ruff check src tests scripts build_desktop.py
+      - name: Offline tests
         env:
           QT_QPA_PLATFORM: offscreen
-          HOME: ${{ runner.temp }}/home_smoke
-          XDG_CONFIG_HOME: ${{ runner.temp }}/config_smoke
-          XDG_DATA_HOME: ${{ runner.temp }}/data_smoke
-          XDG_CACHE_HOME: ${{ runner.temp }}/cache_smoke
-          XDG_STATE_HOME: ${{ runner.temp }}/state_smoke
+          XDG_CONFIG_HOME: ${{ runner.temp }}/config
+          XDG_DATA_HOME: ${{ runner.temp }}/data
+          XDG_CACHE_HOME: ${{ runner.temp }}/cache
+          XDG_STATE_HOME: ${{ runner.temp }}/state
+        run: python -m pytest -m "not packaging" --cov=imagesorter --cov-report=term-missing tests
+
+  x11-smoke:
+    name: Ubuntu 24.04 X11 smoke
+    runs-on: ubuntu-24.04
+    needs: quality
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install dependencies
         run: |
-          mkdir -p "$HOME" "$XDG_CONFIG_HOME" "$XDG_DATA_HOME" "$XDG_CACHE_HOME" "$XDG_STATE_HOME"
-          ./dist/ImageSorter/ImageSorter --help
+          sudo apt-get update
+          sudo apt-get install -y libegl1 libgl1 libxcb-cursor0 libdbus-1-3 xvfb
+          python -m pip install -e ".[dev]"
+      - name: Run isolated X11 tests
+        env:
+          QT_QPA_PLATFORM: xcb
+          XDG_CONFIG_HOME: ${{ runner.temp }}/config
+          XDG_DATA_HOME: ${{ runner.temp }}/data
+          XDG_CACHE_HOME: ${{ runner.temp }}/cache
+          XDG_STATE_HOME: ${{ runner.temp }}/state
+        run: xvfb-run --auto-servernum python -m pytest tests/test_platform_startup.py tests/test_p07_infrastructure.py
+
+  native-portability:
+    name: Experimental native smoke / ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install project
+        run: python -m pip install -e ".[dev]"
+      - name: Portable core smoke with isolated state
+        shell: bash
+        env:
+          QT_QPA_PLATFORM: offscreen
+          # macOS intentionally ignores XDG. Isolate import-time logging and
+          # child processes before pytest's per-test profile fixture takes over.
+          IMAGESORTER_PROFILE_ROOT: ${{ runner.temp }}/imagesorter-native-smoke
+          XDG_CONFIG_HOME: ${{ runner.temp }}/config
+          XDG_DATA_HOME: ${{ runner.temp }}/data
+          XDG_CACHE_HOME: ${{ runner.temp }}/cache
+          XDG_STATE_HOME: ${{ runner.temp }}/state
+          APPDATA: ${{ runner.temp }}/appdata
+          LOCALAPPDATA: ${{ runner.temp }}/localappdata
+        run: |
+          python - <<'PYTHON'
+          import os
+          from pathlib import Path
+          from imagesorter.paths import get_config_dir, get_data_dir, get_cache_dir, get_logs_dir
+          profile = Path(os.environ["IMAGESORTER_PROFILE_ROOT"]).resolve()
+          directories = [get_config_dir(), get_data_dir(), get_cache_dir(), get_logs_dir()]
+          if not all(directory.resolve().is_relative_to(profile) for directory in directories):
+              raise RuntimeError("Native smoke state escaped its explicit temporary profile")
+          print(f"Native smoke profile verified: {profile}")
+          PYTHON
+          native_tests=(tests/test_core.py tests/test_settings_hardening.py tests/test_accessibility.py tests/test_concurrency.py tests/test_mutation_platform.py tests/test_windows_cache_identity.py)
+          if [[ "$RUNNER_OS" == "macOS" ]]; then
+            native_tests+=(tests/test_native_socket_address.py tests/test_native_socket_lifecycle.py)
+          fi
+          python -m pytest "${native_tests[@]}"
+
+  linux-artifacts:
+    name: Wheel, onedir, and AppImage
+    runs-on: ubuntu-24.04
+    needs: [quality, x11-smoke]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libegl1 libgl1 libxcb-cursor0 libdbus-1-3 xvfb file strace
+          python -m pip install --upgrade build
+          python -m pip install -e ".[dev]"
+      - name: Build wheel and verify clean installation
+        run: |
+          python -m build --wheel
+          python -m venv "${{ runner.temp }}/wheel-venv"
+          "${{ runner.temp }}/wheel-venv/bin/pip" install dist/imagesorter-*.whl
+          cd "${{ runner.temp }}"
+          "${{ runner.temp }}/wheel-venv/bin/imagesorter" --help
+          "${{ runner.temp }}/wheel-venv/bin/python" -c "from imagesorter.paths import get_resource_dir; assert (get_resource_dir() / 'imagesorter.png').is_file()"
+          python "$GITHUB_WORKSPACE/scripts/native_acceptance.py" \
+            --artifact "${{ runner.temp }}/wheel-venv/bin/imagesorter" --kind wheel \
+            --backend offscreen --output "${{ runner.temp }}/wheel-readiness" \
+            --source-sha "${{ github.sha }}" --source-tree "$(git -C "$GITHUB_WORKSPACE" rev-parse HEAD^{tree})"
+      - name: Build onedir and required AppImage
+        run: python build_desktop.py --appimage
+      - name: Verify actual frozen image presentation and clean shutdown
+        env:
+          QT_QPA_PLATFORM: offscreen
+          XDG_CONFIG_HOME: ${{ runner.temp }}/smoke-config
+          XDG_DATA_HOME: ${{ runner.temp }}/smoke-data
+          XDG_CACHE_HOME: ${{ runner.temp }}/smoke-cache
+          XDG_STATE_HOME: ${{ runner.temp }}/smoke-state
+        run: |
+          python scripts/native_acceptance.py --artifact ./dist/ImageSorter/ImageSorter --kind onedir \
+            --backend offscreen --output "${{ runner.temp }}/onedir-readiness" \
+            --source-sha "${{ github.sha }}" --source-tree "$(git rev-parse HEAD^{tree})"
+          ./dist/ImageSorter-x86_64.AppImage --appimage-extract
+          test -x squashfs-root/AppRun
+          python scripts/native_acceptance.py --artifact ./squashfs-root/AppRun --kind appimage \
+            --backend offscreen --output "${{ runner.temp }}/appimage-readiness" \
+            --source-sha "${{ github.sha }}" --source-tree "$(git rev-parse HEAD^{tree})"
+      - name: Archive and attest artifacts
+        run: |
+          tar --sort=name --mtime='UTC 1970-01-01' --owner=0 --group=0 --numeric-owner -czf dist/ImageSorter-linux-x86_64.tar.gz -C dist ImageSorter
+          python scripts/create_release_manifest.py --dist dist --source-sha "${{ github.sha }}"
+          (cd dist && sha256sum -c checksums.txt)
+      - uses: actions/upload-artifact@v4
+        with:
+          name: imagesorter-linux-receipts-${{ github.sha }}
+          if-no-files-found: error
+          path: |
+            dist/checksums.txt
+            dist/release_manifest.json
+      - uses: actions/upload-artifact@v4
+        if: ${{ always() }}
+        with:
+          name: imagesorter-readiness-${{ github.sha }}
+          if-no-files-found: warn
+          path: |
+            ${{ runner.temp }}/wheel-readiness
+            ${{ runner.temp }}/onedir-readiness
+            ${{ runner.temp }}/appimage-readiness
+
+  optional-ai-integration:
+    name: Optional pinned AI download and CPU inference
+    runs-on: ubuntu-24.04
+    needs: quality
+    env:
+      HF_HUB_OFFLINE: "0"
+      TRANSFORMERS_OFFLINE: "0"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: python -m pip install -e ".[dev]"
+      - name: Download, verify, and infer with CPU provider
+        run: python scripts/verify_optional_ai.py --model-dir "${{ runner.temp }}/models" --fixture "${{ runner.temp }}/fixture.jpg"
+
+  required:
+    name: Image Sorter required CI
+    if: ${{ always() }}
+    runs-on: ubuntu-24.04
+    needs: [quality, x11-smoke, native-portability, linux-artifacts, optional-ai-integration]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Require every mandatory job to actually succeed
+        env:
+          JOB_RESULTS: ${{ toJSON(needs) }}
+          CI_CHECK_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          CI_REPOSITORY_ID: ${{ github.repository_id }}
+          CI_WORKFLOW_RUN_ID: ${{ github.run_id }}
+          CI_RUN_ATTEMPT: ${{ github.run_attempt }}
+        run: |
+          python - <<'PY'
+          import json, os, sys, subprocess
+          results = json.loads(os.environ['JOB_RESULTS'])
+          required = {'quality', 'x11-smoke', 'native-portability', 'linux-artifacts', 'optional-ai-integration'}
+          failures = {name: results.get(name, {}).get('result', 'missing')
+                      for name in required if results.get(name, {}).get('result') != 'success'}
+          if failures:
+              print(f'Required CI jobs did not pass: {failures}', file=sys.stderr)
+              sys.exit(1)
+          def git(*args):
+              return subprocess.check_output(['git', *args], text=True).strip()
+          receipt = {'schema_version': 1, 'check_head_sha': os.environ['CI_CHECK_HEAD_SHA'],
+                     'repository_id': os.environ['CI_REPOSITORY_ID'],
+                     'workflow_run_id': os.environ['CI_WORKFLOW_RUN_ID'], 'run_attempt': os.environ['CI_RUN_ATTEMPT'],
+                     'source_sha': git('rev-parse', 'HEAD'), 'source_tree': git('rev-parse', 'HEAD^{tree}'), 'jobs': results}
+          with open('cutover-ci.json', 'w') as stream:
+              json.dump(receipt, stream, sort_keys=True)
+          print('All required CI jobs completed successfully. Native KDE/GPU acceptance is a separate gate.')
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cutover-ci-${{ github.run_id }}-${{ github.run_attempt }}
+          path: cutover-ci.json
+          if-no-files-found: error

@@ -14,7 +14,7 @@ def test_model_downloader_sha256_mismatch(qtbot, tmp_path):
     downloader.finished.connect(lambda success, msg: results.append((success, msg)))
 
     # Mock _download_file_secure to write corrupted data resulting in SHA-256 mismatch
-    def mock_download(url, dest_temp_path, progress_callback=None, timeout=15.0):
+    def mock_download(url, dest_temp_path, progress_callback=None, timeout=15.0, cancellation_check=None):
         with open(dest_temp_path, "wb") as f:
             f.write(b"invalid corrupt model content")
 

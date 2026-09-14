@@ -3,7 +3,6 @@ from unittest.mock import MagicMock, patch
 
 import numpy as np
 import pytest
-from PyQt6.QtWidgets import QMessageBox
 
 from imagesorter.ai_tagger import (
     AITagger,
@@ -34,7 +33,7 @@ def test_fresh_download_success_path(qtbot, tmp_path):
     results = []
     downloader.finished.connect(lambda success, msg: results.append((success, msg)))
 
-    def mock_download(url, dest_temp_path, progress_callback=None, timeout=15.0):
+    def mock_download(url, dest_temp_path, progress_callback=None, timeout=15.0, cancellation_check=None):
         with open(dest_temp_path, "wb") as f:
             if "model" in url:
                 f.write(VALID_MODEL_CONTENT)
@@ -60,7 +59,7 @@ def test_download_http_failure_path(qtbot, tmp_path):
     results = []
     downloader.finished.connect(lambda success, msg: results.append((success, msg)))
 
-    def mock_download_fail(url, dest_temp_path, progress_callback=None, timeout=15.0):
+    def mock_download_fail(url, dest_temp_path, progress_callback=None, timeout=15.0, cancellation_check=None):
         raise OSError("Connection refused / 404 Not Found")
 
     with patch("imagesorter.ai_tagger._download_file_secure", side_effect=mock_download_fail):
@@ -81,7 +80,7 @@ def test_model_checksum_mismatch_path(qtbot, tmp_path):
     results = []
     downloader.finished.connect(lambda success, msg: results.append((success, msg)))
 
-    def mock_download_corrupt_model(url, dest_temp_path, progress_callback=None, timeout=15.0):
+    def mock_download_corrupt_model(url, dest_temp_path, progress_callback=None, timeout=15.0, cancellation_check=None):
         with open(dest_temp_path, "wb") as f:
             if "model" in url:
                 f.write(b"CORRUPTED_MODEL_BYTES")
@@ -107,7 +106,7 @@ def test_labels_checksum_mismatch_path(qtbot, tmp_path):
     results = []
     downloader.finished.connect(lambda success, msg: results.append((success, msg)))
 
-    def mock_download_corrupt_labels(url, dest_temp_path, progress_callback=None, timeout=15.0):
+    def mock_download_corrupt_labels(url, dest_temp_path, progress_callback=None, timeout=15.0, cancellation_check=None):
         with open(dest_temp_path, "wb") as f:
             f.write(b"CORRUPTED_LABELS_CONTENT")
 
@@ -139,7 +138,7 @@ def test_corrupt_existing_model_path_revalidation_and_cleanup(qtbot, tmp_path):
     results = []
     downloader.finished.connect(lambda success, msg: results.append((success, msg)))
 
-    def mock_download_success(url, dest_temp_path, progress_callback=None, timeout=15.0):
+    def mock_download_success(url, dest_temp_path, progress_callback=None, timeout=15.0, cancellation_check=None):
         with open(dest_temp_path, "wb") as f:
             f.write(VALID_MODEL_CONTENT)
 
@@ -166,7 +165,7 @@ def test_missing_labels_path(qtbot, tmp_path):
     results = []
     downloader.finished.connect(lambda success, msg: results.append((success, msg)))
 
-    def mock_download_labels_only(url, dest_temp_path, progress_callback=None, timeout=15.0):
+    def mock_download_labels_only(url, dest_temp_path, progress_callback=None, timeout=15.0, cancellation_check=None):
         with open(dest_temp_path, "wb") as f:
             f.write(VALID_LABELS_CONTENT)
 
@@ -186,25 +185,36 @@ def test_ui_settings_validation_and_control_states(qtbot, tmp_path):
     # Persist enabled=True when files are missing/invalid
     settings_mgr.set("ai_tagger", "enabled", True)
 
-    with patch("imagesorter.ui_settings.is_model_and_labels_valid", side_effect=lambda dir=None: is_model_and_labels_valid(str(tmp_path))):
-        with patch("imagesorter.ui_settings.get_model_dir", return_value=str(tmp_path)):
+    # UI consumes a read-only helper result; actual hashing and download failure
+    # preservation are covered independently by the model/installer tests.
+    with patch("imagesorter.reader_process.run_reader", side_effect=lambda *_args, **_kwargs: ({"valid": is_model_and_labels_valid(str(tmp_path))}, b"")):
+        with patch.object(ModelDownloader, "start") as legacy_download:
             win = SettingsWindow(settings_mgr)
             qtbot.addWidget(win)
+            qtbot.waitUntil(
+                lambda: win.btn_download_model.text() != "Checking Model…",
+                timeout=3000,
+            )
 
             # UI should uncheck and disable the checkbox because files are invalid
             assert win.chk_ai_enable.isChecked() is False
             assert win.chk_ai_enable.isEnabled() is False
-            assert win.btn_download_model.text() == "Download Model"
+            assert win.btn_download_model.text() == "Manage AI Model…"
             assert win.btn_download_model.isEnabled() is True
 
-            # Simulate failed download
-            with patch.object(QMessageBox, "question", return_value=QMessageBox.StandardButton.Yes), \
-                 patch.object(QMessageBox, "critical") as mock_crit, \
-                 patch.object(ModelDownloader, "start", lambda self: self.run()):
-                with patch("imagesorter.ai_tagger._download_file_secure", side_effect=OSError("Failed")):
-                    win.download_ai_model()
-
-            assert mock_crit.called
+            # Download opens the managed component controls; it never invokes
+            # the legacy downloader or silently activates a model.
+            win.download_ai_model()
+            assert win.tabs.currentWidget() is win.components_panel
+            assert win.components_panel.component.currentText() == "ai.mobilenet-v2"
+            assert not legacy_download.called
+            win.components_panel.status_label.setText("Failed download; previous component preserved")
+            win.components_panel._finished(1, None)
+            assert "Failed download" in win.components_panel.status_label.text()
+            qtbot.waitUntil(
+                lambda: win.btn_download_model.text() != "Checking Model…",
+                timeout=3000,
+            )
             assert win.btn_download_model.isEnabled() is True
             assert win.chk_ai_enable.isEnabled() is False
 
@@ -214,8 +224,12 @@ def test_ui_settings_validation_and_control_states(qtbot, tmp_path):
 
             # Re-initialize or refresh status
             win.refresh_ai_model_status()
-            assert win.btn_download_model.text() == "Model Downloaded"
-            assert win.btn_download_model.isEnabled() is False
+            qtbot.waitUntil(
+                lambda: win.btn_download_model.text() == "Manage AI Model…",
+                timeout=3000,
+            )
+            assert win.btn_download_model.text() == "Manage AI Model…"
+            assert win.btn_download_model.isEnabled() is True
             assert win.chk_ai_enable.isEnabled() is True
 
 
@@ -243,7 +257,7 @@ def test_background_class_index_zero_mapping(tmp_path):
         tagger.session.get_inputs.return_value = [MagicMock(name="input_tensor")]
 
         with patch.object(tagger, "preprocess", return_value=np.zeros((1, 3, 224, 224), dtype=np.float32)):
-            tags = tagger.get_tags("dummy_path.jpg", top_k=2)
+            tags = tagger.get_tags("dummy_path.jpg", top_k=2, threshold=0.1)
 
         # Background class (index 0) must be ignored; top tag must be label_1
         assert tags[0] == "label_1"
