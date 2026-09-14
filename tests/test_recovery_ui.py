@@ -1,9 +1,10 @@
 """Recovery selection is explicit and refuses records without safe authority."""
+from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import QMessageBox
 
 from imagesorter.settings_manager import SettingsManager
 from imagesorter.ui_main import MainViewer
-from imagesorter.ui_recovery import RecoveryDialog, eligible
+from imagesorter.ui_recovery import RecoveryDialog, eligible, explanation
 
 
 def test_legacy_and_system_trash_are_manual_only(qtbot, tmp_path):
@@ -50,3 +51,49 @@ def test_recovery_submission_preserves_view_generation(qtbot, tmp_path, monkeypa
     assert submitted[0]["operation_id"] == operation_id
     assert submitted[0]["task_options"]["view_generation"] == 42
     assert submitted[0]["task_options"]["settings_snapshot"] == viewer.settings.snapshot()
+
+
+def test_recovery_dialog_accessibility_and_escape_dismissal(qtbot, tmp_path):
+    viewer = MainViewer(SettingsManager(filepath=str(tmp_path / "settings.json")), initial_paths=[])
+    qtbot.addWidget(viewer)
+    dialog = RecoveryDialog(viewer)
+    qtbot.addWidget(dialog)
+
+    # Dialog-level accessibility
+    assert dialog.accessibleName() == "Preserved Operation Recovery Dialog"
+    assert "Dialog to review and recover" in dialog.accessibleDescription()
+
+    # Widget-level accessibility and tooltips
+    assert dialog.status.accessibleName() == "Recovery status summary"
+    assert dialog.status.accessibleDescription() == "Provides current status and feedback on recovery operations."
+    assert dialog.rollback.accessibleName() == "Review and request rollback button"
+    assert dialog.rollback.accessibleDescription() == "Requests an automated rollback for the selected interrupted operation."
+    assert dialog.rollback.toolTip() == "Request rollback for the selected recovery record."
+    assert dialog.technical.accessibleName() == "Show technical record checkbox"
+    assert dialog.technical.accessibleDescription() == "Show the complete original journal record for advanced review."
+    assert dialog.technical.toolTip() == "Show raw JSON journal record for advanced debugging."
+
+    # Function docstrings
+    assert eligible.__doc__ is not None and "automated rollback" in eligible.__doc__
+    assert explanation.__doc__ is not None and "recovery record" in explanation.__doc__
+
+    # Escape key dismissal
+    rejected_signals = []
+    dialog.rejected.connect(lambda: rejected_signals.append(True))
+    dialog.show()
+    qtbot.keyClick(dialog, Qt.Key.Key_Escape)
+    assert not dialog.isVisible()
+    assert len(rejected_signals) == 1
+
+
+def test_recovery_dialog_empty_state(qtbot, tmp_path):
+    viewer = MainViewer(SettingsManager(filepath=str(tmp_path / "settings.json")), initial_paths=[])
+    qtbot.addWidget(viewer)
+    viewer._recovery_records = []
+    dialog = RecoveryDialog(viewer)
+    qtbot.addWidget(dialog)
+
+    assert dialog.records.count() == 1
+    assert dialog.records.item(0).text() == "No unresolved recovery records available"
+    assert dialog.details.toPlainText() == "No unresolved records reported."
+    assert not dialog.rollback.isEnabled()
