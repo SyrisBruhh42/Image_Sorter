@@ -80,12 +80,21 @@ class SettingsWindow(QDialog):
         self.chk_tooltips.toggled.connect(lambda enabled: None if enabled else QToolTip.hideText())
 
     def eventFilter(self, watched, event):
+        if event.type() == QEvent.Type.KeyPress and event.key() == Qt.Key.Key_Escape:
+            self.reject()
+            return True
         if event.type() == QEvent.Type.ToolTip and not self.chk_tooltips.isChecked():
             if not QApplication.keyboardModifiers() & Qt.KeyboardModifier.AltModifier:
                 return True
         if event.type() == QEvent.Type.ChildAdded and isinstance(event.child(), QWidget):
             event.child().installEventFilter(self)
         return super().eventFilter(watched, event)
+
+    def keyPressEvent(self, event) -> None:
+        if event.key() == Qt.Key.Key_Escape:
+            self.reject()
+            return
+        super().keyPressEvent(event)
 
     def init_ui(self) -> None:
         """Builds the tabbed UI for settings."""
@@ -161,6 +170,7 @@ class SettingsWindow(QDialog):
         # Source Directory
         src_layout = QHBoxLayout()
         self.src_edit = QLineEdit(self.settings.get('directories', 'source') or "")
+        self.src_edit.setClearButtonEnabled(True)
         self.src_edit.setAccessibleName("Source Directory Path Input")
         self.src_edit.setAccessibleDescription("Specifies the source directory path to scan images from.")
         self.src_edit.setToolTip("The directory where the application will scan for supported images.")
@@ -176,6 +186,7 @@ class SettingsWindow(QDialog):
         # Trash Directory
         trash_layout = QHBoxLayout()
         self.trash_edit = QLineEdit(self.settings.get('directories', 'trash') or "")
+        self.trash_edit.setClearButtonEnabled(True)
         self.trash_edit.setAccessibleName("Trash Directory Path Input")
         self.trash_edit.setAccessibleDescription("Specifies the custom staging trash directory path.")
         self.trash_edit.setToolTip("The directory where deleted images will be moved.")
@@ -386,10 +397,13 @@ class SettingsWindow(QDialog):
         folder_layout.setContentsMargins(0, 0, 0, 0)
 
         folder_edit = QLineEdit(folder)
+        folder_edit.setClearButtonEnabled(True)
         folder_edit.setAccessibleName(f"Target folder for hotkey {key}")
         folder_btn = QPushButton("...")
         folder_btn.setFixedWidth(30)
         folder_btn.setAccessibleName(f"Browse target folder for hotkey {key}")
+        folder_btn.setAccessibleDescription("Opens a file dialog to select the target destination folder.")
+        folder_btn.setToolTip("Browse to select target folder for this hotkey.")
         folder_btn.clicked.connect(lambda: self.browse_folder(folder_edit))
 
         folder_layout.addWidget(folder_edit)

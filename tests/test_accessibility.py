@@ -80,3 +80,73 @@ def test_keyboard_focus_isolation(qtbot, tmp_path):
     assert viewer.current_index == 0
     assert line_edit.text().upper() == "SRCLZ"
     assert len(viewer.images) == 2
+
+
+def test_escape_key_dismisses_settings_dialog(qtbot, tmp_path):
+    from imagesorter.ui_settings import SettingsWindow
+
+    settings_file = tmp_path / "settings.json"
+    sm = SettingsManager(filepath=str(settings_file))
+    viewer = MainViewer(sm)
+    qtbot.addWidget(viewer)
+
+    settings_win = SettingsWindow(sm, parent=viewer)
+    qtbot.addWidget(settings_win)
+    settings_win.show()
+    assert settings_win.isVisible()
+    qtbot.keyClick(settings_win, Qt.Key.Key_Escape)
+    qtbot.waitUntil(lambda: not settings_win.isVisible(), timeout=2000)
+
+
+def test_line_edit_clear_buttons_enabled(qtbot, tmp_path):
+    from imagesorter.ui_settings import SettingsWindow
+
+    settings_file = tmp_path / "settings.json"
+    sm = SettingsManager(filepath=str(settings_file))
+    dialog = SettingsWindow(sm)
+    qtbot.addWidget(dialog)
+
+    assert dialog.src_edit.isClearButtonEnabled() is True
+    assert dialog.trash_edit.isClearButtonEnabled() is True
+
+    dialog.add_hotkey_row(key="A", action="move", folder="/tmp", auto_advance=True)
+    folder_widget = dialog.hotkey_table.cellWidget(0, 2)
+    folder_edit = folder_widget.layout().itemAt(0).widget()
+    assert folder_edit.isClearButtonEnabled() is True
+
+
+def test_frame_controls_accessibility_metadata(qtbot, tmp_path):
+    settings_file = tmp_path / "settings.json"
+    sm = SettingsManager(filepath=str(settings_file))
+    viewer = MainViewer(sm)
+    qtbot.addWidget(viewer)
+
+    controls = [
+        viewer.frame_previous,
+        viewer.frame_play,
+        viewer.frame_next,
+        viewer.frame_seek,
+        viewer.frame_loop,
+    ]
+
+    for control in controls:
+        assert control.accessibleName(), f"{control} is missing accessibleName"
+        assert control.accessibleDescription(), f"{control} is missing accessibleDescription"
+        assert control.toolTip(), f"{control} is missing toolTip"
+
+
+def test_hotkey_browse_button_accessibility(qtbot, tmp_path):
+    from PyQt6.QtWidgets import QPushButton
+    from imagesorter.ui_settings import SettingsWindow
+
+    settings_file = tmp_path / "settings.json"
+    sm = SettingsManager(filepath=str(settings_file))
+    window = SettingsWindow(sm)
+    qtbot.addWidget(window)
+
+    window.add_hotkey_row("A", "move", str(tmp_path))
+    btn = window.hotkey_table.cellWidget(0, 2).findChild(QPushButton)
+    assert btn is not None
+    assert "Browse target folder for hotkey A" in btn.accessibleName()
+    assert btn.accessibleDescription() != ""
+    assert btn.toolTip() != ""

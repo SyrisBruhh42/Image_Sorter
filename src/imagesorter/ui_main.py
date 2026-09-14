@@ -616,12 +616,31 @@ class MainViewer(QMainWindow):
         self.frame_bar = QWidget(self)
         frame_layout = QHBoxLayout(self.frame_bar)
         self.frame_previous = QPushButton("Previous frame/page")
+        self.frame_previous.setAccessibleName("Previous frame or page button")
+        self.frame_previous.setAccessibleDescription("Navigates to the previous frame or page of an animated or multi-page image.")
+        self.frame_previous.setToolTip("Previous frame/page")
+
         self.frame_play = QPushButton("Play")
+        self.frame_play.setAccessibleName("Play or pause frame animation button")
+        self.frame_play.setAccessibleDescription("Toggles animation playback for multi-frame images.")
+        self.frame_play.setToolTip("Play or pause animation")
+
         self.frame_next = QPushButton("Next frame/page")
+        self.frame_next.setAccessibleName("Next frame or page button")
+        self.frame_next.setAccessibleDescription("Navigates to the next frame or page of an animated or multi-page image.")
+        self.frame_next.setToolTip("Next frame/page")
+
         self.frame_seek = QSpinBox()
         self.frame_seek.setPrefix("Frame/page ")
-        self.frame_seek.setAccessibleName("Frame or page number")
+        self.frame_seek.setAccessibleName("Frame or page number selector")
+        self.frame_seek.setAccessibleDescription("Selects specific frame or page number.")
+        self.frame_seek.setToolTip("Seek frame/page number")
+
         self.frame_loop = QCheckBox("Loop continuously")
+        self.frame_loop.setAccessibleName("Loop continuously checkbox")
+        self.frame_loop.setAccessibleDescription("Toggles continuous looping playback for animated images.")
+        self.frame_loop.setToolTip("Loop animation playback continuously")
+
         self.frame_previous.clicked.connect(lambda: self._seek_frame(self._frame_index - 1))
         self.frame_next.clicked.connect(lambda: self._seek_frame(self._frame_index + 1))
         self.frame_play.clicked.connect(lambda: self._set_frame_playing(not self._frame_playing))
