@@ -168,6 +168,41 @@ def test_directory_validation_and_unreachable_preservation(tmp_path):
     assert sm.get("directories", "trash") == ""
 
 
+def test_settings_window_input_auto_trimming(qtbot, tmp_path):
+    from imagesorter.ui_settings import SettingsWindow
+
+    src_dir = tmp_path / "src"
+    trash_dir = tmp_path / "trash"
+    hotkey_dir = tmp_path / "hotkey"
+    src_dir.mkdir()
+    trash_dir.mkdir()
+    hotkey_dir.mkdir()
+
+    settings_file = tmp_path / "settings.json"
+    sm = SettingsManager(filepath=str(settings_file))
+
+    window = SettingsWindow(sm)
+    qtbot.addWidget(window)
+
+    window.src_edit.setText(f"  {src_dir}  ")
+    window.trash_edit.setText(f"  {trash_dir}  ")
+    window.add_hotkey_row(key="K", action="move", folder=f"  {hotkey_dir}  ")
+
+    with patch("PyQt6.QtWidgets.QMessageBox.information"):
+        window.save_settings()
+
+    assert window.src_edit.text() == str(src_dir)
+    assert window.trash_edit.text() == str(trash_dir)
+
+    folder_widget = window.hotkey_table.cellWidget(0, 2)
+    folder_edit = folder_widget.layout().itemAt(0).widget()
+    assert folder_edit.text() == str(hotkey_dir)
+
+    assert sm.get("directories", "source") == os.path.normpath(str(src_dir))
+    assert sm.get("directories", "trash") == os.path.normpath(str(trash_dir))
+    assert sm.get("hotkeys")["K"]["folder"] == os.path.normpath(str(hotkey_dir))
+
+
 def test_unknown_fields_preservation(tmp_path):
     settings_file = tmp_path / "settings.json"
     data = {

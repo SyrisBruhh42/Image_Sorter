@@ -125,12 +125,19 @@ class SettingsWindow(QDialog):
         layout.addWidget(self.tabs)
 
         btn_layout = QHBoxLayout()
+        self.btn_cancel = QPushButton("Cancel")
+        self.btn_cancel.setAccessibleName("Cancel Settings Button")
+        self.btn_cancel.setAccessibleDescription("Discards all setting changes and closes the window.")
+        self.btn_cancel.setToolTip("Discard changes and close settings window.")
+        self.btn_cancel.clicked.connect(self.reject)
+
         self.btn_save = QPushButton("Save Settings")
         self.btn_save.setDefault(True)
         self.btn_save.setAccessibleName("Save Settings Button")
         self.btn_save.setAccessibleDescription("Saves all configured settings and closes the window.")
         self.btn_save.clicked.connect(self.save_settings)
         btn_layout.addStretch()
+        btn_layout.addWidget(self.btn_cancel)
         btn_layout.addWidget(self.btn_save)
 
         layout.addLayout(btn_layout)
@@ -152,7 +159,8 @@ class SettingsWindow(QDialog):
         self.setTabOrder(self.chk_show_tags, self.chk_tooltips)
         self.setTabOrder(self.chk_tooltips, self.theme_combo)
         self.setTabOrder(self.theme_combo, self.font_spin)
-        self.setTabOrder(self.font_spin, self.btn_save)
+        self.setTabOrder(self.font_spin, self.btn_cancel)
+        self.setTabOrder(self.btn_cancel, self.btn_save)
 
     def init_general_tab(self) -> None:
         """Initializes the General & UI options tab."""
@@ -161,6 +169,8 @@ class SettingsWindow(QDialog):
         # Source Directory
         src_layout = QHBoxLayout()
         self.src_edit = QLineEdit(self.settings.get('directories', 'source') or "")
+        self.src_edit.setClearButtonEnabled(True)
+        self.src_edit.editingFinished.connect(lambda: self.src_edit.setText(self.src_edit.text().strip()))
         self.src_edit.setAccessibleName("Source Directory Path Input")
         self.src_edit.setAccessibleDescription("Specifies the source directory path to scan images from.")
         self.src_edit.setToolTip("The directory where the application will scan for supported images.")
@@ -176,6 +186,8 @@ class SettingsWindow(QDialog):
         # Trash Directory
         trash_layout = QHBoxLayout()
         self.trash_edit = QLineEdit(self.settings.get('directories', 'trash') or "")
+        self.trash_edit.setClearButtonEnabled(True)
+        self.trash_edit.editingFinished.connect(lambda: self.trash_edit.setText(self.trash_edit.text().strip()))
         self.trash_edit.setAccessibleName("Trash Directory Path Input")
         self.trash_edit.setAccessibleDescription("Specifies the custom staging trash directory path.")
         self.trash_edit.setToolTip("The directory where deleted images will be moved.")
@@ -386,10 +398,14 @@ class SettingsWindow(QDialog):
         folder_layout.setContentsMargins(0, 0, 0, 0)
 
         folder_edit = QLineEdit(folder)
+        folder_edit.setClearButtonEnabled(True)
+        folder_edit.editingFinished.connect(lambda w=folder_edit: w.setText(w.text().strip()))
         folder_edit.setAccessibleName(f"Target folder for hotkey {key}")
         folder_btn = QPushButton("...")
         folder_btn.setFixedWidth(30)
         folder_btn.setAccessibleName(f"Browse target folder for hotkey {key}")
+        folder_btn.setAccessibleDescription(f"Opens folder selection dialog for hotkey {key}.")
+        folder_btn.setToolTip("Open folder selection dialog.")
         folder_btn.clicked.connect(lambda: self.browse_folder(folder_edit))
 
         folder_layout.addWidget(folder_edit)
@@ -488,6 +504,13 @@ class SettingsWindow(QDialog):
         else:
             QMessageBox.critical(self, "Error", f"Failed to download model: {msg}")
 
+    def keyPressEvent(self, event) -> None:
+        """Dismiss settings dialog when Escape key is pressed."""
+        if event.key() == Qt.Key.Key_Escape:
+            self.reject()
+            return
+        super().keyPressEvent(event)
+
     def closeEvent(self, event) -> None:
         """Cancel optional work and close once threads finish, without GUI waits."""
         downloader_running = bool(self.downloader and self.downloader.isRunning())
@@ -543,6 +566,7 @@ class SettingsWindow(QDialog):
 
         # 1. Directories Validation
         src_dir = self.src_edit.text().strip()
+        self.src_edit.setText(src_dir)
         if src_dir:
             if os.path.isfile(src_dir):
                 QMessageBox.warning(self, "Validation Error", f"Source directory path points to a file, not a directory: {src_dir}")
@@ -552,6 +576,7 @@ class SettingsWindow(QDialog):
                 return
 
         trash_dir = self.trash_edit.text().strip()
+        self.trash_edit.setText(trash_dir)
         if trash_dir:
             if os.path.isfile(trash_dir):
                 QMessageBox.warning(self, "Validation Error", f"Trash directory path points to a file, not a directory: {trash_dir}")
@@ -621,6 +646,8 @@ class SettingsWindow(QDialog):
             folder_widget = self.hotkey_table.cellWidget(row, 2)
             folder_edit = folder_widget.layout().itemAt(0).widget() if folder_widget else None
             folder = folder_edit.text().strip() if folder_edit else ""
+            if folder_edit:
+                folder_edit.setText(folder)
 
             if folder:
                 if os.path.isfile(folder):

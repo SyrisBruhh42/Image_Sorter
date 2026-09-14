@@ -616,12 +616,31 @@ class MainViewer(QMainWindow):
         self.frame_bar = QWidget(self)
         frame_layout = QHBoxLayout(self.frame_bar)
         self.frame_previous = QPushButton("Previous frame/page")
+        self.frame_previous.setAccessibleName("Previous Frame Button")
+        self.frame_previous.setAccessibleDescription("Navigates to the previous frame or page of multi-frame image.")
+        self.frame_previous.setToolTip("Navigate to the previous frame or page.")
+
         self.frame_play = QPushButton("Play")
+        self.frame_play.setAccessibleName("Play Animation Button")
+        self.frame_play.setAccessibleDescription("Toggles playback of animated image frames.")
+        self.frame_play.setToolTip("Toggle automatic animation playback.")
+
         self.frame_next = QPushButton("Next frame/page")
+        self.frame_next.setAccessibleName("Next Frame Button")
+        self.frame_next.setAccessibleDescription("Navigates to the next frame or page of multi-frame image.")
+        self.frame_next.setToolTip("Navigate to the next frame or page.")
+
         self.frame_seek = QSpinBox()
         self.frame_seek.setPrefix("Frame/page ")
         self.frame_seek.setAccessibleName("Frame or page number")
+        self.frame_seek.setAccessibleDescription("Jump directly to a specific frame or page number.")
+        self.frame_seek.setToolTip("Jump directly to a specific frame or page number.")
+
         self.frame_loop = QCheckBox("Loop continuously")
+        self.frame_loop.setAccessibleName("Loop Continuously Checkbox")
+        self.frame_loop.setAccessibleDescription("Toggles continuous looping during playback.")
+        self.frame_loop.setToolTip("Enable continuous animation looping.")
+
         self.frame_previous.clicked.connect(lambda: self._seek_frame(self._frame_index - 1))
         self.frame_next.clicked.connect(lambda: self._seek_frame(self._frame_index + 1))
         self.frame_play.clicked.connect(lambda: self._set_frame_playing(not self._frame_playing))
