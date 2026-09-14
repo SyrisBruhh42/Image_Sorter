@@ -87,12 +87,6 @@ class SettingsWindow(QDialog):
             event.child().installEventFilter(self)
         return super().eventFilter(watched, event)
 
-    def keyPressEvent(self, event) -> None:
-        if event.type() == QEvent.Type.KeyPress and event.key() == Qt.Key.Key_Escape:
-            self.reject()
-            return
-        super().keyPressEvent(event)
-
     def init_ui(self) -> None:
         """Builds the tabbed UI for settings."""
         layout = QVBoxLayout(self)
