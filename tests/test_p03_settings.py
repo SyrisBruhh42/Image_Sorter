@@ -179,3 +179,44 @@ def test_downloader_interruption_cancellation(qtbot):
 
     assert not downloader.isRunning()
     assert downloader.interrupted is True
+
+
+def test_input_whitespace_autotrimming(qtbot, tmp_path):
+    settings_file = tmp_path / "settings.json"
+    sm = SettingsManager(filepath=str(settings_file))
+
+    src_dir = tmp_path / "src"
+    src_dir.mkdir()
+    trash_dir = tmp_path / "trash"
+    trash_dir.mkdir()
+    target_dir = tmp_path / "target"
+    target_dir.mkdir()
+
+    window = SettingsWindow(sm)
+    qtbot.addWidget(window)
+
+    # Test editing finished signal auto-trims whitespace
+    window.src_edit.setText(f"  {src_dir}  ")
+    window.src_edit.editingFinished.emit()
+    assert window.src_edit.text() == str(src_dir)
+
+    window.trash_edit.setText(f"  {trash_dir}  ")
+    window.trash_edit.editingFinished.emit()
+    assert window.trash_edit.text() == str(trash_dir)
+
+    # Test hotkey target folder whitespace trimming on editing finished and save
+    window.add_hotkey_row(key="M", action="move", folder=f"  {target_dir}  ", auto_advance=True)
+    folder_widget = window.hotkey_table.cellWidget(0, 2)
+    folder_edit = folder_widget.layout().itemAt(0).widget()
+    folder_edit.editingFinished.emit()
+    assert folder_edit.text() == str(target_dir)
+
+    # Test save settings persists clean trimmed paths
+    with pytest.MonkeyPatch.context() as m:
+        m.setattr(QMessageBox, "information", lambda *args, **kwargs: None)
+        window.save_settings()
+
+    assert sm.get("directories", "source") == os.path.normpath(str(src_dir))
+    assert sm.get("directories", "trash") == os.path.normpath(str(trash_dir))
+    hotkeys = sm.get("hotkeys")
+    assert hotkeys["M"]["folder"] == os.path.normpath(str(target_dir))

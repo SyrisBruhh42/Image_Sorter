@@ -80,3 +80,37 @@ def test_keyboard_focus_isolation(qtbot, tmp_path):
     assert viewer.current_index == 0
     assert line_edit.text().upper() == "SRCLZ"
     assert len(viewer.images) == 2
+
+
+def test_frame_bar_and_settings_accessibility_annotations(qtbot, tmp_path):
+    from imagesorter.ui_settings import SettingsWindow
+
+    settings_file = tmp_path / "settings.json"
+    sm = SettingsManager(filepath=str(settings_file))
+
+    viewer = MainViewer(sm)
+    qtbot.addWidget(viewer)
+
+    # Verify frame bar controls accessibility properties
+    frame_controls = [
+        viewer.frame_previous,
+        viewer.frame_play,
+        viewer.frame_next,
+        viewer.frame_seek,
+        viewer.frame_loop,
+    ]
+    for widget in frame_controls:
+        assert widget.accessibleName(), f"Widget {widget} missing accessibleName"
+        assert widget.accessibleDescription(), f"Widget {widget} missing accessibleDescription"
+        assert widget.toolTip(), f"Widget {widget} missing toolTip"
+
+    # Verify settings hotkey folder button accessibility properties
+    dialog = SettingsWindow(sm, parent=viewer)
+    qtbot.addWidget(dialog)
+    dialog.add_hotkey_row(key="1", action="move", folder="", auto_advance=True)
+    folder_widget = dialog.hotkey_table.cellWidget(0, 2)
+    folder_btn = folder_widget.layout().itemAt(1).widget()
+
+    assert folder_btn.accessibleName()
+    assert folder_btn.accessibleDescription()
+    assert folder_btn.toolTip()
