@@ -80,3 +80,27 @@ def test_keyboard_focus_isolation(qtbot, tmp_path):
     assert viewer.current_index == 0
     assert line_edit.text().upper() == "SRCLZ"
     assert len(viewer.images) == 2
+
+
+def test_button_accessibility_labels(qtbot, tmp_path):
+    from imagesorter.ui_components import ComponentsPanel
+
+    settings_file = tmp_path / "settings.json"
+    sm = SettingsManager(filepath=str(settings_file))
+    viewer = MainViewer(sm)
+    qtbot.addWidget(viewer)
+
+    # Verify frame navigation buttons in MainViewer have accessible names and tooltips
+    for button in (viewer.frame_previous, viewer.frame_play, viewer.frame_next):
+        assert button.accessibleName(), f"{button} is missing an accessibleName"
+        assert button.accessibleDescription(), f"{button} is missing an accessibleDescription"
+        assert button.toolTip(), f"{button} is missing a toolTip"
+
+    components_panel = ComponentsPanel()
+    qtbot.addWidget(components_panel)
+
+    # Verify component panel action buttons have accessible names, descriptions, and tooltips
+    for button in (components_panel.run_button, components_panel.import_button, components_panel.legacy_button, components_panel.cancel_button):
+        assert button.accessibleName(), f"{button} is missing an accessibleName"
+        assert button.accessibleDescription(), f"{button} is missing an accessibleDescription"
+        assert button.toolTip(), f"{button} is missing a toolTip"

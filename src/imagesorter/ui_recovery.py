@@ -73,6 +73,8 @@ class RecoveryDialog(QDialog):
         layout.addWidget(self.technical)
         self.rollback = QPushButton("Review and request rollback…")
         self.rollback.setObjectName("recovery_rollback")
+        self.rollback.setAccessibleName("Review and request rollback")
+        self.rollback.setAccessibleDescription("Requests rollback of the selected preserved recovery record after identity verification.")
         layout.addWidget(self.rollback)
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
         buttons.rejected.connect(self.reject)

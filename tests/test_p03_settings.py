@@ -179,3 +179,39 @@ def test_downloader_interruption_cancellation(qtbot):
 
     assert not downloader.isRunning()
     assert downloader.interrupted is True
+
+
+def test_qol_accessibility_settings_fixes(qtbot, tmp_path):
+    settings_file = tmp_path / "settings.json"
+    sm = SettingsManager(filepath=str(settings_file))
+    window = SettingsWindow(sm)
+    qtbot.addWidget(window)
+
+    # 1. Verify hotkey table empty state accessibility description
+    assert "no hotkeys are configured" in window.hotkey_table.accessibleDescription().lower()
+
+    # 2. Add hotkey row and check folder_btn tooltip and accessible name
+    window.add_hotkey_row(key="M", action="move", folder=" /tmp/path ", auto_advance=True)
+    assert window.hotkey_table.rowCount() == 1
+    assert "no hotkeys are configured" not in window.hotkey_table.accessibleDescription().lower()
+
+    folder_widget = window.hotkey_table.cellWidget(0, 2)
+    folder_btn = folder_widget.layout().itemAt(1).widget()
+    assert folder_btn.toolTip() == "Browse target folder for hotkey 'M'"
+    assert folder_btn.accessibleName() == "Browse target folder for hotkey 'M'"
+
+    # 3. Verify whitespace auto-trimming on line edits
+    window.src_edit.setText(" /tmp/source_dir ")
+    window.src_edit.editingFinished.emit()
+    assert window.src_edit.text() == "/tmp/source_dir"
+
+    folder_edit = folder_widget.layout().itemAt(0).widget()
+    folder_edit.setText(" /tmp/hotkey_dir ")
+    folder_edit.editingFinished.emit()
+    assert folder_edit.text() == "/tmp/hotkey_dir"
+
+    # 4. Remove row and re-check empty state description
+    window.hotkey_table.selectRow(0)
+    window.remove_hotkey_row()
+    assert window.hotkey_table.rowCount() == 0
+    assert "no hotkeys are configured" in window.hotkey_table.accessibleDescription().lower()
