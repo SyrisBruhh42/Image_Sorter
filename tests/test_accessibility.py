@@ -80,3 +80,28 @@ def test_keyboard_focus_isolation(qtbot, tmp_path):
     assert viewer.current_index == 0
     assert line_edit.text().upper() == "SRCLZ"
     assert len(viewer.images) == 2
+
+
+def test_components_panel_and_recovery_dialog_accessibility(qtbot, tmp_path):
+    from imagesorter.ui_components import ComponentsPanel
+    from imagesorter.ui_recovery import RecoveryDialog
+
+    settings_file = tmp_path / "settings.json"
+    sm = SettingsManager(filepath=str(settings_file))
+    viewer = MainViewer(sm)
+    qtbot.addWidget(viewer)
+
+    panel = ComponentsPanel()
+    qtbot.addWidget(panel)
+
+    for btn in [panel.run_button, panel.import_button, panel.legacy_button, panel.cancel_button]:
+        assert btn.accessibleName(), f"Button {btn} missing accessibleName"
+        assert btn.accessibleDescription(), f"Button {btn} missing accessibleDescription"
+
+    dialog = RecoveryDialog(viewer)
+    qtbot.addWidget(dialog)
+
+    assert dialog.technical.accessibleName()
+    assert dialog.technical.accessibleDescription()
+    assert dialog.rollback.accessibleName()
+    assert dialog.rollback.accessibleDescription()

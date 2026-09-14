@@ -1,4 +1,5 @@
 """Recovery selection is explicit and refuses records without safe authority."""
+from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import QMessageBox
 
 from imagesorter.settings_manager import SettingsManager
@@ -50,3 +51,23 @@ def test_recovery_submission_preserves_view_generation(qtbot, tmp_path, monkeypa
     assert submitted[0]["operation_id"] == operation_id
     assert submitted[0]["task_options"]["view_generation"] == 42
     assert submitted[0]["task_options"]["settings_snapshot"] == viewer.settings.snapshot()
+
+
+def test_recovery_dialog_escape_key_dismissal(qtbot, tmp_path):
+    viewer = MainViewer(SettingsManager(filepath=str(tmp_path / "settings.json")), initial_paths=[])
+    qtbot.addWidget(viewer)
+    dialog = RecoveryDialog(viewer)
+    qtbot.addWidget(dialog)
+    dialog.show()
+
+    rejected_signal = False
+    def on_rejected():
+        nonlocal rejected_signal
+        rejected_signal = True
+
+    dialog.rejected.connect(on_rejected)
+
+    # Simulate pressing Escape key on RecoveryDialog
+    qtbot.keyClick(dialog, Qt.Key.Key_Escape)
+
+    assert rejected_signal is True

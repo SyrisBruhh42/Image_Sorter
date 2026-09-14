@@ -179,3 +179,38 @@ def test_downloader_interruption_cancellation(qtbot):
 
     assert not downloader.isRunning()
     assert downloader.interrupted is True
+
+
+def test_qol_accessibility_settings_inputs(qtbot, tmp_path):
+    settings_file = tmp_path / "settings.json"
+    sm = SettingsManager(filepath=str(settings_file))
+    window = SettingsWindow(sm)
+    qtbot.addWidget(window)
+
+    # Verify 1-click clear button enabled on path inputs
+    assert window.src_edit.isClearButtonEnabled() is True
+    assert window.trash_edit.isClearButtonEnabled() is True
+
+    # Verify auto-trimming on input fields
+    window.src_edit.setText("  /tmp/source_test  ")
+    window.src_edit.editingFinished.emit()
+    assert window.src_edit.text() == "/tmp/source_test"
+
+    window.trash_edit.setText("  /tmp/trash_test  ")
+    window.trash_edit.editingFinished.emit()
+    assert window.trash_edit.text() == "/tmp/trash_test"
+
+    # Add hotkey row and test folder button accessible attributes and line edit QOL
+    window.hotkey_table.setRowCount(0)
+    window.add_hotkey_row(key="T", action="move", folder="", auto_advance=True)
+    folder_widget = window.hotkey_table.cellWidget(0, 2)
+    folder_edit = folder_widget.layout().itemAt(0).widget()
+    folder_btn = folder_widget.layout().itemAt(1).widget()
+
+    assert folder_edit.isClearButtonEnabled() is True
+    folder_edit.setText("  /tmp/target_test  ")
+    folder_edit.editingFinished.emit()
+    assert folder_edit.text() == "/tmp/target_test"
+
+    assert folder_btn.toolTip() == "Browse target folder for hotkey T"
+    assert "Opens a file dialog" in folder_btn.accessibleDescription()
