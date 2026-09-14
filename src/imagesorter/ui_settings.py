@@ -510,6 +510,13 @@ class SettingsWindow(QDialog):
         else:
             QMessageBox.critical(self, "Error", f"Failed to download model: {msg}")
 
+    def keyPressEvent(self, event) -> None:
+        """Dismiss settings dialog when Escape key is pressed."""
+        if event.key() == Qt.Key.Key_Escape:
+            self.reject()
+            return
+        super().keyPressEvent(event)
+
     def closeEvent(self, event) -> None:
         """Cancel optional work and close once threads finish, without GUI waits."""
         downloader_running = bool(self.downloader and self.downloader.isRunning())
