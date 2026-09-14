@@ -47,6 +47,7 @@ class ModelCheckWorker(QThread):
         self.model_dir = model_dir
 
     def run(self) -> None:
+        """Executes reader process model validation task off the main thread and emits validity signal."""
         from .reader_process import run_reader
         try:
             result, _ = run_reader({"action": "validate_model", "model_dir": self.model_dir},
@@ -80,6 +81,7 @@ class SettingsWindow(QDialog):
         self.chk_tooltips.toggled.connect(lambda enabled: None if enabled else QToolTip.hideText())
 
     def eventFilter(self, watched, event):
+        """Filters events to respect tooltip visibility settings and automatically install filters on new child widgets."""
         if event.type() == QEvent.Type.ToolTip and not self.chk_tooltips.isChecked():
             if not QApplication.keyboardModifiers() & Qt.KeyboardModifier.AltModifier:
                 return True
@@ -164,6 +166,7 @@ class SettingsWindow(QDialog):
         self.src_edit.setAccessibleName("Source Directory Path Input")
         self.src_edit.setAccessibleDescription("Specifies the source directory path to scan images from.")
         self.src_edit.setToolTip("The directory where the application will scan for supported images.")
+        self.src_edit.editingFinished.connect(lambda: self.src_edit.setText(self.src_edit.text().strip()))
         self.src_btn = QPushButton("Browse...")
         self.src_btn.setAccessibleName("Browse Source Directory Button")
         self.src_btn.setAccessibleDescription("Opens a file dialog to select the source directory.")
@@ -179,6 +182,7 @@ class SettingsWindow(QDialog):
         self.trash_edit.setAccessibleName("Trash Directory Path Input")
         self.trash_edit.setAccessibleDescription("Specifies the custom staging trash directory path.")
         self.trash_edit.setToolTip("The directory where deleted images will be moved.")
+        self.trash_edit.editingFinished.connect(lambda: self.trash_edit.setText(self.trash_edit.text().strip()))
         self.trash_btn = QPushButton("Browse...")
         self.trash_btn.setAccessibleName("Browse Trash Directory Button")
         self.trash_btn.setAccessibleDescription("Opens a file dialog to select the trash directory.")
@@ -362,23 +366,38 @@ class SettingsWindow(QDialog):
             QMessageBox.warning(self, "Error", f"Failed to run hardware scan: {e}")
 
     def browse_folder(self, line_edit: QLineEdit) -> None:
-        """Opens directory selection dialog."""
-        folder = QFileDialog.getExistingDirectory(self, "Select Directory", line_edit.text())
+        """Opens directory selection dialog with auto-trimmed path."""
+        current = line_edit.text().strip()
+        line_edit.setText(current)
+        folder = QFileDialog.getExistingDirectory(self, "Select Directory", current)
         if folder:
-            line_edit.setText(os.path.normpath(folder))
+            line_edit.setText(os.path.normpath(folder.strip()))
+
+    def _update_hotkey_table_empty_state(self) -> None:
+        """Updates accessibility description for the hotkey table when empty."""
+        if self.hotkey_table.rowCount() == 0:
+            self.hotkey_table.setAccessibleDescription(
+                "Table mapping single keys to move/copy operations and target folders. Currently no hotkeys are configured. Click 'Add Hotkey' to create a binding."
+            )
+        else:
+            self.hotkey_table.setAccessibleDescription(
+                "Table mapping single keys to move/copy operations and target folders."
+            )
 
     def add_hotkey_row(self, key: str = "", action: str = "move", folder: str = "", auto_advance: bool = True) -> None:
-        """Adds a new row to the hotkey table."""
+        """Adds a new row to the hotkey table with accessible controls and trimmed inputs."""
         row = self.hotkey_table.rowCount()
         self.hotkey_table.insertRow(row)
 
         key_item = QTableWidgetItem(key)
         self.hotkey_table.setItem(row, 0, key_item)
 
+        label_key = key.strip().upper() if key.strip() else "unassigned"
+
         action_combo = QComboBox()
         action_combo.addItems(["move", "copy"])
         action_combo.setCurrentText(action)
-        action_combo.setAccessibleName(f"Action for hotkey {key}")
+        action_combo.setAccessibleName(f"Action for hotkey {label_key}")
         self.hotkey_table.setCellWidget(row, 1, action_combo)
 
         folder_widget = QWidget()
@@ -386,10 +405,14 @@ class SettingsWindow(QDialog):
         folder_layout.setContentsMargins(0, 0, 0, 0)
 
         folder_edit = QLineEdit(folder)
-        folder_edit.setAccessibleName(f"Target folder for hotkey {key}")
+        folder_edit.setAccessibleName(f"Target folder for hotkey {label_key}")
+        folder_edit.editingFinished.connect(lambda fe=folder_edit: fe.setText(fe.text().strip()))
+
         folder_btn = QPushButton("...")
         folder_btn.setFixedWidth(30)
-        folder_btn.setAccessibleName(f"Browse target folder for hotkey {key}")
+        folder_btn.setAccessibleName(f"Browse target folder for hotkey {label_key}")
+        folder_btn.setAccessibleDescription(f"Opens a directory dialog to select target folder for hotkey {label_key}.")
+        folder_btn.setToolTip(f"Browse target folder for hotkey {label_key}")
         folder_btn.clicked.connect(lambda: self.browse_folder(folder_edit))
 
         folder_layout.addWidget(folder_edit)
@@ -399,7 +422,7 @@ class SettingsWindow(QDialog):
 
         advance_chk = QCheckBox()
         advance_chk.setChecked(auto_advance)
-        advance_chk.setAccessibleName(f"Auto Advance for hotkey {key}")
+        advance_chk.setAccessibleName(f"Auto Advance for hotkey {label_key}")
         chk_widget = QWidget()
         chk_layout = QHBoxLayout(chk_widget)
         chk_layout.addWidget(advance_chk)
@@ -407,20 +430,25 @@ class SettingsWindow(QDialog):
         chk_layout.setContentsMargins(0, 0, 0, 0)
         self.hotkey_table.setCellWidget(row, 3, chk_widget)
 
+        self._update_hotkey_table_empty_state()
+
     def remove_hotkey_row(self) -> None:
-        """Removes the selected hotkey row."""
+        """Removes the selected hotkey row and updates table accessibility state."""
         curr = self.hotkey_table.currentRow()
         if curr >= 0:
             self.hotkey_table.removeRow(curr)
+            self._update_hotkey_table_empty_state()
 
     def load_hotkeys_to_table(self) -> None:
-        """Populates hotkey table from settings."""
+        """Populates hotkey table from settings and synchronizes accessibility state."""
         hotkeys = self.settings.get('hotkeys')
         if not hotkeys:
+            self._update_hotkey_table_empty_state()
             return
 
         for key, config in hotkeys.items():
             self.add_hotkey_row(key, config.get("action", "move"), config.get("folder", ""), config.get("auto_advance", True))
+        self._update_hotkey_table_empty_state()
 
     def refresh_ai_model_status(self) -> None:
         """Verify optional model files without hashing them on the GUI thread."""
@@ -520,6 +548,7 @@ class SettingsWindow(QDialog):
         super().done(QDialog.DialogCode.Rejected if result is None else result)
 
     def done(self, result):
+        """Closes the dialog with the specified result code after terminating pending background tasks."""
         if self.components_panel.process or (self.check_worker and self.check_worker.isRunning()) or (
             self.downloader and self.downloader.isRunning()
         ):

@@ -179,3 +179,74 @@ def test_downloader_interruption_cancellation(qtbot):
 
     assert not downloader.isRunning()
     assert downloader.interrupted is True
+
+
+def test_input_auto_trimming_and_symbol_button_accessibility(qtbot, tmp_path):
+    settings_file = tmp_path / "settings.json"
+    sm = SettingsManager(filepath=str(settings_file))
+
+    window = SettingsWindow(sm)
+    qtbot.addWidget(window)
+
+    # Test auto-trimming on src_edit and trash_edit
+    window.src_edit.setText("  /path/to/source  ")
+    window.src_edit.editingFinished.emit()
+    assert window.src_edit.text() == "/path/to/source"
+
+    window.trash_edit.setText("  /path/to/trash  ")
+    window.trash_edit.editingFinished.emit()
+    assert window.trash_edit.text() == "/path/to/trash"
+
+    # Add hotkey row with empty key and verify fallback 'unassigned' accessibility label and tooltip
+    window.add_hotkey_row(key="", action="move", folder="", auto_advance=True)
+    row = window.hotkey_table.rowCount() - 1
+    folder_widget = window.hotkey_table.cellWidget(row, 2)
+    folder_edit = folder_widget.layout().itemAt(0).widget()
+    folder_btn = folder_widget.layout().itemAt(1).widget()
+
+    assert folder_btn.accessibleName() == "Browse target folder for hotkey unassigned"
+    assert folder_btn.toolTip() == "Browse target folder for hotkey unassigned"
+    assert "Opens a directory dialog" in folder_btn.accessibleDescription()
+
+    folder_edit.setText("  /target/folder  ")
+    folder_edit.editingFinished.emit()
+    assert folder_edit.text() == "/target/folder"
+
+
+def test_hotkey_table_empty_state_and_accessibility(qtbot, tmp_path, monkeypatch):
+    from PyQt6.QtWidgets import QFileDialog
+
+    settings_file = tmp_path / "settings.json"
+    sm = SettingsManager(filepath=str(settings_file))
+    window = SettingsWindow(sm)
+    qtbot.addWidget(window)
+
+    # 1. Verify hotkey table empty state accessibility description
+    assert "no hotkeys are configured" in window.hotkey_table.accessibleDescription().lower()
+
+    # 2. Add hotkey row and check folder_btn tooltip and accessible name
+    window.add_hotkey_row(key="M", action="move", folder=" /tmp/path ", auto_advance=True)
+    assert window.hotkey_table.rowCount() == 1
+    assert "no hotkeys are configured" not in window.hotkey_table.accessibleDescription().lower()
+
+    folder_widget = window.hotkey_table.cellWidget(0, 2)
+    folder_btn = folder_widget.layout().itemAt(1).widget()
+    assert folder_btn.toolTip() == "Browse target folder for hotkey M"
+    assert folder_btn.accessibleName() == "Browse target folder for hotkey M"
+    assert "Opens a directory dialog" in folder_btn.accessibleDescription()
+
+    # 3. Verify browse_folder trims current path and selected directory
+    folder_edit = folder_widget.layout().itemAt(0).widget()
+    folder_edit.setText("  /untrimmed/input  ")
+    selected_dir = tmp_path / "selected_dir"
+    selected_dir.mkdir()
+    monkeypatch.setattr(QFileDialog, "getExistingDirectory", lambda *args, **kwargs: f"  {selected_dir}  ")
+    folder_btn.click()
+    assert folder_edit.text() == str(selected_dir)
+
+    # 4. Remove row and re-check empty state description
+    window.hotkey_table.selectRow(0)
+    window.remove_hotkey_row()
+    assert window.hotkey_table.rowCount() == 0
+    assert "no hotkeys are configured" in window.hotkey_table.accessibleDescription().lower()
+
