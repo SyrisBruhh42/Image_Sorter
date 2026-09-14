@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import (
     QCheckBox,
     QDialog,
@@ -17,12 +18,29 @@ from PyQt6.QtWidgets import (
 
 
 def eligible(record):
+    """Determines whether an operation record is eligible for automatic recovery.
+
+    Args:
+        record: A dictionary containing operation journal details.
+
+    Returns:
+        bool: True if state is 'recovery_required', not resolved, manifest version is 2,
+        and mode is not 'system_trash'; False otherwise.
+    """
     manifest = record.get("manifest") or {}
     return (record.get("state") == "recovery_required" and not record.get("resolved_by") and
             manifest.get("version") == 2 and manifest.get("mode") != "system_trash")
 
 
 def explanation(record):
+    """Generates a human-readable explanation of an operation record and its file manifest.
+
+    Args:
+        record: A dictionary containing operation details and manifest files.
+
+    Returns:
+        str: Formatted string explaining the operation status and recorded file locations.
+    """
     action = str(record.get("action", "file operation")).replace("_", " ").capitalize()
     text = [f"Operation: {action}", f"Original image: {record.get('source_path', 'Not recorded')}",
             f"Intended destination: {record.get('destination_path') or 'Not recorded'}", "",
@@ -55,9 +73,13 @@ class RecoveryDialog(QDialog):
         self.viewer = viewer
         self.setWindowTitle("Preserved operation recovery")
         self.resize(820, 620)
+        self.setAccessibleName("Preserved operation recovery dialog")
+        self.setAccessibleDescription("Dialog for reviewing interrupted or failed file operations and requesting durable rollbacks.")
         layout = QVBoxLayout(self)
         self.status = QLabel("Select one record. Rollback verifies recorded identities and preserves ambiguous files.")
         self.status.setWordWrap(True)
+        self.status.setAccessibleName("Recovery status label")
+        self.status.setAccessibleDescription("Displays current status and instructions for operation recovery.")
         layout.addWidget(self.status)
         self.records = QListWidget()
         self.records.setMaximumHeight(160)
@@ -68,11 +90,16 @@ class RecoveryDialog(QDialog):
         self.details.setAccessibleName("Recovery explanation and recorded file paths")
         layout.addWidget(self.details)
         self.technical = QCheckBox("Show technical record")
+        self.technical.setAccessibleName("Show technical record checkbox")
         self.technical.setAccessibleDescription("Show the complete original journal record for advanced review.")
+        self.technical.setToolTip("Show raw JSON journal record for advanced debugging.")
         self.technical.toggled.connect(self.selection_changed)
         layout.addWidget(self.technical)
         self.rollback = QPushButton("Review and request rollback…")
         self.rollback.setObjectName("recovery_rollback")
+        self.rollback.setAccessibleName("Review and request rollback button")
+        self.rollback.setAccessibleDescription("Initiates a verified rollback of the selected interrupted operation.")
+        self.rollback.setToolTip("Review selected record details and request automatic transaction rollback.")
         layout.addWidget(self.rollback)
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
         buttons.rejected.connect(self.reject)
@@ -122,3 +149,9 @@ class RecoveryDialog(QDialog):
                                 result.get("resolved_operation_id") else "Rollback did not resolve the record: " +
                                 str(result.get("error") or result.get("warning") or result.get("state")))
         self.selection_changed()
+
+    def keyPressEvent(self, event):
+        if event.key() == Qt.Key.Key_Escape:
+            self.reject()
+            return
+        super().keyPressEvent(event)
