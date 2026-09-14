@@ -161,9 +161,12 @@ class SettingsWindow(QDialog):
         # Source Directory
         src_layout = QHBoxLayout()
         self.src_edit = QLineEdit(self.settings.get('directories', 'source') or "")
+        self.src_edit.setClearButtonEnabled(True)
+        self.src_edit.editingFinished.connect(lambda: self.src_edit.setText(self.src_edit.text().strip()))
         self.src_edit.setAccessibleName("Source Directory Path Input")
         self.src_edit.setAccessibleDescription("Specifies the source directory path to scan images from.")
         self.src_edit.setToolTip("The directory where the application will scan for supported images.")
+        self.src_edit.editingFinished.connect(lambda: self.src_edit.setText(self.src_edit.text().strip()))
         self.src_btn = QPushButton("Browse...")
         self.src_btn.setAccessibleName("Browse Source Directory Button")
         self.src_btn.setAccessibleDescription("Opens a file dialog to select the source directory.")
@@ -176,9 +179,12 @@ class SettingsWindow(QDialog):
         # Trash Directory
         trash_layout = QHBoxLayout()
         self.trash_edit = QLineEdit(self.settings.get('directories', 'trash') or "")
+        self.trash_edit.setClearButtonEnabled(True)
+        self.trash_edit.editingFinished.connect(lambda: self.trash_edit.setText(self.trash_edit.text().strip()))
         self.trash_edit.setAccessibleName("Trash Directory Path Input")
         self.trash_edit.setAccessibleDescription("Specifies the custom staging trash directory path.")
         self.trash_edit.setToolTip("The directory where deleted images will be moved.")
+        self.trash_edit.editingFinished.connect(lambda: self.trash_edit.setText(self.trash_edit.text().strip()))
         self.trash_btn = QPushButton("Browse...")
         self.trash_btn.setAccessibleName("Browse Trash Directory Button")
         self.trash_btn.setAccessibleDescription("Opens a file dialog to select the trash directory.")
@@ -363,9 +369,9 @@ class SettingsWindow(QDialog):
 
     def browse_folder(self, line_edit: QLineEdit) -> None:
         """Opens directory selection dialog."""
-        folder = QFileDialog.getExistingDirectory(self, "Select Directory", line_edit.text())
+        folder = QFileDialog.getExistingDirectory(self, "Select Directory", line_edit.text().strip())
         if folder:
-            line_edit.setText(os.path.normpath(folder))
+            line_edit.setText(os.path.normpath(folder.strip()))
 
     def add_hotkey_row(self, key: str = "", action: str = "move", folder: str = "", auto_advance: bool = True) -> None:
         """Adds a new row to the hotkey table."""
@@ -385,8 +391,9 @@ class SettingsWindow(QDialog):
         folder_layout = QHBoxLayout(folder_widget)
         folder_layout.setContentsMargins(0, 0, 0, 0)
 
-        folder_edit = QLineEdit(folder)
+        folder_edit = QLineEdit(folder.strip())
         folder_edit.setAccessibleName(f"Target folder for hotkey {key}")
+        folder_edit.editingFinished.connect(lambda: folder_edit.setText(folder_edit.text().strip()))
         folder_btn = QPushButton("...")
         folder_btn.setFixedWidth(30)
         folder_btn.setAccessibleName(f"Browse target folder for hotkey {key}")
@@ -543,6 +550,7 @@ class SettingsWindow(QDialog):
 
         # 1. Directories Validation
         src_dir = self.src_edit.text().strip()
+        self.src_edit.setText(src_dir)
         if src_dir:
             if os.path.isfile(src_dir):
                 QMessageBox.warning(self, "Validation Error", f"Source directory path points to a file, not a directory: {src_dir}")
@@ -552,6 +560,7 @@ class SettingsWindow(QDialog):
                 return
 
         trash_dir = self.trash_edit.text().strip()
+        self.trash_edit.setText(trash_dir)
         if trash_dir:
             if os.path.isfile(trash_dir):
                 QMessageBox.warning(self, "Validation Error", f"Trash directory path points to a file, not a directory: {trash_dir}")
@@ -621,6 +630,8 @@ class SettingsWindow(QDialog):
             folder_widget = self.hotkey_table.cellWidget(row, 2)
             folder_edit = folder_widget.layout().itemAt(0).widget() if folder_widget else None
             folder = folder_edit.text().strip() if folder_edit else ""
+            if folder_edit:
+                folder_edit.setText(folder)
 
             if folder:
                 if os.path.isfile(folder):

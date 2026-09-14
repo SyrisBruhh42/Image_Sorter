@@ -2,8 +2,12 @@ from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QColor, QPalette
 from PyQt6.QtWidgets import QLineEdit
 
+from PyQt6.QtWidgets import QDialog
+
 from imagesorter.settings_manager import SettingsManager
 from imagesorter.ui_main import MainViewer
+from imagesorter.ui_recovery import RecoveryDialog
+from imagesorter.ui_settings import SettingsWindow
 
 
 def calculate_relative_luminance(color: QColor) -> float:
@@ -80,3 +84,33 @@ def test_keyboard_focus_isolation(qtbot, tmp_path):
     assert viewer.current_index == 0
     assert line_edit.text().upper() == "SRCLZ"
     assert len(viewer.images) == 2
+
+
+def test_recovery_dialog_escape_dismissal(qtbot, tmp_path):
+    settings_file = tmp_path / "settings.json"
+    sm = SettingsManager(filepath=str(settings_file))
+    viewer = MainViewer(sm)
+    qtbot.addWidget(viewer)
+
+    dialog = RecoveryDialog(viewer)
+    qtbot.addWidget(dialog)
+    dialog.show()
+
+    assert dialog.isVisible()
+    qtbot.keyClick(dialog, Qt.Key.Key_Escape)
+    assert not dialog.isVisible()
+
+
+def test_settings_input_auto_trimming(qtbot, tmp_path):
+    settings_file = tmp_path / "settings.json"
+    sm = SettingsManager(filepath=str(settings_file))
+    window = SettingsWindow(sm)
+    qtbot.addWidget(window)
+
+    window.src_edit.setText("   /tmp/custom_src   ")
+    window.src_edit.editingFinished.emit()
+    assert window.src_edit.text() == "/tmp/custom_src"
+
+    window.trash_edit.setText("   /tmp/custom_trash   ")
+    window.trash_edit.editingFinished.emit()
+    assert window.trash_edit.text() == "/tmp/custom_trash"
