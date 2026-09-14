@@ -179,3 +179,32 @@ def test_downloader_interruption_cancellation(qtbot):
 
     assert not downloader.isRunning()
     assert downloader.interrupted is True
+
+
+def test_input_auto_trim_and_hotkey_folder_btn_accessibility(qtbot, tmp_path):
+    settings_file = tmp_path / "settings.json"
+    sm = SettingsManager(filepath=str(settings_file))
+
+    window = SettingsWindow(sm)
+    qtbot.addWidget(window)
+
+    # Test auto-trimming on src_edit
+    window.src_edit.setText("   /path/to/source   ")
+    window.src_edit.editingFinished.emit()
+    assert window.src_edit.text() == "/path/to/source"
+
+    # Test auto-trimming on trash_edit
+    window.trash_edit.setText("   /path/to/trash   ")
+    window.trash_edit.editingFinished.emit()
+    assert window.trash_edit.text() == "/path/to/trash"
+
+    # Test hotkey row folder_btn accessible description & tooltip
+    window.add_hotkey_row(key="A", action="move", folder=" /some/folder ")
+    folder_widget = window.hotkey_table.cellWidget(0, 2)
+    folder_edit = folder_widget.layout().itemAt(0).widget()
+    folder_btn = folder_widget.layout().itemAt(1).widget()
+
+    folder_edit.editingFinished.emit()
+    assert folder_edit.text() == "/some/folder"
+    assert folder_btn.accessibleDescription() == "Opens a file dialog to select the target folder for this hotkey."
+    assert folder_btn.toolTip() == "Browse to select target folder for this hotkey."

@@ -80,6 +80,13 @@ class SettingsWindow(QDialog):
         self.chk_tooltips.toggled.connect(lambda enabled: None if enabled else QToolTip.hideText())
 
     def eventFilter(self, watched, event):
+        """
+        Filters UI events for WCAG AAA tooltips and dynamic child widget event filter installation.
+
+        :param watched: The QObject being monitored.
+        :param event: The QEvent being processed.
+        :return: True if the event was handled and should be consumed; False otherwise.
+        """
         if event.type() == QEvent.Type.ToolTip and not self.chk_tooltips.isChecked():
             if not QApplication.keyboardModifiers() & Qt.KeyboardModifier.AltModifier:
                 return True
@@ -164,6 +171,7 @@ class SettingsWindow(QDialog):
         self.src_edit.setAccessibleName("Source Directory Path Input")
         self.src_edit.setAccessibleDescription("Specifies the source directory path to scan images from.")
         self.src_edit.setToolTip("The directory where the application will scan for supported images.")
+        self.src_edit.editingFinished.connect(lambda: self.src_edit.setText(self.src_edit.text().strip()))
         self.src_btn = QPushButton("Browse...")
         self.src_btn.setAccessibleName("Browse Source Directory Button")
         self.src_btn.setAccessibleDescription("Opens a file dialog to select the source directory.")
@@ -179,6 +187,7 @@ class SettingsWindow(QDialog):
         self.trash_edit.setAccessibleName("Trash Directory Path Input")
         self.trash_edit.setAccessibleDescription("Specifies the custom staging trash directory path.")
         self.trash_edit.setToolTip("The directory where deleted images will be moved.")
+        self.trash_edit.editingFinished.connect(lambda: self.trash_edit.setText(self.trash_edit.text().strip()))
         self.trash_btn = QPushButton("Browse...")
         self.trash_btn.setAccessibleName("Browse Trash Directory Button")
         self.trash_btn.setAccessibleDescription("Opens a file dialog to select the trash directory.")
@@ -363,22 +372,31 @@ class SettingsWindow(QDialog):
 
     def browse_folder(self, line_edit: QLineEdit) -> None:
         """Opens directory selection dialog."""
-        folder = QFileDialog.getExistingDirectory(self, "Select Directory", line_edit.text())
+        folder = QFileDialog.getExistingDirectory(self, "Select Directory", line_edit.text().strip())
         if folder:
             line_edit.setText(os.path.normpath(folder))
 
     def add_hotkey_row(self, key: str = "", action: str = "move", folder: str = "", auto_advance: bool = True) -> None:
-        """Adds a new row to the hotkey table."""
+        """
+        Adds a new row to the hotkey table with configured shortcuts and target folders.
+
+        :param key: Single-character key binding string.
+        :param action: Action type ('move' or 'copy').
+        :param folder: Target directory path for file operations.
+        :param auto_advance: Whether to automatically navigate to the next image after action.
+        """
         row = self.hotkey_table.rowCount()
         self.hotkey_table.insertRow(row)
 
         key_item = QTableWidgetItem(key)
         self.hotkey_table.setItem(row, 0, key_item)
 
+        label_key = key.strip() if key and key.strip() else "row"
+
         action_combo = QComboBox()
         action_combo.addItems(["move", "copy"])
         action_combo.setCurrentText(action)
-        action_combo.setAccessibleName(f"Action for hotkey {key}")
+        action_combo.setAccessibleName(f"Action for hotkey {label_key}")
         self.hotkey_table.setCellWidget(row, 1, action_combo)
 
         folder_widget = QWidget()
@@ -387,9 +405,12 @@ class SettingsWindow(QDialog):
 
         folder_edit = QLineEdit(folder)
         folder_edit.setAccessibleName(f"Target folder for hotkey {key}")
+        folder_edit.editingFinished.connect(lambda: folder_edit.setText(folder_edit.text().strip()))
         folder_btn = QPushButton("...")
         folder_btn.setFixedWidth(30)
         folder_btn.setAccessibleName(f"Browse target folder for hotkey {key}")
+        folder_btn.setAccessibleDescription("Opens a file dialog to select the target folder for this hotkey.")
+        folder_btn.setToolTip("Browse to select target folder for this hotkey.")
         folder_btn.clicked.connect(lambda: self.browse_folder(folder_edit))
 
         folder_layout.addWidget(folder_edit)
@@ -399,7 +420,7 @@ class SettingsWindow(QDialog):
 
         advance_chk = QCheckBox()
         advance_chk.setChecked(auto_advance)
-        advance_chk.setAccessibleName(f"Auto Advance for hotkey {key}")
+        advance_chk.setAccessibleName(f"Auto Advance for hotkey {label_key}")
         chk_widget = QWidget()
         chk_layout = QHBoxLayout(chk_widget)
         chk_layout.addWidget(advance_chk)
@@ -487,6 +508,13 @@ class SettingsWindow(QDialog):
             QMessageBox.information(self, "Success", "Model downloaded and verified successfully! You can now enable AI tagging.")
         else:
             QMessageBox.critical(self, "Error", f"Failed to download model: {msg}")
+
+    def keyPressEvent(self, event) -> None:
+        """Dismiss settings dialog when Escape key is pressed."""
+        if event.key() == Qt.Key.Key_Escape:
+            self.reject()
+            return
+        super().keyPressEvent(event)
 
     def closeEvent(self, event) -> None:
         """Cancel optional work and close once threads finish, without GUI waits."""
