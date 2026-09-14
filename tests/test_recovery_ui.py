@@ -3,7 +3,7 @@ from PyQt6.QtWidgets import QMessageBox
 
 from imagesorter.settings_manager import SettingsManager
 from imagesorter.ui_main import MainViewer
-from imagesorter.ui_recovery import RecoveryDialog, eligible
+from imagesorter.ui_recovery import RecoveryDialog, eligible, explanation
 
 
 def test_legacy_and_system_trash_are_manual_only(qtbot, tmp_path):
@@ -18,6 +18,9 @@ def test_legacy_and_system_trash_are_manual_only(qtbot, tmp_path):
     dialog = RecoveryDialog(viewer)
     qtbot.addWidget(dialog)
     assert not dialog.rollback.isEnabled()
+    assert dialog.rollback.accessibleName() == "Review and request rollback button"
+    assert "durable rollback" in dialog.rollback.accessibleDescription()
+    assert "durable rollback" in dialog.rollback.toolTip()
     assert "manual review only" in dialog.records.item(0).text()
     assert not dialog.technical.isChecked()
     assert "Automatic rollback is unavailable" in dialog.details.toPlainText()
@@ -50,3 +53,9 @@ def test_recovery_submission_preserves_view_generation(qtbot, tmp_path, monkeypa
     assert submitted[0]["operation_id"] == operation_id
     assert submitted[0]["task_options"]["view_generation"] == 42
     assert submitted[0]["task_options"]["settings_snapshot"] == viewer.settings.snapshot()
+
+
+def test_recovery_accessibility_and_docstrings():
+    assert eligible.__doc__ is not None
+    assert explanation.__doc__ is not None
+    assert RecoveryDialog.__doc__ is not None

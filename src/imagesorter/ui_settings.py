@@ -372,13 +372,14 @@ class SettingsWindow(QDialog):
         row = self.hotkey_table.rowCount()
         self.hotkey_table.insertRow(row)
 
+        key_label = key if key else "unassigned"
         key_item = QTableWidgetItem(key)
         self.hotkey_table.setItem(row, 0, key_item)
 
         action_combo = QComboBox()
         action_combo.addItems(["move", "copy"])
         action_combo.setCurrentText(action)
-        action_combo.setAccessibleName(f"Action for hotkey {key}")
+        action_combo.setAccessibleName(f"Action for hotkey {key_label}")
         self.hotkey_table.setCellWidget(row, 1, action_combo)
 
         folder_widget = QWidget()
@@ -386,10 +387,12 @@ class SettingsWindow(QDialog):
         folder_layout.setContentsMargins(0, 0, 0, 0)
 
         folder_edit = QLineEdit(folder)
-        folder_edit.setAccessibleName(f"Target folder for hotkey {key}")
+        folder_edit.setAccessibleName(f"Target folder for hotkey {key_label}")
         folder_btn = QPushButton("...")
         folder_btn.setFixedWidth(30)
-        folder_btn.setAccessibleName(f"Browse target folder for hotkey {key}")
+        folder_btn.setAccessibleName(f"Browse target folder for hotkey {key_label}")
+        folder_btn.setAccessibleDescription(f"Opens a file dialog to select the target directory for hotkey {key_label}.")
+        folder_btn.setToolTip("Open a file dialog to select the target directory.")
         folder_btn.clicked.connect(lambda: self.browse_folder(folder_edit))
 
         folder_layout.addWidget(folder_edit)

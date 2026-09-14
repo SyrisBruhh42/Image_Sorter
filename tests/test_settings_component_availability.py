@@ -14,7 +14,12 @@ from imagesorter.component_manager import (
     ComponentManager,
 )
 from imagesorter.settings_manager import SettingsManager
-from imagesorter.ui_components import ComponentsPanel
+from imagesorter.ui_components import (
+    CANCEL_KILL_DELAY_MS,
+    MAX_STATUS_BUFFER_BYTES,
+    MAX_STATUS_LINE_CHARACTERS,
+    ComponentsPanel,
+)
 from imagesorter.ui_settings import SettingsWindow
 from tests.test_component_manager import CID, manager, pack
 
@@ -306,3 +311,20 @@ def test_saved_confidence_reaches_enrichment_request(settings_window, tmp_path, 
     assert requests[0]["action"] == "infer"
     assert requests[0]["threshold"] == threshold
     assert requests[0]["model_dir"] is None
+
+
+def test_components_panel_accessibility_constants_and_docstrings(qtbot):
+    assert MAX_STATUS_BUFFER_BYTES == 65536
+    assert MAX_STATUS_LINE_CHARACTERS == 1500
+    assert CANCEL_KILL_DELAY_MS == 1000
+
+    panel = ComponentsPanel()
+    qtbot.addWidget(panel)
+    assert panel.run_button.accessibleName() == "Apply component action button"
+    assert panel.import_button.accessibleName() == "Import component pack button"
+    assert panel.legacy_button.accessibleName() == "Import checksum-verified existing model button"
+    assert panel.cancel_button.accessibleName() == "Cancel component process button"
+
+    assert ComponentsPanel.__doc__ is not None
+    assert panel.refresh.__doc__ is not None
+    assert panel.apply.__doc__ is not None

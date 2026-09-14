@@ -16,13 +16,26 @@ from PyQt6.QtWidgets import (
 )
 
 
-def eligible(record):
+MAX_RECORDS_LIST_HEIGHT = 160
+
+
+def eligible(record: dict) -> bool:
+    """Check if an operation journal record is eligible for automatic durable rollback.
+
+    Returns True if the record state is 'recovery_required', unresolved, uses manifest
+    schema version 2, and is not a system_trash operation.
+    """
     manifest = record.get("manifest") or {}
     return (record.get("state") == "recovery_required" and not record.get("resolved_by") and
             manifest.get("version") == 2 and manifest.get("mode") != "system_trash")
 
 
-def explanation(record):
+def explanation(record: dict) -> str:
+    """Format a human-readable recovery explanation string from an operation journal record.
+
+    Includes operation action type, original path, destination path, reasons for review,
+    rollback behavior, and all recorded file set manifest paths.
+    """
     action = str(record.get("action", "file operation")).replace("_", " ").capitalize()
     text = [f"Operation: {action}", f"Original image: {record.get('source_path', 'Not recorded')}",
             f"Intended destination: {record.get('destination_path') or 'Not recorded'}", "",
@@ -50,17 +63,20 @@ def explanation(record):
 
 
 class RecoveryDialog(QDialog):
+    """Dialog for reviewing interrupted transactions and requesting durable recovery rollback."""
+
     def __init__(self, viewer):
         super().__init__(viewer)
         self.viewer = viewer
         self.setWindowTitle("Preserved operation recovery")
+        self.setAccessibleName("Preserved operation recovery dialog")
         self.resize(820, 620)
         layout = QVBoxLayout(self)
         self.status = QLabel("Select one record. Rollback verifies recorded identities and preserves ambiguous files.")
         self.status.setWordWrap(True)
         layout.addWidget(self.status)
         self.records = QListWidget()
-        self.records.setMaximumHeight(160)
+        self.records.setMaximumHeight(MAX_RECORDS_LIST_HEIGHT)
         self.records.setAccessibleName("Unresolved recovery records")
         layout.addWidget(self.records)
         self.details = QPlainTextEdit()
@@ -73,6 +89,9 @@ class RecoveryDialog(QDialog):
         layout.addWidget(self.technical)
         self.rollback = QPushButton("Review and request rollback…")
         self.rollback.setObjectName("recovery_rollback")
+        self.rollback.setAccessibleName("Request Rollback Button")
+        self.rollback.setAccessibleDescription("Requests a rollback for the selected interrupted operation after verifying recorded file identities.")
+        self.rollback.setToolTip("Request rollback for the selected recorded operation.")
         layout.addWidget(self.rollback)
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
         buttons.rejected.connect(self.reject)
@@ -84,7 +103,8 @@ class RecoveryDialog(QDialog):
         self.refresh()
         viewer.worker.client.refresh_recovery()
 
-    def refresh(self, _message=None):
+    def refresh(self, _message=None) -> None:
+        """Refresh the recovery list items from current viewer records."""
         selected = self.selected()
         selected_id = selected.get("operation_id") if selected else None
         self.rows = list(self.viewer._recovery_records)
@@ -99,24 +119,28 @@ class RecoveryDialog(QDialog):
         self.records.setCurrentRow(index if self.rows else -1)
         self.selection_changed()
 
-    def selected(self):
+    def selected(self) -> dict | None:
+        """Return the currently selected recovery record dictionary or None."""
         index = self.records.currentRow()
         rows = getattr(self, "rows", [])
         return rows[index] if 0 <= index < len(rows) else None
 
-    def selection_changed(self, _index=None):
+    def selection_changed(self, _index=None) -> None:
+        """Update explanation text and rollback button enable state when row selection changes."""
         record = self.selected()
         detail = json.dumps(record, indent=2, default=str) if record and self.technical.isChecked() else explanation(record) if record else "No unresolved records reported."
         self.details.setPlainText(detail)
         self.rollback.setEnabled(bool(record and eligible(record) and not self.viewer.worker.client.pending))
 
-    def request(self):
+    def request(self) -> None:
+        """Request durable recovery rollback for the currently selected record."""
         record = self.selected()
         if record and self.viewer.request_recovery(record):
             self.status.setText("Rollback requested. Waiting for the durable result; do not change preserved files.")
             self.rollback.setEnabled(False)
 
-    def result(self, result):
+    def result(self, result: dict) -> None:
+        """Handle operation result signal for recovery action and update status message."""
         if result.get("action") == "recover":
             self.status.setText("Rollback completed; the original record and receipt remain in the journal." if
                                 result.get("resolved_operation_id") else "Rollback did not resolve the record: " +

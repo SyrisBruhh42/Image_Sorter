@@ -22,8 +22,14 @@ from PyQt6.QtWidgets import (
 from .component_manager import DOWNLOAD_UNAVAILABLE, ComponentManager
 from .component_runtime import component_job_command
 
+MAX_STATUS_BUFFER_BYTES = 65536
+MAX_STATUS_LINE_CHARACTERS = 1500
+CANCEL_KILL_DELAY_MS = 1000
+
 
 class ComponentsPanel(QWidget):
+    """Control panel for inspecting, installing, enabling, and removing optional components."""
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setAccessibleName("Optional components")
@@ -50,16 +56,27 @@ class ComponentsPanel(QWidget):
         self.action.setAccessibleName("Component action")
         row.addWidget(self.action)
         self.run_button = QPushButton("Apply")
+        self.run_button.setAccessibleName("Apply Component Action Button")
+        self.run_button.setAccessibleDescription("Applies the selected action to the chosen optional component.")
+        self.run_button.setToolTip("Apply the selected component action.")
         self.run_button.clicked.connect(self.apply)
         row.addWidget(self.run_button)
         self.import_button = QPushButton("Import pack…")
+        self.import_button.setAccessibleName("Import Component Pack Button")
+        self.import_button.setAccessibleDescription("Opens a file dialog to import a pinned component pack archive.")
+        self.import_button.setToolTip("Import a pinned component pack archive file.")
         self.import_button.clicked.connect(self.import_pack)
         row.addWidget(self.import_button)
         self.legacy_button = QPushButton("Import existing model…")
         self.legacy_button.setAccessibleName("Import checksum-verified existing model and labels")
+        self.legacy_button.setAccessibleDescription("Imports an existing MobileNetV2 ONNX model and labels file with checksum verification.")
+        self.legacy_button.setToolTip("Import existing checksum-verified ONNX model and labels directory.")
         self.legacy_button.clicked.connect(self.import_legacy)
         row.addWidget(self.legacy_button)
         self.cancel_button = QPushButton("Cancel")
+        self.cancel_button.setAccessibleName("Cancel Component Operation Button")
+        self.cancel_button.setAccessibleDescription("Cancels an ongoing background component installation or operation.")
+        self.cancel_button.setToolTip("Cancel current component operation.")
         self.cancel_button.setEnabled(False)
         self.cancel_button.clicked.connect(self.cancel)
         row.addWidget(self.cancel_button)
@@ -80,14 +97,16 @@ class ComponentsPanel(QWidget):
         self.action.currentIndexChanged.connect(self.update_actions)
         self.refresh()
 
-    def update_actions(self, *_args):
+    def update_actions(self, *_args) -> None:
+        """Update availability label and enable/disable apply button based on selection state."""
         entry = self.component_status.get(self.component.currentText(), {})
         available = entry.get("download_available", False)
         self.download_label.setText("Verified download available." if available else DOWNLOAD_UNAVAILABLE)
         self.run_button.setEnabled(self.process is None and
                                    (self.action.currentData() != "install" or available))
 
-    def refresh(self):
+    def refresh(self) -> None:
+        """Refresh table entries and available actions from component manager status."""
         try:
             rows = ComponentManager().status()
         except Exception as exc:
@@ -123,7 +142,8 @@ class ComponentsPanel(QWidget):
                 break
             parent = parent.parent()
 
-    def apply(self):
+    def apply(self) -> None:
+        """Prompt confirmation if required and launch the selected component job."""
         action = self.action.currentData()
         if action == "install" and not self.component_status.get(self.component.currentText(), {}).get("download_available"):
             self.download_label.setText(DOWNLOAD_UNAVAILABLE)
@@ -135,17 +155,20 @@ class ComponentsPanel(QWidget):
                 return
         self.start([action, self.component.currentText()])
 
-    def import_pack(self):
+    def import_pack(self) -> None:
+        """Prompt for a component pack archive file and launch installation job."""
         filename, _ = QFileDialog.getOpenFileName(self, "Import pinned component pack", "", "Component pack (*.tar.gz)")
         if filename:
             self.start(["install", self.component.currentText(), "--archive", filename])
 
-    def import_legacy(self):
+    def import_legacy(self) -> None:
+        """Prompt for a directory containing existing model assets and launch import job."""
         directory = QFileDialog.getExistingDirectory(self, "Import existing pinned model and labels")
         if directory:
             self.start(["import-model", "ai.mobilenet-v2", "--archive", directory])
 
-    def start(self, arguments):
+    def start(self, arguments: list[str]) -> None:
+        """Start a component worker process with given arguments asynchronously."""
         if self.process is not None:
             return
         self.pending_output = b""
@@ -165,11 +188,12 @@ class ComponentsPanel(QWidget):
         self.cancel_button.setEnabled(True)
         self.process.start(command[0], command[1:])
 
-    def _read(self):
+    def _read(self) -> None:
+        """Read standard output from the background process and update status UI."""
         if self.process is None:
             return
         self.pending_output += bytes(self.process.readAllStandardOutput())
-        if len(self.pending_output) > 65536:
+        if len(self.pending_output) > MAX_STATUS_BUFFER_BYTES:
             self.pending_output = b""
             self.status_label.setText("Component job exceeded its bounded status channel; cancelled safely.")
             self.cancel()
@@ -180,14 +204,16 @@ class ComponentsPanel(QWidget):
                 value = json.loads(line)
                 self.status_label.setText(value.get("error") or f'Component operation: {value.get("state", "working")}')
             except ValueError:
-                self.status_label.setText(line.decode(errors="replace")[-1500:])
+                self.status_label.setText(line.decode(errors="replace")[-MAX_STATUS_LINE_CHARACTERS:])
 
-    def _error(self, _error):
+    def _error(self, _error) -> None:
+        """Handle process startup or runtime error events."""
         self.status_label.setText("Component process could not complete; verify the store before retrying.")
         if self.process is not None and self.process.state() == QProcess.ProcessState.NotRunning:
             self._finished(1, QProcess.ExitStatus.CrashExit)
 
-    def _finished(self, code, _status):
+    def _finished(self, code: int, _status) -> None:
+        """Handle background process exit, update UI buttons, and refresh status."""
         self._read()
         process, self.process = self.process, None
         if process:
@@ -208,15 +234,17 @@ class ComponentsPanel(QWidget):
                     break
                 parent = parent.parent()
 
-    def cancel(self):
+    def cancel(self) -> None:
+        """Send SIGTERM (and SIGKILL fallback after delay) to cancel running component process."""
         if self.process:
             process = self.process
             self._signal_group(process, signal.SIGTERM)
-            QTimer.singleShot(1000, lambda: self._signal_group(process, getattr(signal, "SIGKILL", 9))
+            QTimer.singleShot(CANCEL_KILL_DELAY_MS, lambda: self._signal_group(process, getattr(signal, "SIGKILL", 9))
                              if self.process is process else None)
 
     @staticmethod
-    def _signal_group(process, sig):
+    def _signal_group(process, sig: int) -> None:
+        """Send signal to process or process group on POSIX systems."""
         pid = int(process.processId())
         if os.name == "posix" and pid > 0:
             try:
@@ -230,6 +258,7 @@ class ComponentsPanel(QWidget):
         else:
             process.kill()
 
-    def closeEvent(self, event):
+    def closeEvent(self, event) -> None:
+        """Cancel active background process on widget close."""
         self.cancel()
         super().closeEvent(event)
