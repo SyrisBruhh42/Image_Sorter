@@ -4,6 +4,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from PyQt6.QtCore import Qt
+from PyQt6.QtGui import QKeyEvent
 from PyQt6.QtWidgets import (
     QCheckBox,
     QDialog,
@@ -80,7 +82,7 @@ class RecoveryDialog(QDialog):
         self.records.currentRowChanged.connect(self.selection_changed)
         self.rollback.clicked.connect(self.request)
         viewer.worker.signals.recovery_summary.connect(self.refresh)
-        viewer.worker.signals.operation_result.connect(self.result)
+        viewer.worker.signals.operation_result.connect(self.on_operation_result)
         self.refresh()
         viewer.worker.client.refresh_recovery()
 
@@ -116,9 +118,15 @@ class RecoveryDialog(QDialog):
             self.status.setText("Rollback requested. Waiting for the durable result; do not change preserved files.")
             self.rollback.setEnabled(False)
 
-    def result(self, result):
+    def on_operation_result(self, result):
         if result.get("action") == "recover":
             self.status.setText("Rollback completed; the original record and receipt remain in the journal." if
                                 result.get("resolved_operation_id") else "Rollback did not resolve the record: " +
                                 str(result.get("error") or result.get("warning") or result.get("state")))
         self.selection_changed()
+
+    def keyPressEvent(self, event: QKeyEvent) -> None:
+        if event.key() == Qt.Key.Key_Escape:
+            self.reject()
+            return
+        super().keyPressEvent(event)

@@ -4,6 +4,7 @@ from PyQt6.QtWidgets import QLineEdit
 
 from imagesorter.settings_manager import SettingsManager
 from imagesorter.ui_main import MainViewer
+from imagesorter.ui_recovery import RecoveryDialog
 
 
 def calculate_relative_luminance(color: QColor) -> float:
@@ -80,3 +81,15 @@ def test_keyboard_focus_isolation(qtbot, tmp_path):
     assert viewer.current_index == 0
     assert line_edit.text().upper() == "SRCLZ"
     assert len(viewer.images) == 2
+
+
+def test_components_panel_accessibility(qtbot):
+    from imagesorter.ui_components import ComponentsPanel
+
+    panel = ComponentsPanel()
+    qtbot.addWidget(panel)
+
+    for btn in [panel.run_button, panel.import_button, panel.legacy_button, panel.cancel_button]:
+        assert btn.accessibleName(), f"Button {btn.text()} is missing accessibleName"
+        assert btn.accessibleDescription(), f"Button {btn.text()} is missing accessibleDescription"
+        assert btn.toolTip(), f"Button {btn.text()} is missing toolTip"

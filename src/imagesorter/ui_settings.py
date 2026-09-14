@@ -161,6 +161,8 @@ class SettingsWindow(QDialog):
         # Source Directory
         src_layout = QHBoxLayout()
         self.src_edit = QLineEdit(self.settings.get('directories', 'source') or "")
+        self.src_edit.setClearButtonEnabled(True)
+        self.src_edit.editingFinished.connect(lambda: self.src_edit.setText(self.src_edit.text().strip()))
         self.src_edit.setAccessibleName("Source Directory Path Input")
         self.src_edit.setAccessibleDescription("Specifies the source directory path to scan images from.")
         self.src_edit.setToolTip("The directory where the application will scan for supported images.")
@@ -176,6 +178,8 @@ class SettingsWindow(QDialog):
         # Trash Directory
         trash_layout = QHBoxLayout()
         self.trash_edit = QLineEdit(self.settings.get('directories', 'trash') or "")
+        self.trash_edit.setClearButtonEnabled(True)
+        self.trash_edit.editingFinished.connect(lambda: self.trash_edit.setText(self.trash_edit.text().strip()))
         self.trash_edit.setAccessibleName("Trash Directory Path Input")
         self.trash_edit.setAccessibleDescription("Specifies the custom staging trash directory path.")
         self.trash_edit.setToolTip("The directory where deleted images will be moved.")
@@ -386,6 +390,8 @@ class SettingsWindow(QDialog):
         folder_layout.setContentsMargins(0, 0, 0, 0)
 
         folder_edit = QLineEdit(folder)
+        folder_edit.setClearButtonEnabled(True)
+        folder_edit.editingFinished.connect(lambda fe=folder_edit: fe.setText(fe.text().strip()))
         folder_edit.setAccessibleName(f"Target folder for hotkey {key}")
         folder_btn = QPushButton("...")
         folder_btn.setFixedWidth(30)

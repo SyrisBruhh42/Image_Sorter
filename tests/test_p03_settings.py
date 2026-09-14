@@ -179,3 +179,33 @@ def test_downloader_interruption_cancellation(qtbot):
 
     assert not downloader.isRunning()
     assert downloader.interrupted is True
+
+
+def test_text_inputs_clear_button_and_autotrim(qtbot, tmp_path):
+    settings_file = tmp_path / "settings.json"
+    sm = SettingsManager(filepath=str(settings_file))
+
+    window = SettingsWindow(sm)
+    qtbot.addWidget(window)
+
+    # Verify clear button enablement
+    assert window.src_edit.isClearButtonEnabled() is True
+    assert window.trash_edit.isClearButtonEnabled() is True
+
+    # Test auto-trimming on src_edit
+    window.src_edit.setText("   /path/to/source   ")
+    window.src_edit.editingFinished.emit()
+    assert window.src_edit.text() == "/path/to/source"
+
+    # Test auto-trimming on trash_edit
+    window.trash_edit.setText("   /path/to/trash   ")
+    window.trash_edit.editingFinished.emit()
+    assert window.trash_edit.text() == "/path/to/trash"
+
+    # Test hotkey folder_edit
+    window.add_hotkey_row(key="A", action="move", folder="   /path/to/hotkey   ", auto_advance=True)
+    folder_widget = window.hotkey_table.cellWidget(0, 2)
+    folder_edit = folder_widget.layout().itemAt(0).widget()
+    assert folder_edit.isClearButtonEnabled() is True
+    folder_edit.editingFinished.emit()
+    assert folder_edit.text() == "/path/to/hotkey"
