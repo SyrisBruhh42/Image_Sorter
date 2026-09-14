@@ -37,6 +37,14 @@ from .settings_manager import (
     SettingsPersistenceError,
 )
 
+# Configuration defaults, bounds, and operational timeouts
+MODEL_VALIDATION_TIMEOUT_SEC: int = 60
+MIN_FONT_SIZE: int = 12
+MAX_FONT_SIZE: int = 72
+DEFAULT_FONT_SIZE: int = 24
+DEFAULT_CONFIDENCE_THRESHOLD: float = 0.5
+CLOSE_RETRY_INTERVAL_MS: int = 50
+
 
 class ModelCheckWorker(QThread):
     """Asynchronously verifies AI model cryptographic integrity off the GUI thread."""
@@ -50,7 +58,7 @@ class ModelCheckWorker(QThread):
         from .reader_process import run_reader
         try:
             result, _ = run_reader({"action": "validate_model", "model_dir": self.model_dir},
-                                   cancelled=self.isInterruptionRequested, timeout=60)
+                                   cancelled=self.isInterruptionRequested, timeout=MODEL_VALIDATION_TIMEOUT_SEC)
             self.check_finished.emit(bool(result["valid"]))
         except Exception:
             self.check_finished.emit(False)
@@ -78,6 +86,13 @@ class SettingsWindow(QDialog):
         for widget in [self, *self.findChildren(QWidget)]:
             widget.installEventFilter(self)
         self.chk_tooltips.toggled.connect(lambda enabled: None if enabled else QToolTip.hideText())
+
+    def keyPressEvent(self, event) -> None:
+        """Dismiss settings dialog when Escape key is pressed."""
+        if event.key() == Qt.Key.Key_Escape:
+            self.reject()
+            return
+        super().keyPressEvent(event)
 
     def eventFilter(self, watched, event):
         if event.type() == QEvent.Type.ToolTip and not self.chk_tooltips.isChecked():
@@ -164,6 +179,7 @@ class SettingsWindow(QDialog):
         self.src_edit.setAccessibleName("Source Directory Path Input")
         self.src_edit.setAccessibleDescription("Specifies the source directory path to scan images from.")
         self.src_edit.setToolTip("The directory where the application will scan for supported images.")
+        self.src_edit.editingFinished.connect(lambda: self.src_edit.setText(self.src_edit.text().strip()))
         self.src_btn = QPushButton("Browse...")
         self.src_btn.setAccessibleName("Browse Source Directory Button")
         self.src_btn.setAccessibleDescription("Opens a file dialog to select the source directory.")
@@ -179,6 +195,7 @@ class SettingsWindow(QDialog):
         self.trash_edit.setAccessibleName("Trash Directory Path Input")
         self.trash_edit.setAccessibleDescription("Specifies the custom staging trash directory path.")
         self.trash_edit.setToolTip("The directory where deleted images will be moved.")
+        self.trash_edit.editingFinished.connect(lambda: self.trash_edit.setText(self.trash_edit.text().strip()))
         self.trash_btn = QPushButton("Browse...")
         self.trash_btn.setAccessibleName("Browse Trash Directory Button")
         self.trash_btn.setAccessibleDescription("Opens a file dialog to select the trash directory.")
@@ -223,8 +240,8 @@ class SettingsWindow(QDialog):
         layout.addRow("Theme:", self.theme_combo)
 
         self.font_spin = QSpinBox()
-        self.font_spin.setRange(12, 72)
-        self.font_spin.setValue(self.settings.get('ui', 'font_size') or 24)
+        self.font_spin.setRange(MIN_FONT_SIZE, MAX_FONT_SIZE)
+        self.font_spin.setValue(self.settings.get('ui', 'font_size') or DEFAULT_FONT_SIZE)
         self.font_spin.setAccessibleName("Image Label Font Size Selector")
         self.font_spin.setAccessibleDescription("Adjusts text size for labels and empty states.")
         self.font_spin.setToolTip("Adjust the text size for labels and empty states for better readability.")
@@ -286,7 +303,7 @@ class SettingsWindow(QDialog):
         self.confidence_spin.setDecimals(3)
         self.confidence_spin.setSingleStep(0.05)
         threshold = self.settings.get('ai_tagger', 'threshold')
-        self.confidence_spin.setValue(0.5 if threshold is None else threshold)
+        self.confidence_spin.setValue(DEFAULT_CONFIDENCE_THRESHOLD if threshold is None else threshold)
         self.confidence_spin.setAccessibleName("AI Confidence Threshold")
         self.confidence_spin.setAccessibleDescription("Minimum confidence from zero to one for generated tags; the default is 0.5.")
         self.confidence_spin.setToolTip("Keep up to 10 ranked predictions with confidence at or above this value. Higher values produce fewer tags.")
@@ -363,7 +380,7 @@ class SettingsWindow(QDialog):
 
     def browse_folder(self, line_edit: QLineEdit) -> None:
         """Opens directory selection dialog."""
-        folder = QFileDialog.getExistingDirectory(self, "Select Directory", line_edit.text())
+        folder = QFileDialog.getExistingDirectory(self, "Select Directory", line_edit.text().strip())
         if folder:
             line_edit.setText(os.path.normpath(folder))
 
@@ -375,10 +392,12 @@ class SettingsWindow(QDialog):
         key_item = QTableWidgetItem(key)
         self.hotkey_table.setItem(row, 0, key_item)
 
+        acc_label = f"key {key}" if key else f"row {row + 1}"
+
         action_combo = QComboBox()
         action_combo.addItems(["move", "copy"])
         action_combo.setCurrentText(action)
-        action_combo.setAccessibleName(f"Action for hotkey {key}")
+        action_combo.setAccessibleName(f"Action for hotkey {acc_label}")
         self.hotkey_table.setCellWidget(row, 1, action_combo)
 
         folder_widget = QWidget()
@@ -386,10 +405,13 @@ class SettingsWindow(QDialog):
         folder_layout.setContentsMargins(0, 0, 0, 0)
 
         folder_edit = QLineEdit(folder)
-        folder_edit.setAccessibleName(f"Target folder for hotkey {key}")
+        folder_edit.setAccessibleName(f"Target folder for hotkey {acc_label}")
+        folder_edit.editingFinished.connect(lambda f=folder_edit: f.setText(f.text().strip()))
         folder_btn = QPushButton("...")
         folder_btn.setFixedWidth(30)
-        folder_btn.setAccessibleName(f"Browse target folder for hotkey {key}")
+        folder_btn.setAccessibleName(f"Browse target folder for hotkey {acc_label}")
+        folder_btn.setAccessibleDescription("Opens a file dialog to select target folder for hotkey.")
+        folder_btn.setToolTip("Browse to select target destination directory.")
         folder_btn.clicked.connect(lambda: self.browse_folder(folder_edit))
 
         folder_layout.addWidget(folder_edit)
@@ -399,7 +421,7 @@ class SettingsWindow(QDialog):
 
         advance_chk = QCheckBox()
         advance_chk.setChecked(auto_advance)
-        advance_chk.setAccessibleName(f"Auto Advance for hotkey {key}")
+        advance_chk.setAccessibleName(f"Auto Advance for hotkey {acc_label}")
         chk_widget = QWidget()
         chk_layout = QHBoxLayout(chk_widget)
         chk_layout.addWidget(advance_chk)
@@ -437,6 +459,7 @@ class SettingsWindow(QDialog):
         worker.start()
 
     def _on_model_check_thread_finished(self) -> None:
+        """Cleans up check worker reference and processes pending close or queued model refresh."""
         self.check_worker = None
         if self._close_pending:
             self._finish_pending_close()
@@ -445,7 +468,7 @@ class SettingsWindow(QDialog):
             self.refresh_ai_model_status()
 
     def _on_model_check_finished(self, is_valid: bool) -> None:
-        """Callback when background model check finishes."""
+        """Updates UI controls depending on whether the AI model passed cryptographic validation."""
         self.btn_download_model.setText("Manage AI Model…")
         self.btn_download_model.setEnabled(True)
         if is_valid:
@@ -503,23 +526,25 @@ class SettingsWindow(QDialog):
             if self.check_worker:
                 self.check_worker.requestInterruption()
             self.components_panel.cancel()
-            QTimer.singleShot(50, self._finish_pending_close)
+            QTimer.singleShot(CLOSE_RETRY_INTERVAL_MS, self._finish_pending_close)
             return
         super().closeEvent(event)
 
     def _finish_pending_close(self) -> None:
+        """Polls active tasks until background workers terminate before executing pending close."""
         if not self._close_pending:
             return
         if self.components_panel.process or (self.downloader and self.downloader.isRunning()) or (
             self.check_worker and self.check_worker.isRunning()
         ):
-            QTimer.singleShot(50, self._finish_pending_close)
+            QTimer.singleShot(CLOSE_RETRY_INTERVAL_MS, self._finish_pending_close)
             return
         self._close_pending = False
         result, self._pending_result = self._pending_result, None
         super().done(QDialog.DialogCode.Rejected if result is None else result)
 
     def done(self, result):
+        """Overrides dialog completion to ensure active background workers cancel before closing."""
         if self.components_panel.process or (self.check_worker and self.check_worker.isRunning()) or (
             self.downloader and self.downloader.isRunning()
         ):
@@ -530,7 +555,7 @@ class SettingsWindow(QDialog):
                 self.check_worker.requestInterruption()
             if self.downloader:
                 self.downloader.requestInterruption()
-            QTimer.singleShot(50, self._finish_pending_close)
+            QTimer.singleShot(CLOSE_RETRY_INTERVAL_MS, self._finish_pending_close)
             return
         super().done(result)
 
@@ -543,6 +568,7 @@ class SettingsWindow(QDialog):
 
         # 1. Directories Validation
         src_dir = self.src_edit.text().strip()
+        self.src_edit.setText(src_dir)
         if src_dir:
             if os.path.isfile(src_dir):
                 QMessageBox.warning(self, "Validation Error", f"Source directory path points to a file, not a directory: {src_dir}")
@@ -552,6 +578,7 @@ class SettingsWindow(QDialog):
                 return
 
         trash_dir = self.trash_edit.text().strip()
+        self.trash_edit.setText(trash_dir)
         if trash_dir:
             if os.path.isfile(trash_dir):
                 QMessageBox.warning(self, "Validation Error", f"Trash directory path points to a file, not a directory: {trash_dir}")
@@ -621,6 +648,8 @@ class SettingsWindow(QDialog):
             folder_widget = self.hotkey_table.cellWidget(row, 2)
             folder_edit = folder_widget.layout().itemAt(0).widget() if folder_widget else None
             folder = folder_edit.text().strip() if folder_edit else ""
+            if folder_edit:
+                folder_edit.setText(folder)
 
             if folder:
                 if os.path.isfile(folder):

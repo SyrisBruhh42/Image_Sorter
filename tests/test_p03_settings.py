@@ -1,7 +1,7 @@
 import os
 
 import pytest
-from PyQt6.QtCore import QThread
+from PyQt6.QtCore import Qt, QThread
 from PyQt6.QtWidgets import QMessageBox
 
 from imagesorter.paths import _ensure_dir_or_fallback
@@ -179,3 +179,89 @@ def test_downloader_interruption_cancellation(qtbot):
 
     assert not downloader.isRunning()
     assert downloader.interrupted is True
+
+
+def test_settings_window_escape_dismissal(qtbot, tmp_path):
+    settings_file = tmp_path / "settings.json"
+    sm = SettingsManager(filepath=str(settings_file))
+    window = SettingsWindow(sm)
+    qtbot.addWidget(window)
+    window.show()
+    assert window.isVisible()
+
+    rejected_calls = []
+    window.rejected.connect(lambda: rejected_calls.append(True))
+    qtbot.keyClick(window, Qt.Key.Key_Escape)
+    qtbot.waitUntil(lambda: not window.isVisible(), timeout=2000)
+    assert not window.isVisible()
+    assert len(rejected_calls) == 1
+
+
+def test_settings_window_input_whitespace_autotrimming_and_accessibility(qtbot, tmp_path):
+    settings_file = tmp_path / "settings.json"
+    sm = SettingsManager(filepath=str(settings_file))
+
+    src_dir = tmp_path / "src"
+    src_dir.mkdir()
+    trash_dir = tmp_path / "trash"
+    trash_dir.mkdir()
+    target_dir = tmp_path / "target"
+    target_dir.mkdir()
+
+    window = SettingsWindow(sm)
+    qtbot.addWidget(window)
+
+    # 1. Test auto-trimming on editingFinished
+    window.src_edit.setText(f"   {src_dir}   ")
+    window.src_edit.editingFinished.emit()
+    assert window.src_edit.text() == str(src_dir)
+
+    window.trash_edit.setText(f"   {trash_dir}   ")
+    window.trash_edit.editingFinished.emit()
+    assert window.trash_edit.text() == str(trash_dir)
+
+    # 2. Test dynamic accessibility names and descriptions in hotkeys table
+    window.add_hotkey_row(key="", action="move", folder="")
+    assert window.hotkey_table.cellWidget(0, 1).accessibleName() == "Action for hotkey row 1"
+    row0_folder_widget = window.hotkey_table.cellWidget(0, 2)
+    assert row0_folder_widget.layout().itemAt(0).widget().accessibleName() == "Target folder for hotkey row 1"
+    assert row0_folder_widget.layout().itemAt(1).widget().accessibleName() == "Browse target folder for hotkey row 1"
+    assert row0_folder_widget.layout().itemAt(1).widget().accessibleDescription() == "Opens a file dialog to select target folder for hotkey."
+    assert row0_folder_widget.layout().itemAt(1).widget().toolTip() == "Browse to select target destination directory."
+    assert window.hotkey_table.cellWidget(0, 3).layout().itemAt(0).widget().accessibleName() == "Auto Advance for hotkey row 1"
+
+    # Add row with key and test trimming on folder_edit
+    window.add_hotkey_row(key="M", action="move", folder=f"   {target_dir}   ", auto_advance=True)
+    row1_folder_widget = window.hotkey_table.cellWidget(1, 2)
+    row1_folder_edit = row1_folder_widget.layout().itemAt(0).widget()
+    assert row1_folder_edit.accessibleName() == "Target folder for hotkey key M"
+    row1_folder_edit.editingFinished.emit()
+    assert row1_folder_edit.text() == str(target_dir)
+
+    # 3. Test save_settings normalizes and stores clean paths
+    with pytest.MonkeyPatch.context() as m:
+        m.setattr(QMessageBox, "information", lambda *args, **kwargs: None)
+        window.save_settings()
+
+    assert sm.get("directories", "source") == os.path.normpath(str(src_dir))
+    assert sm.get("directories", "trash") == os.path.normpath(str(trash_dir))
+    assert sm.get("hotkeys")["M"]["folder"] == os.path.normpath(str(target_dir))
+
+
+def test_settings_constants_and_spin_bounds(qtbot, tmp_path):
+    from imagesorter.ui_settings import (
+        DEFAULT_CONFIDENCE_THRESHOLD,
+        DEFAULT_FONT_SIZE,
+        MAX_FONT_SIZE,
+        MIN_FONT_SIZE,
+    )
+
+    settings_file = tmp_path / "settings.json"
+    sm = SettingsManager(filepath=str(settings_file))
+    window = SettingsWindow(sm)
+    qtbot.addWidget(window)
+
+    assert window.font_spin.minimum() == MIN_FONT_SIZE
+    assert window.font_spin.maximum() == MAX_FONT_SIZE
+    assert window.font_spin.value() == DEFAULT_FONT_SIZE
+    assert window.confidence_spin.value() == DEFAULT_CONFIDENCE_THRESHOLD
