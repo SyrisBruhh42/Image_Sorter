@@ -1,7 +1,7 @@
 import os
 
 import pytest
-from PyQt6.QtCore import QThread
+from PyQt6.QtCore import Qt, QThread
 from PyQt6.QtWidgets import QMessageBox
 
 from imagesorter.paths import _ensure_dir_or_fallback
@@ -179,3 +179,44 @@ def test_downloader_interruption_cancellation(qtbot):
 
     assert not downloader.isRunning()
     assert downloader.interrupted is True
+
+
+def test_qol_settings_inputs_and_navigation(qtbot, tmp_path):
+    settings_file = tmp_path / "settings.json"
+    sm = SettingsManager(filepath=str(settings_file))
+    window = SettingsWindow(sm)
+    qtbot.addWidget(window)
+
+    # 1. Verify 1-click clear button enabled on path inputs (Heuristic #11)
+    assert window.src_edit.isClearButtonEnabled() is True
+    assert window.trash_edit.isClearButtonEnabled() is True
+
+    # 2. Verify auto-trimming on input fields (Heuristic #15)
+    window.src_edit.setText("   /path/to/source   ")
+    window.src_edit.editingFinished.emit()
+    assert window.src_edit.text() == "/path/to/source"
+
+    window.trash_edit.setText("   /path/to/trash   ")
+    window.trash_edit.editingFinished.emit()
+    assert window.trash_edit.text() == "/path/to/trash"
+
+    # 3. Verify hotkey row folder edit clear button, auto-trimming, and button accessibility (Heuristics #1, #11, #15)
+    window.hotkey_table.setRowCount(0)
+    window.add_hotkey_row(key="T", action="move", folder="   /path/to/target   ", auto_advance=True)
+    folder_widget = window.hotkey_table.cellWidget(0, 2)
+    folder_edit = folder_widget.layout().itemAt(0).widget()
+    folder_btn = folder_widget.layout().itemAt(1).widget()
+
+    assert folder_edit.isClearButtonEnabled() is True
+    folder_edit.editingFinished.emit()
+    assert folder_edit.text() == "/path/to/target"
+
+    assert folder_btn.toolTip() == "Browse target folder for hotkey T"
+    assert "Opens a file dialog" in folder_btn.accessibleDescription()
+
+    # 4. Verify modal Escape key dismissal (Heuristic #2)
+    window.show()
+    assert window.isVisible()
+    qtbot.keyClick(window, Qt.Key.Key_Escape)
+    qtbot.waitUntil(lambda: not window.isVisible(), timeout=3000)
+
