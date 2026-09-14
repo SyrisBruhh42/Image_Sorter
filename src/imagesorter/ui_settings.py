@@ -572,6 +572,7 @@ class SettingsWindow(QDialog):
 
         # 1. Directories Validation
         src_dir = self.src_edit.text().strip()
+        self.src_edit.setText(src_dir)
         if src_dir:
             if os.path.isfile(src_dir):
                 QMessageBox.warning(self, "Validation Error", f"Source directory path points to a file, not a directory: {src_dir}")
@@ -581,6 +582,7 @@ class SettingsWindow(QDialog):
                 return
 
         trash_dir = self.trash_edit.text().strip()
+        self.trash_edit.setText(trash_dir)
         if trash_dir:
             if os.path.isfile(trash_dir):
                 QMessageBox.warning(self, "Validation Error", f"Trash directory path points to a file, not a directory: {trash_dir}")
@@ -650,6 +652,8 @@ class SettingsWindow(QDialog):
             folder_widget = self.hotkey_table.cellWidget(row, 2)
             folder_edit = folder_widget.layout().itemAt(0).widget() if folder_widget else None
             folder = folder_edit.text().strip() if folder_edit else ""
+            if folder_edit:
+                folder_edit.setText(folder)
 
             if folder:
                 if os.path.isfile(folder):
