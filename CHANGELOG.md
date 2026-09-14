@@ -89,3 +89,8 @@ source acceptance never certifies a native or redistributable release.
 
 - Preserve consistent five-field image identity on Windows when pathname and open-file timestamp APIs expose different creation/change-time semantics. Linux/macOS identity handling and mutation journal formats remain unchanged.
 - Retain the third candidate's mixed Windows hosted results and add deterministic timestamp/identity regressions before another qualified integration attempt.
+
+### Source integration continuation: GitHub PR response compatibility
+
+- Preserve the fourth candidate's fully successful application CI while repairing a separately reproduced controller qualification failure.
+- Pin source-integration PR reads to GitHub's supported `2022-11-28` response contract, which includes the test/actual merge identity required by exact-tree verification. Other API calls, binary publication verification and release gates are unchanged. Malformed or missing merge identities remain a hard stop.

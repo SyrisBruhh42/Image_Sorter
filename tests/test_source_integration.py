@@ -601,3 +601,129 @@ def test_continuation_previous_body_drift_stops_before_fast_forward(setup):
     with pytest.raises(core.GateError, match="PR body"):
         new.run("prepare")
     assert len(backend.writes) == before
+
+
+@pytest.mark.parametrize("state,merged,mergeable,merge_sha", [
+    ("open", False, True, P),
+    ("closed", True, None, M),
+    ("open", False, None, None),
+])
+def test_source_pr_adapter_reads_one_supported_version_and_preserves_exact_payload(
+    tmp_path, monkeypatch, state, merged, mergeable, merge_sha
+):
+    payload = {"number": 99, "state": state, "merged": merged, "mergeable": mergeable,
+               "head": {"sha": C}, "base": {"sha": B}, "merge_commit_sha": merge_sha,
+               "body": "Preserved body", "extra_future_field": {"preserved": True}}
+    calls = []
+
+    def command(self, args, **kwargs):
+        calls.append((args, kwargs))
+        return json.dumps(payload)
+
+    monkeypatch.setattr(core.Backend, "command", command)
+    backend = source.SourceBackend(tmp_path, "owner/repo")
+    assert backend.pr(99) == payload
+    assert calls == [([
+        "gh", "api", "--hostname", "github.com", "--method", "GET",
+        "-H", "Accept: application/vnd.github+json",
+        "-H", "X-GitHub-Api-Version: 2022-11-28", "repos/owner/repo/pulls/99",
+    ], {})]
+    assert merge_sha != C  # Neither pending nor completed identity falls back to the head.
+
+
+@pytest.mark.parametrize("output,diagnostic", [
+    ("not JSON", "invalid JSON"),
+    ("", "invalid JSON"),
+    ("null", "unexpected pull request number or object"),
+    ("[]", "unexpected pull request number or object"),
+    (json.dumps({"number": 98, "merge_commit_sha": P}), "unexpected pull request number or object"),
+    (json.dumps({"number": "99", "merge_commit_sha": P}), "unexpected pull request number or object"),
+    (json.dumps({"number": 99.0, "merge_commit_sha": P}), "unexpected pull request number or object"),
+    (json.dumps({"number": 99, "head": {"sha": C}}), "omitted merge_commit_sha"),
+    (json.dumps({"number": 99, "merge_commit_sha": ""}), "invalid merge_commit_sha"),
+    (json.dumps({"number": 99, "merge_commit_sha": "a" * 39}), "invalid merge_commit_sha"),
+    (json.dumps({"number": 99, "merge_commit_sha": "A" * 40}), "invalid merge_commit_sha"),
+    (json.dumps({"number": 99, "merge_commit_sha": True}), "invalid merge_commit_sha"),
+    (json.dumps({"number": 99, "merge_commit_sha": {"sha": M}}), "invalid merge_commit_sha"),
+])
+def test_source_pr_adapter_rejects_invalid_response_without_retry(tmp_path, monkeypatch, output, diagnostic):
+    calls = []
+
+    def command(self, args, **kwargs):
+        calls.append(args)
+        return output
+
+    monkeypatch.setattr(core.Backend, "command", command)
+    with pytest.raises(core.GateError, match=diagnostic):
+        source.SourceBackend(tmp_path, "owner/repo").pr(99)
+    assert len(calls) == 1
+    assert calls[0][calls[0].index("--method") + 1] == "GET"
+
+
+@pytest.mark.parametrize("number", [True, 0, -1, 99.5, "99", "99/merge"])
+def test_source_pr_adapter_refuses_invalid_request_number_before_io(tmp_path, monkeypatch, number):
+    calls = []
+    monkeypatch.setattr(core.Backend, "command", lambda *args, **kwargs: calls.append(args))
+    with pytest.raises(core.GateError, match="positive pull request number"):
+        source.SourceBackend(tmp_path, "owner/repo").pr(number)
+    assert calls == []
+
+
+def test_source_pr_adapter_does_not_change_other_api_or_binary_backend(tmp_path, monkeypatch):
+    calls = []
+
+    def command(self, args, **kwargs):
+        calls.append((args, kwargs))
+        return json.dumps({"merged": True, "sha": M})
+
+    monkeypatch.setattr(core.Backend, "command", command)
+    backend = source.SourceBackend(tmp_path, "owner/repo")
+    request = {"sha": C, "merge_method": "merge"}
+    assert backend.api("repos/owner/repo/pulls/99/merge", "PUT", request) == {"merged": True, "sha": M}
+    assert calls == [([
+        "gh", "api", "--hostname", "github.com", "--method", "PUT",
+        "-H", "Accept: application/vnd.github+json",
+        "-H", "X-GitHub-Api-Version: 2026-03-10", "repos/owner/repo/pulls/99/merge", "--input", "-",
+    ], {"input": json.dumps(request)})]
+    assert source.SourceBackend.api is core.Backend.api
+    assert source.SourceBackend.command is core.Backend.command
+    # The separate binary controller retains its original PR API version.
+    core.Backend(tmp_path, "owner/repo").pr(99)
+    assert "X-GitHub-Api-Version: 2026-03-10" in calls[-1][0]
+    assert "X-GitHub-Api-Version: 2022-11-28" not in calls[-1][0]
+
+
+def test_source_cli_uses_production_pr_adapter(tmp_path, monkeypatch, capsys):
+    calls = []
+    payload = {"number": 99, "merge_commit_sha": P}
+
+    def command(self, args, **kwargs):
+        calls.append(args)
+        return json.dumps(payload)
+
+    def inspect(backend):
+        assert type(backend) is source.SourceBackend
+        assert backend.checkout == tmp_path
+        return backend.pr(99)
+
+    monkeypatch.setattr(core.Backend, "command", command)
+    monkeypatch.setattr(source, "inspect", inspect)
+    assert source.main(["inspect", "--checkout", str(tmp_path), "--repository", "owner/repo"]) == 0
+    assert json.loads(capsys.readouterr().out) == payload
+    assert len(calls) == 1 and "X-GitHub-Api-Version: 2022-11-28" in calls[0]
+
+
+def test_missing_merge_identity_from_production_adapter_stops_qualification_before_mutation(setup, monkeypatch):
+    backend, controller = setup
+    staged(backend, controller)
+    payload = copy.deepcopy(backend.pull)
+    del payload["merge_commit_sha"]
+    writes_before = copy.deepcopy(backend.writes)
+    monkeypatch.setattr(backend, "command", lambda *args, **kwargs: json.dumps(payload))
+    monkeypatch.setattr(backend, "pr", lambda number: source.SourceBackend.pr(backend, number))
+    with pytest.raises(core.GateError, match="omitted merge_commit_sha"):
+        controller.run("qualify")
+    assert backend.writes == writes_before
+    assert not controller.journal.last("source-quality", "intent")
+    assert not controller.journal.last("source-qualified", "result")
+    assert not controller.journal.last("merge", "intent")

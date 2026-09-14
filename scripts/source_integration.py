@@ -25,6 +25,36 @@ PHASES = ("prepare", "archive", "stage", "qualify", "merge", "verify-merged",
           "switch-default", "finalize", "rollback-default")
 
 
+class SourceBackend(core.Backend):
+    """Keep the source controller's PR identity contract on a supported API.
+
+    API 2026-03-10 deliberately removed merge_commit_sha from PR responses.
+    Only this read uses 2022-11-28; all other reads and mutations retain the
+    shared backend contract. Never substitute the head SHA or combine responses.
+    """
+
+    def pr(self, number):
+        core.require(type(number) is int and number > 0, "A positive pull request number is required")
+        output = self.command([
+            "gh", "api", "--hostname", "github.com", "--method", "GET",
+            "-H", "Accept: application/vnd.github+json",
+            "-H", "X-GitHub-Api-Version: 2022-11-28",
+            self.endpoint(f"/pulls/{number}"),
+        ])
+        try:
+            value = json.loads(output)
+        except (TypeError, ValueError) as exc:
+            raise core.GateError("Pull request API 2022-11-28 returned invalid JSON") from exc
+        core.require(isinstance(value, dict) and type(value.get("number")) is int and value["number"] == number,
+                     "Pull request API 2022-11-28 returned an unexpected pull request number or object")
+        core.require("merge_commit_sha" in value,
+                     "Pull request API 2022-11-28 omitted merge_commit_sha; refusing unverified merge identity")
+        merged = value["merge_commit_sha"]
+        core.require(merged is None or (isinstance(merged, str) and core.HEX40.fullmatch(merged)),
+                     "Pull request API 2022-11-28 returned invalid merge_commit_sha")
+        return value
+
+
 def local_evidence(path, candidate, tree):
     value = core.load_json(path)
     core.require(value.get("kind") == "source-integration-evidence" and
@@ -546,7 +576,7 @@ def main(argv=None):
     parser.add_argument("--execute", action="store_true")
     args = parser.parse_args(argv)
     try:
-        backend = core.Backend(args.checkout, args.repository)
+        backend = SourceBackend(args.checkout, args.repository)
         if args.command == "inspect":
             result = inspect(backend)
         elif args.command == "plan":
