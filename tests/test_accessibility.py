@@ -4,6 +4,7 @@ from PyQt6.QtWidgets import QLineEdit
 
 from imagesorter.settings_manager import SettingsManager
 from imagesorter.ui_main import MainViewer
+from imagesorter.ui_settings import SettingsWindow
 
 
 def calculate_relative_luminance(color: QColor) -> float:
@@ -80,3 +81,47 @@ def test_keyboard_focus_isolation(qtbot, tmp_path):
     assert viewer.current_index == 0
     assert line_edit.text().upper() == "SRCLZ"
     assert len(viewer.images) == 2
+
+
+def test_frame_controls_accessibility(qtbot, tmp_path):
+    settings_file = tmp_path / "settings.json"
+    sm = SettingsManager(filepath=str(settings_file))
+    viewer = MainViewer(sm)
+    qtbot.addWidget(viewer)
+
+    assert viewer.frame_previous.accessibleName() == "Previous Frame Button"
+    assert viewer.frame_previous.accessibleDescription() != ""
+    assert viewer.frame_previous.toolTip() != ""
+
+    assert viewer.frame_play.accessibleName() == "Play Animation Button"
+    assert viewer.frame_play.accessibleDescription() != ""
+    assert viewer.frame_play.toolTip() != ""
+
+    assert viewer.frame_next.accessibleName() == "Next Frame Button"
+    assert viewer.frame_next.accessibleDescription() != ""
+    assert viewer.frame_next.toolTip() != ""
+
+    assert viewer.frame_seek.accessibleName() == "Frame or page number"
+    assert viewer.frame_seek.accessibleDescription() != ""
+    assert viewer.frame_seek.toolTip() != ""
+
+    assert viewer.frame_loop.accessibleName() == "Loop Animation Checkbox"
+    assert viewer.frame_loop.accessibleDescription() != ""
+    assert viewer.frame_loop.toolTip() != ""
+
+
+def test_settings_hotkey_browse_button_accessibility(qtbot, tmp_path):
+    settings_file = tmp_path / "settings.json"
+    sm = SettingsManager(filepath=str(settings_file))
+    dialog = SettingsWindow(sm)
+    qtbot.addWidget(dialog)
+
+    dialog.add_hotkey_row(key="1", action="move", folder="", auto_advance=True)
+    row = dialog.hotkey_table.rowCount() - 1
+    folder_widget = dialog.hotkey_table.cellWidget(row, 2)
+    assert folder_widget is not None
+    folder_btn = folder_widget.layout().itemAt(1).widget()
+
+    assert folder_btn.accessibleName() == "Browse target folder for hotkey 1"
+    assert folder_btn.accessibleDescription() == "Opens folder selection dialog for hotkey 1."
+    assert folder_btn.toolTip() == "Open folder selection dialog."

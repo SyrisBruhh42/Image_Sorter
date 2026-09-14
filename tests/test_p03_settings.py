@@ -179,3 +179,33 @@ def test_downloader_interruption_cancellation(qtbot):
 
     assert not downloader.isRunning()
     assert downloader.interrupted is True
+
+
+def test_cancel_button_and_escape_dismissal(qtbot, tmp_path):
+    from PyQt6.QtCore import Qt
+    from PyQt6.QtWidgets import QDialog
+
+    settings_file = tmp_path / "settings.json"
+    sm = SettingsManager(filepath=str(settings_file))
+
+    window = SettingsWindow(sm)
+    qtbot.addWidget(window)
+    window.show()
+
+    # Verify btn_cancel exists and has accessible name/description
+    assert hasattr(window, "btn_cancel")
+    assert window.btn_cancel.accessibleName() == "Cancel Settings Button"
+    assert window.btn_cancel.accessibleDescription() == "Discards all setting changes and closes the window."
+
+    # Test clicking Cancel button rejects the dialog
+    window.chk_tooltips.setChecked(not sm.get("ui", "tooltips_enabled"))
+    qtbot.mouseClick(window.btn_cancel, Qt.MouseButton.LeftButton)
+    assert window.result() == QDialog.DialogCode.Rejected
+
+    # Show new instance and test Escape key dismissal
+    window2 = SettingsWindow(sm)
+    qtbot.addWidget(window2)
+    window2.show()
+
+    qtbot.keyClick(window2, Qt.Key.Key_Escape)
+    assert window2.result() == QDialog.DialogCode.Rejected

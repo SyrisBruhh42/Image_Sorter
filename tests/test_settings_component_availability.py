@@ -306,3 +306,14 @@ def test_saved_confidence_reaches_enrichment_request(settings_window, tmp_path, 
     assert requests[0]["action"] == "infer"
     assert requests[0]["threshold"] == threshold
     assert requests[0]["model_dir"] is None
+
+
+def test_components_panel_buttons_accessibility(qtbot):
+    panel = ComponentsPanel()
+    qtbot.addWidget(panel)
+    assert panel.run_button.accessibleName() == "Apply component action button"
+    assert panel.run_button.accessibleDescription() == "Applies the selected action to the chosen optional component."
+    assert panel.import_button.accessibleName() == "Import component pack button"
+    assert panel.import_button.accessibleDescription() == "Opens a file dialog to import a pinned component archive."
+    assert panel.cancel_button.accessibleName() == "Cancel component operation button"
+    assert panel.cancel_button.accessibleDescription() == "Cancels the currently running component background operation."

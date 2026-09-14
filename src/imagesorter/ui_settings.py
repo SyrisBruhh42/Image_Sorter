@@ -87,6 +87,12 @@ class SettingsWindow(QDialog):
             event.child().installEventFilter(self)
         return super().eventFilter(watched, event)
 
+    def keyPressEvent(self, event) -> None:
+        if event.type() == QEvent.Type.KeyPress and event.key() == Qt.Key.Key_Escape:
+            self.reject()
+            return
+        super().keyPressEvent(event)
+
     def init_ui(self) -> None:
         """Builds the tabbed UI for settings."""
         layout = QVBoxLayout(self)
@@ -125,12 +131,19 @@ class SettingsWindow(QDialog):
         layout.addWidget(self.tabs)
 
         btn_layout = QHBoxLayout()
+        self.btn_cancel = QPushButton("Cancel")
+        self.btn_cancel.setAccessibleName("Cancel Settings Button")
+        self.btn_cancel.setAccessibleDescription("Discards all setting changes and closes the window.")
+        self.btn_cancel.setToolTip("Discard changes and close settings window.")
+        self.btn_cancel.clicked.connect(self.reject)
+
         self.btn_save = QPushButton("Save Settings")
         self.btn_save.setDefault(True)
         self.btn_save.setAccessibleName("Save Settings Button")
         self.btn_save.setAccessibleDescription("Saves all configured settings and closes the window.")
         self.btn_save.clicked.connect(self.save_settings)
         btn_layout.addStretch()
+        btn_layout.addWidget(self.btn_cancel)
         btn_layout.addWidget(self.btn_save)
 
         layout.addLayout(btn_layout)
@@ -152,7 +165,8 @@ class SettingsWindow(QDialog):
         self.setTabOrder(self.chk_show_tags, self.chk_tooltips)
         self.setTabOrder(self.chk_tooltips, self.theme_combo)
         self.setTabOrder(self.theme_combo, self.font_spin)
-        self.setTabOrder(self.font_spin, self.btn_save)
+        self.setTabOrder(self.font_spin, self.btn_cancel)
+        self.setTabOrder(self.btn_cancel, self.btn_save)
 
     def init_general_tab(self) -> None:
         """Initializes the General & UI options tab."""
@@ -161,6 +175,7 @@ class SettingsWindow(QDialog):
         # Source Directory
         src_layout = QHBoxLayout()
         self.src_edit = QLineEdit(self.settings.get('directories', 'source') or "")
+        self.src_edit.setClearButtonEnabled(True)
         self.src_edit.setAccessibleName("Source Directory Path Input")
         self.src_edit.setAccessibleDescription("Specifies the source directory path to scan images from.")
         self.src_edit.setToolTip("The directory where the application will scan for supported images.")
@@ -176,6 +191,7 @@ class SettingsWindow(QDialog):
         # Trash Directory
         trash_layout = QHBoxLayout()
         self.trash_edit = QLineEdit(self.settings.get('directories', 'trash') or "")
+        self.trash_edit.setClearButtonEnabled(True)
         self.trash_edit.setAccessibleName("Trash Directory Path Input")
         self.trash_edit.setAccessibleDescription("Specifies the custom staging trash directory path.")
         self.trash_edit.setToolTip("The directory where deleted images will be moved.")
@@ -386,10 +402,13 @@ class SettingsWindow(QDialog):
         folder_layout.setContentsMargins(0, 0, 0, 0)
 
         folder_edit = QLineEdit(folder)
+        folder_edit.setClearButtonEnabled(True)
         folder_edit.setAccessibleName(f"Target folder for hotkey {key}")
         folder_btn = QPushButton("...")
         folder_btn.setFixedWidth(30)
         folder_btn.setAccessibleName(f"Browse target folder for hotkey {key}")
+        folder_btn.setAccessibleDescription(f"Opens folder selection dialog for hotkey {key}.")
+        folder_btn.setToolTip("Open folder selection dialog.")
         folder_btn.clicked.connect(lambda: self.browse_folder(folder_edit))
 
         folder_layout.addWidget(folder_edit)
