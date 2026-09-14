@@ -179,3 +179,26 @@ def test_downloader_interruption_cancellation(qtbot):
 
     assert not downloader.isRunning()
     assert downloader.interrupted is True
+
+
+def test_hotkey_row_accessibility_and_trimming(qtbot, tmp_path):
+    sm = SettingsManager(filepath=str(tmp_path / "settings.json"))
+    window = SettingsWindow(sm)
+    qtbot.addWidget(window)
+
+    window.hotkey_table.setRowCount(0)
+    # Add row with leading/trailing whitespace in key and folder
+    window.add_hotkey_row(key=" M ", action="move", folder=" /tmp/pictures ", auto_advance=True)
+
+    assert window.hotkey_table.rowCount() == 1
+    key_item = window.hotkey_table.item(0, 0)
+    assert key_item.text() == "M"
+
+    folder_widget = window.hotkey_table.cellWidget(0, 2)
+    folder_edit = folder_widget.layout().itemAt(0).widget()
+    folder_btn = folder_widget.layout().itemAt(1).widget()
+
+    assert folder_edit.text() == "/tmp/pictures"
+    assert folder_btn.toolTip() == "Browse for target folder"
+    assert folder_btn.accessibleName() == "Browse target folder for hotkey 'M'"
+    assert folder_edit.accessibleName() == "Target folder for hotkey 'M'"

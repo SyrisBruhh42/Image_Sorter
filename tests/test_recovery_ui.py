@@ -4,6 +4,7 @@ from PyQt6.QtWidgets import QMessageBox
 from imagesorter.settings_manager import SettingsManager
 from imagesorter.ui_main import MainViewer
 from imagesorter.ui_recovery import RecoveryDialog, eligible
+from imagesorter.ui_settings import SettingsWindow
 
 
 def test_legacy_and_system_trash_are_manual_only(qtbot, tmp_path):
@@ -50,3 +51,40 @@ def test_recovery_submission_preserves_view_generation(qtbot, tmp_path, monkeypa
     assert submitted[0]["operation_id"] == operation_id
     assert submitted[0]["task_options"]["view_generation"] == 42
     assert submitted[0]["task_options"]["settings_snapshot"] == viewer.settings.snapshot()
+
+
+def test_recovery_dialog_empty_state(qtbot, tmp_path):
+    viewer = MainViewer(SettingsManager(filepath=str(tmp_path / "settings.json")), initial_paths=[])
+    qtbot.addWidget(viewer)
+    viewer._recovery_records = []
+    dialog = RecoveryDialog(viewer)
+    qtbot.addWidget(dialog)
+    assert dialog.records.count() == 1
+    assert "No unresolved recovery records found." in dialog.records.item(0).text()
+    assert not dialog.rollback.isEnabled()
+
+
+def test_input_whitespace_trimming_and_browse_button_accessibility(qtbot, tmp_path):
+    settings_file = tmp_path / "settings.json"
+    sm = SettingsManager(filepath=str(settings_file))
+    window = SettingsWindow(sm)
+    qtbot.addWidget(window)
+
+    window.src_edit.setText("   /some/path   ")
+    window.src_edit.editingFinished.emit()
+    assert window.src_edit.text() == "/some/path"
+
+    window.trash_edit.setText("   /trash/path   ")
+    window.trash_edit.editingFinished.emit()
+    assert window.trash_edit.text() == "/trash/path"
+
+    window.add_hotkey_row(key="A", action="move", folder="   /target/folder   ")
+    row = window.hotkey_table.rowCount() - 1
+    folder_widget = window.hotkey_table.cellWidget(row, 2)
+    folder_edit = folder_widget.layout().itemAt(0).widget()
+    folder_btn = folder_widget.layout().itemAt(1).widget()
+
+    folder_edit.editingFinished.emit()
+    assert folder_edit.text() == "/target/folder"
+    assert folder_btn.toolTip() == "Open a file dialog to select the target directory."
+    assert "Browse target folder for hotkey" in folder_btn.accessibleName()

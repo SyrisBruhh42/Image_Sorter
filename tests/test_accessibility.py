@@ -80,3 +80,15 @@ def test_keyboard_focus_isolation(qtbot, tmp_path):
     assert viewer.current_index == 0
     assert line_edit.text().upper() == "SRCLZ"
     assert len(viewer.images) == 2
+
+
+def test_components_panel_accessible_names(qtbot):
+    from imagesorter.ui_components import ComponentsPanel
+
+    panel = ComponentsPanel()
+    qtbot.addWidget(panel)
+
+    assert panel.run_button.accessibleName() == "Apply component action"
+    assert panel.import_button.accessibleName() == "Import component pack"
+    assert panel.legacy_button.accessibleName() == "Import checksum-verified existing model and labels"
+    assert panel.cancel_button.accessibleName() == "Cancel component operation"
