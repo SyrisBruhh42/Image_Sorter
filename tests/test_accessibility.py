@@ -80,3 +80,41 @@ def test_keyboard_focus_isolation(qtbot, tmp_path):
     assert viewer.current_index == 0
     assert line_edit.text().upper() == "SRCLZ"
     assert len(viewer.images) == 2
+
+
+def test_components_panel_accessibility_and_constants(qtbot):
+    """Verify accessibility metadata, named constants, and docstrings for ComponentsPanel."""
+    from imagesorter.ui_components import (
+        CANCEL_KILL_DELAY_MS,
+        MAX_STATUS_BUFFER_BYTES,
+        MAX_STATUS_LINE_CHARACTERS,
+        ComponentsPanel,
+    )
+
+    assert MAX_STATUS_BUFFER_BYTES == 65536
+    assert MAX_STATUS_LINE_CHARACTERS == 1500
+    assert CANCEL_KILL_DELAY_MS == 1000
+
+    panel = ComponentsPanel()
+    qtbot.addWidget(panel)
+
+    assert panel.run_button.accessibleName() == "Apply component action button"
+    assert panel.run_button.accessibleDescription() == "Applies the selected operation to the chosen optional component."
+    assert panel.run_button.toolTip() == "Apply the selected component action."
+
+    assert panel.import_button.accessibleName() == "Import component pack button"
+    assert panel.import_button.accessibleDescription() == "Opens a file dialog to import a pinned component pack archive."
+    assert panel.import_button.toolTip() == "Import a pinned component pack archive."
+
+    assert panel.legacy_button.accessibleName() == "Import checksum-verified existing model button"
+    assert panel.legacy_button.accessibleDescription() == "Imports pre-existing MobileNetV2 model and labels from a directory."
+    assert panel.legacy_button.toolTip() == "Import existing model and labels directory."
+
+    assert panel.cancel_button.accessibleName() == "Cancel component action button"
+    assert panel.cancel_button.accessibleDescription() == "Safely cancels the active component operation."
+    assert panel.cancel_button.toolTip() == "Cancel running component operation."
+
+    assert ComponentsPanel.__doc__ is not None
+    assert panel.refresh.__doc__ is not None
+    assert panel.apply.__doc__ is not None
+    assert panel.cancel.__doc__ is not None
