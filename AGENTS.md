@@ -1,5 +1,21 @@
 # Developer & Agent Guidelines — Image Sorter
 
+## Optional portfolio coordination
+
+For work explicitly coordinated through Project-Office, read the authorized
+hub's `AGENTS.md` and `hub/START-HERE.md`, select this project's route, and check
+applicable holds and live ownership before coordinated edits. These paths refer
+to Office, not this repository.
+
+This repository's source instructions and the current user-authorized scope
+remain authoritative. An Office route or claim grants no additional permission
+to edit, merge, publish or deploy. Keep private Office records and personal
+content out of this public repository.
+
+If Office is inaccessible, report that limit and prepare an isolated proposal
+or continue independently authorized read-only work; do not infer coordinated
+ownership or bypass a conflicting claim.
+
 ## Architecture & Code Layout
 - Core application source code resides under `src/imagesorter/`.
 - Tests reside under `tests/`.
