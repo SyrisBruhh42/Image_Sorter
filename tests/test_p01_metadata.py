@@ -125,3 +125,40 @@ def test_exif_keywords_merge_without_losing_other_fields(tmp_path):
     assert result["0th"][piexif.ImageIFD.Artist] == b"Photographer"
     keywords = bytes(result["0th"][piexif.ImageIFD.XPKeywords])
     assert keywords.decode("utf-16le").rstrip("\x00") == "existing;new"
+
+
+def test_native_adapter_does_not_bypass_standalone_write_admission(tmp_path, monkeypatch):
+    from unittest.mock import Mock
+
+    from imagesorter import file_safety as safe
+    from imagesorter import platform_capabilities
+    image = tmp_path / "photo.jpg"
+    image.write_bytes(b"original")
+    sidecar = tmp_path / "photo.jpg.txt"
+    sidecar.write_bytes(b"original notes")
+    monkeypatch.setattr(platform_capabilities.sys, "platform", "darwin")
+    adapter = Mock(side_effect=AssertionError("adapter reached before admission guard"))
+    monkeypatch.setattr(safe, "_native_backend", adapter)
+    with pytest.raises(RuntimeError, match="macOS"):
+        write_metadata(str(image), ["new tag"], write_exif=False, write_sidecar=True)
+    adapter.assert_not_called()
+    assert image.read_bytes() == b"original"
+    assert sidecar.read_bytes() == b"original notes"
+    assert sorted(path.name for path in tmp_path.iterdir() if path.is_file()) == ["photo.jpg", "photo.jpg.txt"]
+
+
+def test_metadata_unknown_observation_refuses_original_replacement(tmp_path, monkeypatch):
+    from imagesorter import file_safety as safe
+    from imagesorter.darwin_metadata import MetadataUnavailable
+    image = tmp_path / "photo.jpg"
+    image.write_bytes(b"original")
+    sidecar = tmp_path / "photo.jpg.txt"
+    sidecar.write_bytes(b"original notes")
+    # Existing direct helper contract, injected at the observation seam; this
+    # does not enable the Darwin platform or purport to qualify native writes.
+    monkeypatch.setattr(safe, "probe_directory", lambda _parent: None)
+    monkeypatch.setattr(safe, "fingerprint", lambda _path: (_ for _ in ()).throw(MetadataUnavailable("unknown ACL")))
+    with pytest.raises(MetadataUnavailable, match="unknown ACL"):
+        write_metadata(str(image), ["tag"], write_exif=False, write_sidecar=True)
+    assert image.read_bytes() == b"original"
+    assert sidecar.read_bytes() == b"original notes"

@@ -225,7 +225,7 @@ class OperationEngine:
                 continue
             safe.verify(item["stage"], item["stage_provenance"])
             attributes = item.get("restore_provenance") or item["original_provenance"]
-            item["attribute_target"] = {key: attributes[key] for key in ("mode", "mtime_ns", "xattrs") if key in attributes}
+            item["attribute_target"] = {key: attributes[key] for key in ("mode", "mtime_ns", "xattrs", "native_metadata") if key in attributes}
         manifest["phase"] = "preparing_attributes"
         self._save(manifest)
         for item in manifest["files"]:
@@ -560,6 +560,9 @@ class OperationEngine:
             expected = item.get("stage_provenance")
             if stage and os.path.lexists(stage):
                 if not expected:
+                    if "native_metadata" in item.get("original_provenance", {}):
+                        warnings.append(f"Incomplete native stage retained for review: {stage}")
+                        continue
                     try:
                         # A failed copy may leave an incomplete stage. Its
                         # private, exclusive directory and an intact original
@@ -581,6 +584,8 @@ class OperationEngine:
                         safe.verify(stage, expected)
                     except safe.FileChangedError:
                         target = item.get("attribute_target")
+                        if "native_metadata" in expected or (target and "native_metadata" in target):
+                            raise safe.FileChangedError("Interrupted native attribute restoration requires review; stage retained")
                         if target is None:
                             raise
                         # An interrupted, recorded private attribute sequence

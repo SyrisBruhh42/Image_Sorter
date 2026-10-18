@@ -11,6 +11,7 @@ import hashlib
 import os
 import shutil
 import stat
+import sys
 import tempfile
 from collections.abc import Callable
 from typing import Any
@@ -41,7 +42,25 @@ def _stable(st: os.stat_result) -> tuple[int, ...]:
     return st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns, st.st_ctime_ns
 
 
+def _native_backend() -> Any:
+    if sys.platform == "darwin":
+        from .darwin_metadata import backend
+        return backend()
+    return None
+
+
+def _native_private_parent(path: str, backend: Any) -> None:
+    fd = os.open(os.path.dirname(os.path.abspath(path)), os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        backend.require_private(fd, 0o700)
+    finally:
+        os.close(fd)
+
+
 def _read_xattrs(fd: int) -> dict[str, str]:
+    native = _native_backend()
+    if native is not None:
+        return native.read_xattrs(fd)
     if not all(callable(getattr(os, name, None)) for name in ("listxattr", "getxattr")):
         raise PrerequisiteError("Extended-attribute observation is unavailable; metadata is unknown")
     try:
@@ -54,6 +73,10 @@ def _read_xattrs(fd: int) -> dict[str, str]:
 
 
 def _set_xattrs(fd: int, expected: dict[str, str]) -> None:
+    native = _native_backend()
+    if native is not None:
+        native.set_xattrs(fd, expected)
+        return
     if not all(callable(getattr(os, name, None)) for name in ("setxattr", "removexattr")):
         raise PrerequisiteError("Extended-attribute preservation is unavailable")
     try:
@@ -67,17 +90,35 @@ def _set_xattrs(fd: int, expected: dict[str, str]) -> None:
 
 def apply_attributes(path: str, expected: dict[str, Any]) -> dict[str, Any]:
     """Apply exact attributes privately, failing closed before publication."""
+    native = _native_backend()
+    if native is not None:
+        from .darwin_metadata import validate_descriptor, validate_xattrs
+        validate_descriptor(expected.get("native_metadata"))
+        validate_xattrs(expected.get("xattrs"))
+        if type(expected.get("mode")) is not int or not 0 <= expected["mode"] <= 0o777:
+            raise PrerequisiteError("Unsupported native destination mode")
+        _native_private_parent(path, native)
+    elif "native_metadata" in expected:
+        raise PrerequisiteError("Foreign native metadata cannot be restored on this platform")
     fd = _open_regular(path)
     try:
+        if native is not None:
+            st = os.fstat(fd)
+            native.check_stat(st)
+            if st.st_nlink != 1:
+                raise PrerequisiteError("Native attribute restore requires an exclusive private stage")
         _set_xattrs(fd, expected.get("xattrs", {}))
         os.fchmod(fd, expected.get("mode", 0o600) & 0o7777)
+        if native is not None:
+            native.restore(fd, expected["native_metadata"])
         if expected.get("mtime_ns") is not None:
             os.utime(fd, ns=(expected["mtime_ns"], expected["mtime_ns"]))
         os.fsync(fd)
     finally:
         os.close(fd)
     observed = fingerprint(path)
-    if (observed["xattrs"] != expected.get("xattrs", {})
+    if ((native is not None and observed.get("native_metadata") != expected["native_metadata"])
+            or observed["xattrs"] != expected.get("xattrs", {})
             or observed["mode"] != expected.get("mode", 0o600)
             or (expected.get("mtime_ns") is not None and observed["mtime_ns"] != expected["mtime_ns"])):
         raise FileChangedError(f"Destination attributes/ACLs did not round-trip exactly; source retained: {path}")
@@ -87,10 +128,15 @@ def apply_attributes(path: str, expected: dict[str, Any]) -> dict[str, Any]:
 def _open_regular(path: str) -> int:
     if os.path.islink(path):
         raise ValueError(f"File is a symbolic link: {path}")
+    native = _native_backend()
+    if native is not None:
+        native.check_stat(os.stat(path, follow_symlinks=False))
     fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0))
     try:
         if not stat.S_ISREG(os.fstat(fd).st_mode):
             raise ValueError(f"Path is not a regular file: {path}")
+        if native is not None:
+            native.check_stat(os.fstat(fd))
     except BaseException:
         os.close(fd)
         raise
@@ -101,6 +147,8 @@ def fingerprint(path: str, cancelled: Callable[[], bool] | None = None) -> dict[
     fd = _open_regular(path)
     try:
         before = os.fstat(fd)
+        native = _native_backend()
+        native_before = native.capture(fd) if native is not None else None
         h = hashlib.sha256()
         while True:
             if cancelled and cancelled():
@@ -110,13 +158,22 @@ def fingerprint(path: str, cancelled: Callable[[], bool] | None = None) -> dict[
                 break
             h.update(chunk)
         xattrs = _read_xattrs(fd)
+        native_after = native.capture(fd) if native is not None else None
+        if native_before != native_after:
+            raise FileChangedError("Native metadata changed during content observation")
         after = os.fstat(fd)
         named = os.stat(path, follow_symlinks=False)
         if _stable(before) != _stable(after) or (after.st_dev, after.st_ino) != (named.st_dev, named.st_ino):
             raise FileChangedError(f"File changed while it was read: {path}")
-        return {"size": after.st_size, "sha256": h.hexdigest(), "dev": after.st_dev,
+        result = {"size": after.st_size, "sha256": h.hexdigest(), "dev": after.st_dev,
                 "ino": after.st_ino, "mtime": after.st_mtime, "mtime_ns": after.st_mtime_ns,
                 "mode": stat.S_IMODE(after.st_mode), "xattrs": xattrs, "is_reg": True, "is_symlink": False}
+        if native is not None:
+            result["native_metadata"] = native_after
+            # Python 3.10/3.11 expose creation time as a float: retain that
+            # observed precision, never manufacture exact nanoseconds.
+            result["birthtime"] = after.st_birthtime
+        return result
     finally:
         os.close(fd)
 
@@ -125,8 +182,15 @@ def verify(path: str, expected: dict[str, Any], *, identity: bool = True) -> dic
     observed = fingerprint(path)
     keys = (("size", "sha256", "dev", "ino", "mode", "mtime_ns", "xattrs") if identity
             else ("size", "sha256", "mode", "mtime_ns", "xattrs"))
+    keys += ("native_metadata",)
+    if identity:
+        keys += ("birthtime",)
+    if "native_metadata" in expected and "native_metadata" not in observed:
+        raise FileChangedError("Foreign native metadata cannot be verified on this platform")
+    if "native_metadata" in observed and "native_metadata" not in expected and identity:
+        raise PrerequisiteError("Native provenance is missing its metadata descriptor")
     for key in keys:
-        if key in expected and expected[key] != observed[key]:
+        if key in expected and expected[key] != observed.get(key):
             raise FileChangedError(f"File {key} mismatch; preserving changed file: {path}")
     return observed
 
@@ -140,6 +204,13 @@ def private_directory(parent: str, prefix: str) -> str:
         st = os.stat(path, follow_symlinks=False)
         if not stat.S_ISDIR(st.st_mode) or stat.S_IMODE(st.st_mode) != 0o700 or st.st_uid != os.getuid():
             raise PrerequisiteError("Private directory permissions or ownership did not round-trip")
+        native = _native_backend()
+        if native is not None:
+            fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+            try:
+                native.require_private(fd, 0o700)
+            finally:
+                os.close(fd)
         sync_directory(path)
         sync_directory(parent)
     except Exception as exc:
@@ -232,9 +303,21 @@ def secure_copy(source: str, stage: str, expected: dict[str, Any],
     stage_fd: int | None = None
     try:
         before = os.fstat(source_fd)
+        native = _native_backend()
+        native_before = native.capture(source_fd) if native is not None else None
+        if native is not None:
+            from .darwin_metadata import validate_descriptor
+            validate_descriptor(expected.get("native_metadata"))
+            if native_before != expected["native_metadata"]:
+                raise FileChangedError("Source native metadata changed before staging")
+            _native_private_parent(stage, native)
+        elif "native_metadata" in expected:
+            raise PrerequisiteError("Foreign native metadata cannot be staged on this platform")
         if any(expected.get(key, val) != val for key, val in (("dev", before.st_dev), ("ino", before.st_ino))):
             raise FileChangedError(f"Source was replaced: {source}")
         stage_fd = os.open(stage, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600)
+        if native is not None:
+            native.require_private(stage_fd, 0o600)
         h = hashlib.sha256()
         while True:
             if cancelled and cancelled():
@@ -250,6 +333,8 @@ def secure_copy(source: str, stage: str, expected: dict[str, Any],
                     raise OSError("Staged write made no progress")
                 view = view[written:]
         source_xattrs = _read_xattrs(source_fd)
+        if native is not None and native.capture(source_fd) != native_before:
+            raise FileChangedError("Source native metadata changed during staging")
         after = os.fstat(source_fd)
         named = os.stat(source, follow_symlinks=False)
         if (_stable(before) != _stable(after) or (after.st_dev, after.st_ino) != (named.st_dev, named.st_ino)
