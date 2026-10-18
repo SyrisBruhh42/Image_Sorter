@@ -164,6 +164,22 @@ class OperationEngine:
                 return candidate
         raise FileExistsError("No available destination name")
 
+    def _preflight(self, manifest: dict[str, Any], parents: list[str]) -> None:
+        # No durable cache: a parent may be remounted between requests. Probe
+        # actual path edges, not just one representative path per device ID.
+        required = {os.path.abspath(parent): True for parent in parents}
+        required.setdefault(os.path.dirname(os.path.abspath(self.journal.db_path)), False)
+        manifest["prerequisites"] = [safe.probe_directory(parent, require_links=links)
+                                     for parent, links in sorted(required.items())]
+        self._verify_parents(manifest)
+
+    @staticmethod
+    def _verify_parents(manifest: dict[str, Any]) -> None:
+        for observed in manifest.get("prerequisites", []):
+            current = os.stat(observed["parent"], follow_symlinks=False)
+            if (current.st_dev, current.st_ino) != (observed["dev"], observed["ino"]):
+                raise safe.PrerequisiteError("Filesystem parent identity changed after preflight")
+
     def _claims(self, manifest: dict[str, Any], *, cancelled: Callable[[], bool] | None = None) -> None:
         parents: dict[str, str] = {}
         for index, item in enumerate(manifest["files"]):
@@ -175,6 +191,7 @@ class OperationEngine:
                 item["claim_started"] = True
         manifest["phase"] = "claiming_sources"
         self._save(manifest)
+        self._verify_parents(manifest)
         for item in manifest["files"]:
             if item.get("generated"):
                 continue
@@ -202,7 +219,7 @@ class OperationEngine:
             item["stage_provenance"] = safe.secure_copy(source, item["stage"], expected, cancelled)
         return directory
 
-    def _publish(self, manifest: dict[str, Any], final: str) -> None:
+    def _prepare_attributes(self, manifest: dict[str, Any]) -> None:
         for item in manifest["files"]:
             if item.get("restore_excluded"):
                 continue
@@ -215,6 +232,14 @@ class OperationEngine:
             if item.get("restore_excluded"):
                 continue
             item["stage_provenance"] = safe.apply_attributes(item["stage"], item["attribute_target"])
+        self._verify_parents(manifest)
+
+    def _publish(self, manifest: dict[str, Any], final: str) -> None:
+        self._verify_parents(manifest)
+        for item in manifest["files"]:
+            if item.get("restore_excluded"):
+                continue
+            safe.verify(item["stage"], item["stage_provenance"])
             item["destination"] = final + (".txt" if item["role"] == "sidecar" else "")
             item["publish_started"] = True
         manifest["phase"] = "publishing"
@@ -323,6 +348,7 @@ class OperationEngine:
         if action == "undo_copy":
             manifest["mode"] = "delete_copy"
             safe.ensure_capacity(os.path.dirname(source), 0)
+            self._preflight(manifest, [os.path.dirname(item["source"]) for item in manifest["files"]])
             self._claims(manifest, cancelled=cancelled)
             return source, None, None, parent_id
         if action == "trash":
@@ -352,9 +378,13 @@ class OperationEngine:
             raise FileNotFoundError(f"Destination folder missing or invalid: {folder}")
         safe.ensure_capacity(folder, total)
         manifest["mode"] = "transfer"
+        parents = [folder] + ([os.path.dirname(item["source"]) for item in manifest["files"]]
+                              if action != "copy" else [])
+        self._preflight(manifest, parents)
+        self._stage(manifest, folder, cancelled=cancelled)
+        self._prepare_attributes(manifest)
         if action != "copy":
             self._claims(manifest, cancelled=cancelled)
-        self._stage(manifest, folder, cancelled=cancelled)
         if cancelled and cancelled():
             raise safe.OperationCancelled("Cancelled before publication")
         self._publish(manifest, final)
@@ -365,8 +395,10 @@ class OperationEngine:
                       ) -> tuple[None, None, None, None]:
         manifest["mode"] = "system_trash"
         safe.ensure_capacity(os.path.dirname(request["source_path"]), sum(item["original_provenance"]["size"] for item in manifest["files"]))
-        self._claims(manifest, cancelled=cancelled)
+        self._preflight(manifest, [os.path.dirname(item["source"]) for item in manifest["files"]])
         directory = self._stage(manifest, os.path.dirname(request["source_path"]), cancelled=cancelled)
+        self._prepare_attributes(manifest)
+        self._claims(manifest, cancelled=cancelled)
         if cancelled and cancelled():
             raise safe.OperationCancelled("Cancelled before system trash")
         for item in manifest["files"]:
@@ -426,6 +458,7 @@ class OperationEngine:
         write_exif = bool(request.get("write_exif", settings.get("write_exif", True)))
         write_sidecar = bool(request.get("write_sidecar", settings.get("write_sidecar", False)))
         safe.ensure_capacity(os.path.dirname(source), 3 * sum(item["original_provenance"]["size"] for item in manifest["files"]) + 1024**2)
+        self._preflight(manifest, [os.path.dirname(item["source"]) for item in manifest["files"]])
         directory = self._stage(manifest, os.path.dirname(source), cancelled=cancelled)
         image_stage = manifest["files"][0]["stage"]
         write_metadata(image_stage, tags, write_exif, write_sidecar)
@@ -439,6 +472,7 @@ class OperationEngine:
         self._save(manifest)
         if cancelled and cancelled():
             raise safe.OperationCancelled("Cancelled before metadata publication")
+        self._prepare_attributes(manifest)
         self._claims(manifest)
         self._publish(manifest, source)
         token = self._token(request, manifest, source, prior=prior)
@@ -455,6 +489,13 @@ class OperationEngine:
             raise ValueError("Recovery request does not match the recorded source and rollback action")
         if target["manifest"].get("mode") == "system_trash":
             raise ValueError("System trash recovery requires review of the native trash receipt")
+        # A refused preflight must not put old claims in the new manifest:
+        # execute's exception handler rolls back whatever that manifest owns.
+        parents = [os.path.dirname(item[key]) for item in target["manifest"]["files"]
+                   for key in ("source", "claim", "stage", "destination", "cleanup_claim")
+                   if item.get(key) and (key in ("source", "destination") or os.path.lexists(item[key]))]
+        self._preflight(manifest, parents)
+        self._verify_parents(manifest)
         manifest["files"] = copy.deepcopy(target["manifest"]["files"])
         manifest["directories"] = copy.deepcopy(target["manifest"]["directories"])
         manifest["mode"] = target["manifest"].get("mode")
@@ -658,6 +699,10 @@ class OperationEngine:
                 safe.verify(claim, item["original_provenance"])
                 self._verify_retention_survivor(entry, item)
                 candidates.append(item)
+            parents = [os.path.dirname(item[key]) for item in manifest.get("files", [])
+                       for key in ("claim", "stage") if item.get(key) and os.path.lexists(item[key])]
+            self._preflight(manifest, parents)
+            self._verify_parents(manifest)
             stage_errors = self._cleanup_stages(manifest)
             if stage_errors:
                 raise safe.FileChangedError("Preserved staged recovery material: " + "; ".join(stage_errors))

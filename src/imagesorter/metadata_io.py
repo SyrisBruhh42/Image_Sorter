@@ -1,12 +1,12 @@
 from __future__ import annotations
 
 import os
-import shutil
 import tempfile
 from typing import Any
 
 import piexif
 
+from . import file_safety as safe
 from .file_safety import sync_directory
 from .logger import logger
 from .platform_capabilities import require_mutation_support
@@ -90,11 +90,11 @@ def _atomic_write_text(path: str, text: str, parent_dir: str) -> None:
                 pass
 
 
-def _restore_sidecar(path: str, original: bytes | None, parent_dir: str) -> None:
+def _restore_sidecar(path: str, original: bytes | None, parent_dir: str, attributes: dict[str, Any] | None = None) -> None:
     if original is None:
         if os.path.lexists(path):
             os.remove(path)
-            sync_directory(parent_dir)
+            sync_directory(os.path.dirname(path))
         return
     temp_path: str | None = None
     try:
@@ -105,8 +105,10 @@ def _restore_sidecar(path: str, original: bytes | None, parent_dir: str) -> None
             handle.write(original)
             handle.flush()
             os.fsync(handle.fileno())
+        if attributes is not None:
+            safe.apply_attributes(temp_path, attributes)
         os.replace(temp_path, path)
-        sync_directory(parent_dir)
+        sync_directory(os.path.dirname(path))
     finally:
         if temp_path and os.path.lexists(temp_path):
             try:
@@ -140,6 +142,11 @@ def write_metadata(
     if os.path.islink(sidecar_path):
         raise ValueError(f"Sidecar target is a symbolic link: {sidecar_path}")
 
+    # The direct helper is also a mutation entry point. Prove the actual
+    # parent before any backup/replacement, preserving unknown != empty.
+    safe.probe_directory(parent_dir)
+    image_attributes = safe.fingerprint(real_image_path)
+    sidecar_attributes = safe.fingerprint(sidecar_path) if write_sidecar and os.path.lexists(sidecar_path) else None
     sidecar_original: bytes | None = None
     sidecar_text = ""
     if write_sidecar and os.path.exists(sidecar_path):
@@ -175,55 +182,64 @@ def write_metadata(
         if len(exif_bytes) > 32768:
             raise OSError("EXIF payload exceeds the 32 KiB safety limit")
 
+    directory = safe.private_directory(parent_dir, ".imagesorter-metadata-")
     image_backup: str | None = None
     image_temp: str | None = None
     sidecar_backup: str | None = None
+    sidecar_temp: str | None = None
     retain_backups = False
+    image_replace_started = sidecar_replace_started = False
     try:
         if write_sidecar and sidecar_original is not None:
-            backup_fd, sidecar_backup = tempfile.mkstemp(dir=parent_dir, prefix=".imagesorter-sidecar-backup-", suffix=".tmp")
-            with os.fdopen(backup_fd, "wb") as backup:
-                backup.write(sidecar_original)
-                backup.flush()
-                os.fsync(backup.fileno())
-            sync_directory(parent_dir)
+            assert sidecar_attributes is not None
+            safe.verify(sidecar_path, sidecar_attributes)
+            sidecar_backup = os.path.join(directory, "sidecar-backup")
+            safe.secure_copy(sidecar_path, sidecar_backup, sidecar_attributes)
+            safe.apply_attributes(sidecar_backup, sidecar_attributes)
         if exif_bytes is not None:
-            backup_fd, image_backup = tempfile.mkstemp(
-                dir=parent_dir, prefix=".imagesorter-exif-backup-", suffix=".tmp"
-            )
-            os.close(backup_fd)
-            shutil.copy2(real_image_path, image_backup)
-            with open(image_backup, "rb") as backup:
-                os.fsync(backup.fileno())
-            sync_directory(parent_dir)
-
-            temp_fd, image_temp = tempfile.mkstemp(
-                dir=parent_dir, prefix=".imagesorter-exif-", suffix=".tmp"
-            )
-            os.close(temp_fd)
-            shutil.copy2(real_image_path, image_temp)
+            image_backup = os.path.join(directory, "exif-backup")
+            safe.secure_copy(real_image_path, image_backup, image_attributes)
+            safe.apply_attributes(image_backup, image_attributes)
+            image_temp = os.path.join(directory, "exif-stage")
+            safe.secure_copy(real_image_path, image_temp, image_attributes)
             piexif.insert(exif_bytes, image_temp)
-            with open(image_temp, "rb") as staged:
-                os.fsync(staged.fileno())
+            safe.apply_attributes(image_temp, image_attributes)
+        if write_sidecar:
+            sidecar_temp = os.path.join(directory, "sidecar-stage")
+            merged_sidecar = merge_sidecar_content(sidecar_text, sanitized)
+            _atomic_write_text(sidecar_temp, merged_sidecar, directory)
+            safe.apply_attributes(sidecar_temp, sidecar_attributes or {"mode": 0o600, "xattrs": {}})
+        # Every member's actual staged attributes must round-trip before any
+        # original is replaced. Recheck source identity after all preparation.
+        safe.verify(real_image_path, image_attributes)
+        if write_sidecar:
+            if sidecar_attributes is not None:
+                safe.verify(sidecar_path, sidecar_attributes)
+            elif os.path.lexists(sidecar_path):
+                raise safe.FileChangedError("An unrelated sidecar appeared during metadata preparation")
+        sync_directory(directory)
+        if image_temp is not None:
+            image_replace_started = True
             os.replace(image_temp, real_image_path)
             sync_directory(parent_dir)
             image_temp = None
-
-        if write_sidecar:
-            merged_sidecar = merge_sidecar_content(sidecar_text, sanitized)
-            _atomic_write_text(sidecar_path, merged_sidecar, parent_dir)
+        if sidecar_temp is not None:
+            sidecar_replace_started = True
+            os.replace(sidecar_temp, sidecar_path)
+            sync_directory(parent_dir)
+            sidecar_temp = None
     except Exception as exc:
         restore_errors: list[str] = []
-        if image_backup and os.path.exists(image_backup):
+        if image_replace_started and image_backup and os.path.exists(image_backup):
             try:
                 os.replace(image_backup, real_image_path)
                 sync_directory(parent_dir)
                 image_backup = None
             except OSError as restore_exc:
                 restore_errors.append(f"image restore failed: {restore_exc}")
-        if write_sidecar:
+        if sidecar_replace_started:
             try:
-                _restore_sidecar(sidecar_path, sidecar_original, parent_dir)
+                _restore_sidecar(sidecar_path, sidecar_original, directory, sidecar_attributes)
             except OSError as restore_exc:
                 restore_errors.append(f"sidecar restore failed: {restore_exc}")
         detail = f" ({'; '.join(restore_errors)})" if restore_errors else ""
@@ -233,9 +249,14 @@ def write_metadata(
             raise MetadataRecoveryError(f"Metadata transaction failed: {exc}{detail}; retained backups: {retained}", retained) from exc
         raise OSError(f"Metadata transaction failed: {exc}{detail}") from exc
     finally:
-        for artifact in ((image_temp,) if retain_backups else (image_temp, image_backup, sidecar_backup)):
+        for artifact in ((image_temp, sidecar_temp) if retain_backups else (image_temp, sidecar_temp, image_backup, sidecar_backup)):
             if artifact and os.path.lexists(artifact):
                 try:
                     os.remove(artifact)
                 except OSError:
                     logger.warning(f"Could not remove metadata artifact {artifact}")
+        try:
+            os.rmdir(directory)  # Unexpected or retained entries keep it intact.
+            sync_directory(parent_dir)
+        except OSError:
+            pass
