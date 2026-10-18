@@ -4,6 +4,8 @@ import json
 import os
 import re
 import stat
+import subprocess
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -17,6 +19,164 @@ from imagesorter.operation_engine import OperationEngine
 from imagesorter.operation_journal import OperationJournal
 from imagesorter.queue_worker import QueueWorker
 from imagesorter.settings_manager import SettingsManager
+
+
+@pytest.fixture
+def windows_journal_api(monkeypatch):
+    """Simulate only the journal's OS selector; never signal a real process."""
+    from imagesorter import operation_journal
+
+    def forbidden_signal(*args):
+        pytest.fail(f"Journal liveness attempted to signal a process: {args}")
+
+    api = {name: getattr(os, name) for name in dir(os)}
+    api.update(name="nt", kill=forbidden_signal)
+    monkeypatch.setattr(operation_journal, "os", SimpleNamespace(**api))
+    return operation_journal
+
+
+@pytest.fixture
+def windows_process_api(windows_journal_api, monkeypatch):
+    import ctypes
+
+    calls = []
+    state = {"OpenProcess": 0x100000001, "WaitForSingleObject": 258, "CloseHandle": True}
+
+    class Function:
+        def __init__(self, name):
+            self.name = name
+
+        def __call__(self, *args):
+            calls.append((self.name, args))
+            value = state[self.name]
+            if isinstance(value, BaseException):
+                raise value
+            return value
+
+    kernel = SimpleNamespace(**{name: Function(name) for name in state})
+
+    def load(name, **options):
+        assert name == "kernel32" and options == {"use_last_error": True}
+        return kernel
+
+    monkeypatch.setattr(ctypes, "WinDLL", load, raising=False)
+    return state, calls, kernel
+
+
+@pytest.mark.parametrize("wait_result, expected", [(0, False), (258, True), (0xFFFFFFFF, True),
+                                                   (128, True), (42, True)])
+def test_windows_journal_non_signalling_handle_query(windows_process_api, wait_result, expected):
+    from ctypes import wintypes
+
+    state, calls, kernel = windows_process_api
+    state["WaitForSingleObject"] = wait_result
+    assert OperationJournal._pid_is_running(1234) is expected
+    handle = state["OpenProcess"]
+    assert calls == [("OpenProcess", (0x00100000, False, 1234)),
+                     ("WaitForSingleObject", (handle, 0)), ("CloseHandle", (handle,))]
+    assert kernel.OpenProcess.restype is wintypes.HANDLE
+    assert kernel.OpenProcess.argtypes == (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
+    assert kernel.WaitForSingleObject.argtypes == (wintypes.HANDLE, wintypes.DWORD)
+    assert kernel.WaitForSingleObject.restype is wintypes.DWORD
+    assert kernel.CloseHandle.argtypes == (wintypes.HANDLE,)
+    assert kernel.CloseHandle.restype is wintypes.BOOL
+
+
+@pytest.mark.parametrize("result", [None, 0, PermissionError("protected process"), OSError("query unavailable")])
+def test_windows_journal_unopenable_owner_remains_live(windows_process_api, result):
+    state, calls, _kernel = windows_process_api
+    state["OpenProcess"] = result
+    assert OperationJournal._pid_is_running(1234) is True
+    assert calls == [("OpenProcess", (0x00100000, False, 1234))]
+
+
+@pytest.mark.parametrize("call", ["WaitForSingleObject", "CloseHandle"])
+@pytest.mark.parametrize("error", [OSError("query unavailable"), ValueError("bad query"), OverflowError("conversion")])
+def test_windows_journal_failed_query_closes_handle_and_preserves_owner(windows_process_api, call, error):
+    state, calls, _kernel = windows_process_api
+    state[call] = error
+    assert OperationJournal._pid_is_running(1234) is True
+    assert [name for name, _args in calls] == ["OpenProcess", "WaitForSingleObject", "CloseHandle"]
+
+
+def test_windows_journal_failed_close_cannot_authorize_recovery(windows_process_api):
+    state, _calls, _kernel = windows_process_api
+    state.update(WaitForSingleObject=0, CloseHandle=False)
+    assert OperationJournal._pid_is_running(1234) is True
+
+
+def test_windows_journal_missing_native_api_preserves_owner(windows_journal_api, monkeypatch):
+    import ctypes
+
+    monkeypatch.delattr(ctypes, "WinDLL", raising=False)
+    assert OperationJournal._pid_is_running(1234) is True
+
+
+@pytest.mark.parametrize("pid", [-1, 2**32, 2**64 + 1234, True, "1234"])
+def test_windows_journal_invalid_pid_cannot_wrap_to_another_process(windows_process_api, pid):
+    _state, calls, _kernel = windows_process_api
+    assert OperationJournal._pid_is_running(pid) is True
+    assert calls == []
+
+
+@pytest.mark.parametrize("pid", [None, 0])
+def test_windows_journal_absent_owner_needs_no_native_query(windows_process_api, pid):
+    _state, calls, _kernel = windows_process_api
+    assert OperationJournal._pid_is_running(pid) is False
+    assert calls == []
+
+
+@pytest.mark.parametrize("wait_result", [258, 0xFFFFFFFF])
+def test_windows_journal_live_or_unknown_owner_keeps_both_record_versions(windows_process_api, tmp_path, wait_result):
+    state, _calls, _kernel = windows_process_api
+    state["WaitForSingleObject"] = wait_result
+    journal = OperationJournal(str(tmp_path / "journal.db"))
+    try:
+        journal.record_intent("legacy-live", "move", str(tmp_path / "a"), str(tmp_path / "b"))
+        journal.accept({"operation_id": "current-live", "action": "move", "source_path": str(tmp_path / "c")})
+        with journal._get_connection() as connection:
+            # An old incarnation/expired clock cannot override a reused live PID.
+            connection.execute("UPDATE operations SET owner_token=?, lease_expires_at=0", ("old-incarnation",))
+        before = journal.get_all_entries()
+        assert journal.reconcile_interrupted_operations() == []
+        assert journal.get_all_entries() == before
+    finally:
+        journal.close()
+
+
+def test_native_journal_query_leaves_own_child_alive(tmp_path, monkeypatch):
+    """Runs on hosted Windows too; the child exits cooperatively through stdin."""
+    from imagesorter import operation_journal
+
+    if os.name == "nt":
+        api = {name: getattr(os, name) for name in dir(os)}
+        api["kill"] = lambda *_args: pytest.fail("Windows liveness must never signal the test child")
+        monkeypatch.setattr(operation_journal, "os", SimpleNamespace(**api))
+    child = subprocess.Popen([sys.executable, "-c", "import sys; sys.stdin.buffer.read(1)"],
+                             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    journal = None
+    try:
+        journal = OperationJournal(str(tmp_path / "child-journal.db"))
+        journal.record_intent("owned-child", "move", str(tmp_path / "a"), str(tmp_path / "b"))
+        with journal._get_connection() as connection:
+            connection.execute("UPDATE operations SET owner_pid=? WHERE operation_id=?", (child.pid, "owned-child"))
+        before = journal.get_entry("owned-child")
+        for _ in range(32):
+            assert OperationJournal._pid_is_running(child.pid) is True
+            assert child.poll() is None
+        assert journal.reconcile_interrupted_operations() == []
+        assert journal.get_entry("owned-child") == before
+        assert child.poll() is None
+    finally:
+        try:
+            if journal is not None:
+                journal.close()
+        finally:
+            _stdout, stderr = child.communicate(input=b"x", timeout=10)
+    assert child.returncode == 0, stderr.decode(errors="replace")
+    # Popen still retains its Windows process handle here. A successful query
+    # must observe its signaled state; an always-unknown fallback cannot pass.
+    assert OperationJournal._pid_is_running(child.pid) is False
 
 
 @pytest.fixture(params=['win32', 'darwin'])
