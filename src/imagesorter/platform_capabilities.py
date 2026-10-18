@@ -11,6 +11,11 @@ def mutation_unavailable_reason() -> str | None:
     if sys.platform.startswith('win'):
         return ('Durable sorting, Undo and metadata writes are unavailable on Windows. '
                 'Image review and settings remain available; use a supported Linux environment for file operations.')
+    # Darwin metadata preservation, durability barriers and frozen service
+    # pinning are not qualified. A working Unix socket is not sufficient.
+    if sys.platform == 'darwin':
+        return ('Durable sorting, Undo and metadata writes are unavailable on macOS. '
+                'Image review and settings remain available; use a supported Linux environment for file operations.')
     if not hasattr(socket, 'AF_UNIX'):
         return 'Durable file operations require local Unix sockets, which are unavailable on this platform.'
     return None

@@ -2,6 +2,7 @@
 import hashlib
 import json
 import os
+import re
 import stat
 from pathlib import Path
 from types import SimpleNamespace
@@ -18,10 +19,12 @@ from imagesorter.queue_worker import QueueWorker
 from imagesorter.settings_manager import SettingsManager
 
 
-@pytest.fixture
-def unsupported(monkeypatch):
-    monkeypatch.setattr(platform_capabilities, 'sys', SimpleNamespace(platform='win32'))
-    return platform_capabilities.mutation_unavailable_reason()
+@pytest.fixture(params=['win32', 'darwin'])
+def unsupported(request, monkeypatch):
+    monkeypatch.setattr(platform_capabilities, 'sys', SimpleNamespace(platform=request.param))
+    reason = platform_capabilities.mutation_unavailable_reason()
+    assert reason is not None
+    return reason
 
 
 def test_unsupported_client_dispatches_gui_without_socket_or_pending_work(qtbot, tmp_path, unsupported):
@@ -31,7 +34,7 @@ def test_unsupported_client_dispatches_gui_without_socket_or_pending_work(qtbot,
     ticks = []
     QTimer.singleShot(0, lambda: ticks.append(True))
     for index in range(200):
-        with pytest.raises(RuntimeError, match='unavailable on Windows'):
+        with pytest.raises(RuntimeError, match=re.escape(unsupported)):
             client.submit({'operation_id': str(index)})
     client.poll()
     qtbot.waitUntil(lambda: bool(ticks), timeout=3000)
@@ -44,9 +47,9 @@ def test_unsupported_client_dispatches_gui_without_socket_or_pending_work(qtbot,
 def test_unsupported_queue_rejects_primary_undo_and_recovery_before_admission(qtbot, tmp_path, unsupported):
     worker = QueueWorker(SettingsManager(filepath=str(tmp_path / 'settings.json')))
     for action in ('move', 'copy', 'trash', 'undo_move', 'undo_copy'):
-        with pytest.raises(RuntimeError, match='unavailable on Windows'):
+        with pytest.raises(RuntimeError, match=re.escape(unsupported)):
             worker.add_task(action, str(tmp_path / 'image.jpg'), str(tmp_path / 'target'))
-    with pytest.raises(RuntimeError, match='unavailable on Windows'):
+    with pytest.raises(RuntimeError, match=re.escape(unsupported)):
         worker.add_recovery_task({'operation_id': 'old', 'source_path': str(tmp_path / 'image.jpg')})
     assert not worker.client.pending and not worker._requests
     assert worker.client.process is None
@@ -81,7 +84,7 @@ def test_unsupported_metadata_preserves_exact_original_members(tmp_path, unsuppo
     if existing_sidecar:
         sidecar.write_bytes(b'original notes')
     before = {str(p.relative_to(tmp_path)): p.read_bytes() for p in tmp_path.rglob('*') if p.is_file()}
-    with pytest.raises(RuntimeError, match='unavailable on Windows'):
+    with pytest.raises(RuntimeError, match=re.escape(unsupported)):
         write_metadata(str(image), ['new tag'], write_exif=True, write_sidecar=True)
     assert {str(p.relative_to(tmp_path)): p.read_bytes() for p in tmp_path.rglob('*') if p.is_file()} == before
 
@@ -233,7 +236,9 @@ def test_actual_image_review_and_gui_refusals_preserve_files_and_undo(
     assert '1.png' in viewer.windowTitle()
 
 
-def test_unsupported_retention_cleanup_precedes_journal_read_and_preserves_files(tmp_path, monkeypatch):
+@pytest.mark.parametrize('unsupported_platform', ['win32', 'darwin'])
+def test_unsupported_retention_cleanup_precedes_journal_read_and_preserves_files(
+        tmp_path, monkeypatch, unsupported_platform):
     import time
     from unittest.mock import Mock
 
@@ -254,7 +259,7 @@ def test_unsupported_retention_cleanup_precedes_journal_read_and_preserves_files
         entry = journal.get_entry(operation_id)
         assert all(Path(item["claim"]).exists() for item in entry["manifest"]["files"])
     else:
-        # Native Windows must not manufacture a supported mutation. Preserve
+        # An unsupported native platform must not manufacture a mutation. Preserve
         # representative retained bytes and prove rejection precedes any lookup
         # that could authorize them as cleanup material.
         retained = tmp_path / "retained"
@@ -265,8 +270,10 @@ def test_unsupported_retention_cleanup_precedes_journal_read_and_preserves_files
               for p in tmp_path.rglob("*") if p.is_file()}
     lookup = Mock(side_effect=AssertionError("Platform refusal must precede journal authority lookup"))
     monkeypatch.setattr(journal, "get_entry", lookup)
-    monkeypatch.setattr(platform_capabilities, "sys", SimpleNamespace(platform="win32"))
-    with pytest.raises(RuntimeError, match="unavailable on Windows"):
+    monkeypatch.setattr(platform_capabilities, "sys", SimpleNamespace(platform=unsupported_platform))
+    reason = platform_capabilities.mutation_unavailable_reason()
+    assert reason is not None
+    with pytest.raises(RuntimeError, match=re.escape(reason)):
         engine.cleanup_retained(operation_id, now=time.time() + 31 * 86400)
     lookup.assert_not_called()
     assert {str(p.relative_to(tmp_path)): (p.read_bytes(), p.stat().st_mode)
@@ -339,7 +346,7 @@ def test_unsupported_service_entry_refuses_before_runtime_pin_or_profile_artifac
     monkeypatch.setattr(mutation_service, "_pin_runtime", pin)
     journal = tmp_path / "uncreated-service-profile" / "journal.db"
     before = sorted(str(p.relative_to(tmp_path)) for p in tmp_path.rglob("*"))
-    with pytest.raises(RuntimeError, match="unavailable on Windows") as error:
+    with pytest.raises(RuntimeError, match=re.escape(unsupported)) as error:
         mutation_service.main(["--journal", str(journal)])
     assert str(error.value) == unsupported
     pin.assert_not_called()

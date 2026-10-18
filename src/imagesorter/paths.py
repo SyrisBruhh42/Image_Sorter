@@ -119,6 +119,10 @@ def get_portable_root() -> Path | None:
     try:
         marker_mode = marker.lstat().st_mode
     except FileNotFoundError:
+        if getattr(sys, "frozen", False) and getattr(sys, "_imagesorter_portable_required", False):
+            raise OSError(
+                f"Portable build requires its adjacent portable.flag or an explicit --profile-root: {marker}"
+            ) from None
         return None
     if not stat.S_ISREG(marker_mode):
         raise OSError(f"Portable profile marker must be a regular non-symlink file: {marker}")

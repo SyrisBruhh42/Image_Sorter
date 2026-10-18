@@ -2,10 +2,10 @@
 
 Keyboard-first desktop image review and sorting for Linux, built with Python and
 PyQt6. Ubuntu 24.04 LTS with KDE Plasma/X11 is the primary target. Windows and
-macOS receive experimental smoke coverage. Windows review and settings are
+macOS receive experimental smoke coverage. Windows/macOS review and settings are
 experimental; durable sorting, Undo and metadata writes are unavailable there
-and are refused before admission or file changes. A Windows mutation backend
-requires separate qualification.
+and are refused before admission or file changes. Their mutation backends
+require separate implementation and native durability qualification.
 
 [![CI](https://github.com/SyrisBruhh42/Image_Sorter/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/SyrisBruhh42/Image_Sorter/actions/workflows/ci.yml)
 [![Source: MIT](https://img.shields.io/badge/Source-MIT-yellow.svg)](LICENSE)
@@ -124,9 +124,9 @@ cache locations are routed into the selected profile; Qt's shader disk cache
 is disabled. Ordinary launches retain their native file picker and paths.
 
 This path contract is not a claim of full USB isolation on every platform.
-Native packaged acceptance, OS-managed caches and macOS socket placement
-require separate qualification. The build still produces an onedir package;
-recognizing a macOS bundle layout does not build or qualify a `.app` artifact.
+Native packaged acceptance and OS-managed caches require separate qualification.
+The native build recipe produces an onedir executable on Linux/Windows and a
+macOS `.app`; a recipe and simulated layout tests do not establish a native pass.
 
 ## Keyboard controls
 
@@ -206,11 +206,49 @@ python build_desktop.py
 ```
 
 `python build_desktop.py` creates a PyInstaller onedir build under
-`dist/ImageSorter/`. On Linux x86_64, `python build_desktop.py --appimage`
+`dist/ImageSorter/` on Linux/Windows, or `dist/ImageSorter.app` on macOS.
+Build on the intended operating system and architecture; this is not a cross
+compiler. macOS uses PyInstaller's local ad-hoc signature without Developer ID
+credentials; notarization and distribution acceptance remain open.
+On Linux x86_64, `python build_desktop.py --appimage`
 also builds and verifies an AppImage. The build script downloads the pinned
 `appimagetool` 1.9.1 and AppImage runtime inputs, verifies their digests, and fails
 if the requested artifact is absent. These commands build locally; they publish
 no artifacts.
+
+Add `--portable` to create a fresh portable folder and archive with
+`portable.flag` already in the correct location. Windows uses ZIP; Linux/macOS
+use tar.gz so runtime symlinks and executable modes survive extraction. The
+archive includes Python and the native runtime: the receiving computer does
+not need a Python installation. Existing output folders are refused to protect
+saved profiles; build again in a fresh checkout/output tree. These are local
+qualification artifacts, subject to the license and release gates below.
+
+A `--portable` build embeds a requirement for that external marker. If the
+marker is missing or unavailable, startup refuses to select a host profile.
+An explicit `--profile-root` or validated inherited profile still takes priority.
+Keep the whole folder together: macOS may relocate a downloaded `.app` during
+launch, making adjacent files unavailable. This policy refuses that case without
+guessing the original location or changing operating-system security settings.
+Ordinary builds and source launches retain their existing profile selection.
+
+The generated folder includes a file manifest and a short launch guide. Run a
+native frozen smoke against it with a new disposable evidence folder:
+
+```sh
+python scripts/qualify_portable_package.py --package "<portable folder>" --build-identity build/attestation/build_identity.json --output "<new evidence folder>"
+```
+
+This copies the package, launches without `--profile-root`, checks an actual
+decoded image and clean close, then relocates the folder and repeats. It binds
+the full embedded source identity and preserves the original package/image.
+The default offscreen check compares disposable host-profile files; it does
+not inspect the Windows registry, all OS-managed caches, physical USB behavior,
+native shell launch, signing prompts or file-operation durability. The CI recipe
+now includes frozen Windows/macOS checks, but a recipe is not a successful run.
+The named package and fresh output paths, including existing ancestors, must
+not be symlinks or junctions. These checks prevent accidental redirection; they
+do not provide a sandbox against concurrent same-user filesystem replacement.
 
 Ubuntu 24.04 may require `libfuse2t64` to mount an AppImage. Extraction is the
 FUSE-free fallback:

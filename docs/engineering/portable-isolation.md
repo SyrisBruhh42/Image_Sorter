@@ -75,10 +75,49 @@ the generated shell launcher with a simulated frozen executable. Native IPC
 support is required for the existing mutation-service subprocess test.
 
 The packaging-marked test builds the frozen application and checks decoded-image
-readiness and graceful shutdown through explicit and portable onedir launches.
+readiness and graceful shutdown through explicit and portable onedir/bundle launches.
 On Linux it also launches the real extracted AppRun without `--profile-root`.
 These journeys compare the embedded source identity and disposable host-profile
 files. They use Qt's offscreen backend and do not mount an actual AppImage.
+
+`build_desktop.py --portable` additionally produces a fresh native folder and
+archive, with a regular `portable.flag` and exact runtime/source manifest.
+Windows ZIP rejects runtime symlinks; Linux/macOS tar.gz preserves internal
+relative runtime symlinks and refuses escaping links. Existing output/profile
+state is never silently repackaged. The macOS spec builds an actual BUNDLE with
+its marker outside `Contents`; its ad-hoc signature must succeed, without
+credentials or a claim of notarization. Native Windows/macOS execution is still
+required to validate those recipes.
+
+The portable build embeds `hooks/rthook_portable_profile.py` before application
+imports. Its process-local policy makes a missing marker an error instead of
+selecting native paths; no removable policy file or environment variable is
+needed to enforce it. Explicit and validated inherited profiles retain priority.
+This also refuses a macOS bundle relocated without its external marker; it does
+not try to detect translocation or bypass Gatekeeper. Ordinary builds/source
+launches are unaffected. The real Linux frozen test covers missing-marker
+refusal before host-profile writes, followed by explicit and portable success.
+Windows/macOS refusal-dialog behavior remains a native interactive gate.
+
+`scripts/qualify_portable_package.py` verifies a pristine package against an
+independently supplied build identity, copies it into a new evidence directory,
+then launches before and after moving the folder. It retains actual decoded
+frame/readiness receipts, process logs, graceful exit, original image/runtime
+hashes and disposable host-file comparisons. It refuses a mismatched OS or
+architecture. Native shell launch, registry/OS-managed state, network observation
+and actual removable-media behavior are explicit separate gates. Linux tests
+that construct macOS/Windows layouts and archives are source-level simulations.
+Named package/output paths and existing ancestors are checked for symlinks and
+junctions before canonicalization, creation or launch. Concurrent replacement
+by the same user is outside this trusted developer-tool boundary.
+
+Windows and macOS both refuse mutations centrally before admission, metadata
+writes, runtime pinning or retention cleanup. Existing history and uncertain
+operations are retained. macOS had previously been admitted on the presence of
+AF_UNIX even though `.app` pinning and metadata/durability were unqualified;
+the explicit refusal removes reliance on an incidental bundle-path failure.
+Image review/settings are an intermediate platform capability, not completion
+of the portable sorting product.
 
 The suite uses disposable files, isolated environment paths and actual
 filesystem symlinks. Platform selectors exercise path decisions; they do not
@@ -86,14 +125,15 @@ constitute native Windows or macOS qualification.
 
 ## Remaining portable-release work
 
-- Build actual Windows/macOS frozen artifacts, including bundle-aware macOS
-  mutation-runtime pinning, signing/distribution and native launch qualification.
+- Run the Windows/macOS native build and frozen launch checks; neither a build
+  recipe nor a Linux archive-layout fixture clears this gate. Qualify signing,
+  distribution, native shell launch and the intended OS/architecture matrix.
 - Qualify supported native-library caches and OS-managed state; source path
   selectors and a Linux offscreen dialog do not prove native OS isolation.
-- Qualify Windows locking, process communication, durable mutations and Undo;
-  the existing Windows mutation restriction remains in force.
-- Complete macOS metadata-preservation and power-interruption durability work;
-  bundle-path recognition is not mutation or Undo qualification.
+- Implement and qualify Windows locking, process communication, durable
+  mutations and Undo before removing its mutation restriction.
+- Implement bundle-aware macOS mutation-runtime pinning, metadata preservation
+  and power-interruption durability before removing its mutation restriction.
 - Distinguish portable persistent state from necessary OS-managed transient
   resources such as local sockets; audit all worker and optional-component writes.
 - Build and run OS/architecture-specific packages on real supported platforms,

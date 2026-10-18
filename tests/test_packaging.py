@@ -234,21 +234,28 @@ def test_pyinstaller_executable_smoke(tmp_path):
     (root_dir / "_source_identity.json").write_text(json.dumps(identity))
     build_script = root_dir / "build_desktop.py"
 
-    build_res = subprocess.run([sys.executable, str(build_script)], capture_output=True, text=True, cwd=root_dir)
+    build_res = subprocess.run([sys.executable, str(build_script), '--portable'], capture_output=True, text=True, cwd=root_dir)
     (tmp_path / "packaging-build.stdout.log").write_text(build_res.stdout)
     (tmp_path / "packaging-build.stderr.log").write_text(build_res.stderr)
     assert build_res.returncode == 0, f"desktop build failed:\nSTDOUT:\n{build_res.stdout}\nSTDERR:\n{build_res.stderr}"
 
-    exe_name = "ImageSorter.exe" if sys.platform == "win32" else "ImageSorter"
-    exe_path = root_dir / "dist" / "ImageSorter" / exe_name
+    from scripts.portable_package import runtime_layout
+    runtime, relative_executable = runtime_layout(root_dir / 'dist', sys.platform)
+    exe_path = runtime / relative_executable
     assert exe_path.exists(), f"Executable not found at {exe_path}"
 
     from PIL import Image
     image_path = tmp_path / "readiness.png"
     Image.new("RGB", (160, 100), (33, 88, 144)).save(image_path)
     before = hashlib.sha256(image_path.read_bytes()).hexdigest()
-    launches = [("explicit", exe_path, tmp_path / "explicit-profile")]
-    launches.append(("portable-onedir", exe_path, exe_path.parent))
+    launches = []
+    if sys.platform.startswith('linux'):
+        # Linux windowed binaries report the refusal on stderr. Native Windows
+        # and macOS error-dialog behavior needs its separate interactive gate.
+        launches.append(('missing-marker', exe_path, runtime))
+    launches.append(("explicit", exe_path, tmp_path / "explicit-profile"))
+    portable_root = runtime.parent if sys.platform == 'darwin' else runtime
+    launches.append(("portable-bundle" if sys.platform == 'darwin' else "portable-onedir", exe_path, portable_root))
     if sys.platform.startswith("linux"):
         appdir = build.prepare_appdir(root_dir / "dist", root_dir)
         launches.append(("portable-appdir", appdir / "AppRun", appdir))
@@ -272,7 +279,7 @@ def test_pyinstaller_executable_smoke(tmp_path):
         command = [str(launcher)]
         if mode == "explicit":
             command += ["--profile-root", str(profile)]
-        else:
+        elif mode != 'missing-marker':
             (profile / "portable.flag").touch()
         command += ["--diagnostic-receipt", str(receipt), "--acceptance-exit-after-ready", str(image_path)]
         proc = subprocess.Popen(command, cwd=tmp_path, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env)
@@ -289,6 +296,12 @@ def test_pyinstaller_executable_smoke(tmp_path):
             pytest.fail(f"Frozen {mode} never reported readiness and graceful close within 30 seconds")
         (tmp_path / f"packaging-{mode}.stdout.log").write_text(stdout)
         (tmp_path / f"packaging-{mode}.stderr.log").write_text(stderr)
+        if mode == 'missing-marker':
+            assert proc.returncode != 0 and 'Portable build requires' in stderr
+            assert not receipt.exists()
+            assert not (profile / 'config').exists()
+            assert {str(p.relative_to(host)): p.read_bytes() for p in host.rglob('*') if p.is_file()} == host_before
+            continue
         assert proc.returncode == 0, f"{mode}: {stderr}"
         observed = json.loads(receipt.read_text())
         ready = next(item for item in observed["events"] if item["event"] == "image_presented")
@@ -296,7 +309,7 @@ def test_pyinstaller_executable_smoke(tmp_path):
         assert ready["backend"] == "offscreen"
         assert ready["filepath"] == str(image_path)
         assert (ready["width"], ready["height"]) == (160, 100)
-        code_root = launcher.parent / "usr/bin" if mode == "portable-appdir" else exe_path.parent
+        code_root = launcher.parent / "usr/bin" if mode == "portable-appdir" else runtime
         assert Path(ready["module_origin"]).is_relative_to(code_root)
         assert ready["build_identity"] == identity
         assert closed["monotonic"] >= ready["monotonic"]
@@ -309,3 +322,20 @@ def test_pyinstaller_executable_smoke(tmp_path):
             assert (profile / "cache/temporary").is_dir()
             if code_root != profile:
                 assert not (code_root / "config").exists()
+
+    from scripts.qualify_portable_package import qualify
+    packages = list((root_dir / 'dist').glob('*-portable/portable-package.json'))
+    assert len(packages) == 1
+    package = packages[0].parent
+    extracted = tmp_path / 'extracted-portable'
+    if sys.platform == 'win32':
+        import zipfile
+        with zipfile.ZipFile(package.with_name(package.name + '.zip')) as archive:
+            archive.extractall(extracted)
+    else:
+        import tarfile
+        with tarfile.open(package.with_name(package.name + '.tar.gz')) as archive:
+            archive.extractall(extracted, filter='data')
+    result = qualify(extracted / package.name, tmp_path / 'portable-qualification', identity)
+    assert result['status'] == 'PASS_PORTABLE_FROZEN_SMOKE'
+    assert len(result['launches']) == 2

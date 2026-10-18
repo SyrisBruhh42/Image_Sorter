@@ -10,10 +10,14 @@ import pytest
 from imagesorter import mutation_client
 from imagesorter.mutation_client import MutationClient
 from imagesorter.mutation_service import _remove_stale_socket
+from imagesorter.platform_capabilities import mutation_unavailable_reason
 from imagesorter.queue_worker import QueueWorker
 from imagesorter.settings_manager import SettingsManager
 
 pytestmark = pytest.mark.skipif(os.name != 'posix', reason='Pathname sockets apply to supported POSIX mutation service')
+mutation_unavailable = mutation_unavailable_reason()
+requires_mutations = pytest.mark.skipif(
+    mutation_unavailable is not None, reason=mutation_unavailable or 'Mutation support required')
 
 
 def test_stale_socket_cleanup_preserves_regular_and_symlink_entries(tmp_path):
@@ -51,6 +55,7 @@ def test_stale_socket_cleanup_only_removes_current_user_socket(tmp_path, monkeyp
         _remove_stale_socket('\0unchanged-linux-abstract')
 
 
+@requires_mutations
 def test_socket_preparation_refuses_before_client_admission(qtbot, tmp_path, monkeypatch):
     client = MutationClient(journal_path=tmp_path / 'journal.db')
     monkeypatch.setattr(mutation_client, 'service_address', Mock(side_effect=PermissionError('unsafe directory')))
@@ -68,6 +73,7 @@ def test_socket_preparation_refuses_before_client_admission(qtbot, tmp_path, mon
         client.disconnect()
 
 
+@requires_mutations
 def test_poll_reports_startup_failure_without_dropping_uncertain_operation(qtbot, tmp_path, monkeypatch):
     client = MutationClient(journal_path=tmp_path / 'journal.db')
     request = {'operation_id': 'possibly-accepted'}
@@ -92,6 +98,7 @@ def test_poll_reports_startup_failure_without_dropping_uncertain_operation(qtbot
 
 
 @pytest.mark.parametrize('action', ['move', 'undo_move', 'recover'])
+@requires_mutations
 def test_rejected_submission_preserves_request_map_and_enrichment(qtbot, tmp_path, monkeypatch, action):
     worker = QueueWorker(SettingsManager(filepath=str(tmp_path / 'settings.json')))
     monkeypatch.setattr(worker.client, 'submit', Mock(side_effect=PermissionError('unsafe socket directory')))
@@ -113,6 +120,7 @@ def test_rejected_submission_preserves_request_map_and_enrichment(qtbot, tmp_pat
 @pytest.mark.parametrize('ready', [False, True], ids=['disconnected', 'ready'])
 @pytest.mark.parametrize('invalid_kind', ['oversized', 'not-json'])
 @pytest.mark.parametrize('action', ['move', 'undo_move', 'recover'])
+@requires_mutations
 def test_encoding_rejection_is_atomic_before_admission(qtbot, tmp_path, ready, invalid_kind, action):
     from imagesorter.worker_protocol import MAX_MESSAGE_BYTES
 

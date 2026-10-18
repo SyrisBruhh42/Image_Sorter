@@ -105,7 +105,8 @@ a = Analysis(
     ],
     hookspath=[str(_root_dir / 'hooks')],
     hooksconfig={},
-    runtime_hooks=[],
+    runtime_hooks=[str(_root_dir / 'hooks' / 'rthook_portable_profile.py')]
+        if os.environ.get('IMAGESORTER_BUILD_PORTABLE') == '1' else [],
     excludes=[],
     win_no_prefer_redirects=False,
     win_private_assemblies=False,
@@ -152,5 +153,14 @@ coll = COLLECT(
     upx_exclude=[],
     name='ImageSorter',
 )
+if sys.platform == 'darwin':
+    app = BUNDLE(
+        coll,
+        name='ImageSorter.app',
+        icon=os.path.join(SRC_PATH, 'imagesorter', 'resources', 'imagesorter_512.png'),
+        bundle_identifier='com.syrisbruhh42.imagesorter',
+        version=_numeric_version,
+        info_plist={'NSHighResolutionCapable': True, 'CFBundleVersion': _numeric_version},
+    )
 if source_identity(_root_dir) != _build_identity:
     raise RuntimeError('Source changed during frozen application build')
