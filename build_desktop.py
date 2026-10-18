@@ -14,6 +14,11 @@ import urllib.request
 from pathlib import Path
 
 from scripts.appimage_format import AppImageFormatError, normalize_runtime_digest
+from scripts.portable_package import (
+    create_portable_package,
+    native_target,
+    runtime_layout,
+)
 
 DESKTOP_ENTRY = """[Desktop Entry]
 Version=1.0
@@ -292,16 +297,24 @@ def build_appimage(
 
 def build_executable(
     *, build_appimage_flag: bool = False, explicit_tool: Path | None = None,
-    explicit_runtime: Path | None = None,
+    explicit_runtime: Path | None = None, portable: bool = False,
 ) -> list[Path]:
     """Build the onedir executable and every explicitly requested artifact."""
     root_dir = Path(__file__).resolve().parent
+    if build_appimage_flag and not sys.platform.startswith('linux'):
+        raise BuildError('--appimage is supported only on Linux')
+    native_target()  # Refuse unknown platforms before starting the build.
     if not (root_dir / "src" / "imagesorter" / "main.py").is_file():
         raise BuildError(f"Could not locate src/imagesorter/main.py under {root_dir}")
     if not check_pyinstaller_installed():
         raise BuildError("PyInstaller is not installed in the active Python environment")
 
     ensure_icon_assets(root_dir)
+    environment = os.environ.copy()
+    if sys.platform == 'darwin':
+        # PyInstaller's local ad-hoc signature must succeed. This uses no
+        # Developer ID credentials and does not establish notarization.
+        environment['PYINSTALLER_STRICT_BUNDLE_CODESIGN_ERROR'] = '1'
     subprocess.run(
         [
             sys.executable,
@@ -312,19 +325,30 @@ def build_executable(
         ],
         check=True,
         cwd=root_dir,
+        env=environment,
     )
     dist_dir = root_dir / "dist"
-    executable = dist_dir / "ImageSorter" / (
-        "ImageSorter.exe" if sys.platform == "win32" else "ImageSorter"
-    )
+    runtime, relative_executable = runtime_layout(dist_dir, sys.platform)
+    executable = runtime / relative_executable
     if not executable.is_file():
         raise BuildError(f"PyInstaller did not produce {executable}")
-    generate_freedesktop_artifacts(dist_dir)
-    outputs = [executable, dist_dir / "imagesorter.desktop"]
+    outputs = [runtime if sys.platform == 'darwin' else executable]
+    if sys.platform.startswith('linux'):
+        generate_freedesktop_artifacts(dist_dir)
+        outputs.append(dist_dir / 'imagesorter.desktop')
     if build_appimage_flag:
         outputs.append(
             build_appimage(root_dir, dist_dir, explicit_tool=explicit_tool, explicit_runtime=explicit_runtime)
         )
+    if portable:
+        from build_support import source_identity
+        identity = source_identity(root_dir)
+        embedded = json.loads((root_dir / 'build/attestation/build_identity.json').read_text())
+        if embedded != identity:
+            raise BuildError('Source identity changed after the frozen build')
+        target, architecture = native_target()
+        package = dist_dir / f'ImageSorter-{target}-{architecture}-{identity["source_sha"][:12]}-portable'
+        outputs.extend(create_portable_package(runtime, package, target, architecture, identity))
     return outputs
 
 
@@ -335,14 +359,16 @@ def main(argv: list[str] | None = None) -> int:
         "--appimagetool", type=Path, help="explicit digest-verified appimagetool path"
     )
     parser.add_argument("--appimage-runtime", type=Path, help="explicit digest-verified type-2 runtime input")
+    parser.add_argument('--portable', action='store_true', help='also create a fresh portable folder and native archive; never overwrite an existing profile')
     args = parser.parse_args(argv)
     try:
         outputs = build_executable(
             build_appimage_flag=args.appimage,
             explicit_tool=args.appimagetool,
             explicit_runtime=args.appimage_runtime,
+            portable=args.portable,
         )
-    except (BuildError, OSError, subprocess.CalledProcessError) as exc:
+    except (BuildError, OSError, ValueError, subprocess.CalledProcessError) as exc:
         print(f"Build failed: {exc}", file=sys.stderr)
         return 1
     print("Build succeeded with verified outputs:")

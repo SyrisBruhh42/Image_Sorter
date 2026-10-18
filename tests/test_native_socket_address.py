@@ -15,8 +15,12 @@ from types import SimpleNamespace
 import pytest
 
 from imagesorter import worker_protocol as protocol
+from imagesorter.platform_capabilities import mutation_unavailable_reason
 
 pytestmark = pytest.mark.skipif(os.name != "posix", reason="Pathname mutation sockets are a POSIX capability")
+mutation_unavailable = mutation_unavailable_reason()
+requires_mutations = pytest.mark.skipif(
+    mutation_unavailable is not None, reason=mutation_unavailable or "Mutation support required")
 
 
 @pytest.fixture
@@ -140,6 +144,7 @@ def test_excessive_socket_base_is_refused_before_bind(socket_base, tmp_path, mon
     assert not list(long_base.rglob("*.sock"))
 
 
+@requires_mutations
 def test_real_mutation_service_roundtrip_uses_short_socket_for_long_profile(socket_base, tmp_path):
     profile = tmp_path / ("long-profile-" + "p" * 140) / "data" / "ImageSorter"
     profile.mkdir(parents=True)

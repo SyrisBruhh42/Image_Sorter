@@ -117,6 +117,27 @@ jobs:
             native_tests+=(tests/test_native_socket_address.py tests/test_native_socket_lifecycle.py)
           fi
           python -m pytest "${native_tests[@]}"
+      - name: Native portable archive structure and refusal checks
+        env:
+          QT_QPA_PLATFORM: offscreen
+          IMAGESORTER_PROFILE_ROOT: ${{ runner.temp }}/imagesorter-native-build-tests
+        run: python -m pytest -q tests/test_portable_distribution.py tests/test_portable_packaged_paths.py tests/test_portable_file_dialogs.py
+      - name: Build and launch the actual frozen portable package
+        env:
+          QT_QPA_PLATFORM: offscreen
+          IMAGESORTER_PROFILE_ROOT: ${{ runner.temp }}/imagesorter-native-frozen-tests
+        run: python -m pytest -q -m packaging tests/test_packaging.py --basetemp "${{ runner.temp }}/native-frozen-evidence"
+      - uses: actions/upload-artifact@v4
+        if: ${{ always() }}
+        with:
+          name: imagesorter-native-portable-${{ matrix.os }}-${{ github.sha }}
+          if-no-files-found: warn
+          path: |
+            ${{ runner.temp }}/native-frozen-evidence/**/qualification.json
+            ${{ runner.temp }}/native-frozen-evidence/**/*.readiness.json
+            ${{ runner.temp }}/native-frozen-evidence/**/readiness.json
+            ${{ runner.temp }}/native-frozen-evidence/**/*.log
+            ${{ runner.temp }}/native-frozen-evidence/**/build_identity.json
 
   linux-artifacts:
     name: Wheel, onedir, and AppImage
