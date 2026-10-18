@@ -109,9 +109,24 @@ profile layout; it does not migrate existing portable settings. The internal
 `IMAGESORTER_PORTABLE_ROOT` environment value carries this identity between
 processes and should not be set to a relative path or a symbolic link.
 
+For an AppImage, put `portable.flag` beside the external `.AppImage` file;
+the mounted application remains read-only. For an extracted AppDir, put the
+flag beside `AppRun` and launch through `AppRun`. A standard macOS `.app`
+layout looks beside the bundle, never inside `Contents`. The existing settings
+and data layout stays the same. Invalid package metadata or a non-regular flag
+is an error, rather than a reason to choose a host profile.
+
+Isolated profiles use an application-owned file picker so selecting or
+cancelling a file does not save Qt's native picker history to the host profile.
+The picker supports directory navigation, typed paths, hidden files and file
+type filters. Application-controlled temporary files and supported library
+cache locations are routed into the selected profile; Qt's shader disk cache
+is disabled. Ordinary launches retain their native file picker and paths.
+
 This path contract is not a claim of full USB isolation on every platform.
-Native packaged acceptance, AppImage/macOS bundle launch locations, native
-library caches and macOS socket placement require separate qualification.
+Native packaged acceptance, OS-managed caches and macOS socket placement
+require separate qualification. The build still produces an onedir package;
+recognizing a macOS bundle layout does not build or qualify a `.app` artifact.
 
 ## Keyboard controls
 

@@ -8,7 +8,6 @@ import signal
 from PyQt6.QtCore import QProcess, QProcessEnvironment, QTimer
 from PyQt6.QtWidgets import (
     QComboBox,
-    QFileDialog,
     QHBoxLayout,
     QLabel,
     QMessageBox,
@@ -21,6 +20,7 @@ from PyQt6.QtWidgets import (
 
 from .component_manager import DOWNLOAD_UNAVAILABLE, ComponentManager
 from .component_runtime import component_job_command
+from .file_dialogs import FileDialog as QFileDialog
 from .worker_protocol import worker_environment
 
 MAX_STATUS_BUFFER_BYTES = 65536

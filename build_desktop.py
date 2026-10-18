@@ -144,6 +144,10 @@ def prepare_appdir(dist_dir: Path, root_dir: Path) -> Path:
         """#!/usr/bin/env bash
 set -euo pipefail
 HERE="$(dirname "$(readlink -f "${0}")")"
+# The AppImage runtime supplies APPDIR. An extracted AppRun supplies the same
+# package identity; preserve supplied metadata so Python can reject mismatches.
+# Profile selection remains in bootstrap, including explicit/inherited priority.
+export APPDIR="${APPDIR-$HERE}"
 export PATH="$HERE/usr/bin:${PATH:-}"
 exec "$HERE/usr/bin/ImageSorter" "$@"
 """,

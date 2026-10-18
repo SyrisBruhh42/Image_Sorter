@@ -243,7 +243,7 @@ def test_text_inputs_clear_button_and_auto_trim(qtbot, tmp_path):
 def test_settings_hotkey_browse_button_accessibility(qtbot, tmp_path):
     from unittest.mock import patch
 
-    from PyQt6.QtWidgets import QFileDialog
+    from imagesorter.file_dialogs import FileDialog as QFileDialog
 
     settings_file = tmp_path / "settings.json"
     sm = SettingsManager(filepath=str(settings_file))
