@@ -86,11 +86,34 @@ def _test_directory_writable(d: Path) -> bool:
             pass
 
 
+def _isolated_profile() -> tuple[Path, str] | None:
+    """Return the selected storage boundary without changing its layout."""
+    if explicit_profile := os.environ.get("IMAGESORTER_PROFILE_ROOT"):
+        return Path(explicit_profile), "Explicit"
+    if is_portable_mode():
+        return get_app_dir(), "Portable"
+    return None
+
+
+def _validate_profile_path(target: Path, profile: tuple[Path, str] | None) -> None:
+    if profile is None:
+        return
+    root, label = profile
+    try:
+        contained = target.resolve().is_relative_to(root.resolve())
+    except RuntimeError as error:
+        # Older supported Python versions report symlink loops as RuntimeError.
+        raise OSError(f"{label} profile path cannot be resolved: {target}") from error
+    if not contained:
+        raise OSError(f"{label} profile path escapes root: {target}")
+
+
 def _ensure_dir_or_fallback(target_dir: Path, category: str) -> Path:
     """
     Ensures that target_dir exists and is writable. If an OSError occurs or directory
-    is unwritable, falls back to a user-isolated temporary directory:
+    is unwritable, ordinary native mode falls back to a user-isolated directory:
     <tempdir>/imagesorter-<uid>/<category>. Emits a warning if preferred directory fails.
+    Explicit and portable profiles refuse fallback and paths outside their root.
 
     Args:
         target_dir (Path): The preferred directory path.
@@ -99,17 +122,16 @@ def _ensure_dir_or_fallback(target_dir: Path, category: str) -> Path:
     Returns:
         Path: Created and verified directory path or fallback path.
     """
-    explicit_profile = os.environ.get("IMAGESORTER_PROFILE_ROOT")
-    if explicit_profile and not target_dir.resolve().is_relative_to(Path(explicit_profile).resolve()):
-        raise OSError(f"Profile path escapes explicit root: {target_dir}")
+    profile = _isolated_profile()
+    _validate_profile_path(target_dir, profile)
     try:
         target_dir.mkdir(parents=True, exist_ok=True)
         if _test_directory_writable(target_dir):
             return target_dir
         raise OSError(f"Directory {target_dir} is not writable.")
     except OSError as e:
-        if explicit_profile:
-            raise OSError(f"Explicit profile is unavailable: {target_dir}") from e
+        if profile is not None:
+            raise OSError(f"{profile[1]} profile is unavailable: {target_dir}") from e
         warnings.warn(
             f"Failed to verify or write to preferred directory {target_dir}: {e}. "
             f"Falling back to temporary directory for category '{category}'.",
@@ -261,7 +283,10 @@ def get_settings_path() -> Path:
         Path: Path to settings.json.
     """
     if is_portable_mode():
-        return get_app_dir() / "settings.json"
+        app_dir = _ensure_dir_or_fallback(get_app_dir(), "config")
+        settings_path = app_dir / "settings.json"
+        _validate_profile_path(settings_path, (app_dir, "Portable"))
+        return settings_path
     return get_config_dir() / "settings.json"
 
 
