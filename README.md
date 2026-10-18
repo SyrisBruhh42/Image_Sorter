@@ -98,6 +98,21 @@ An explicit profile is processed before application logging or settings imports;
 its configuration, data, cache, state, components, journal and mutation runtime
 must remain inside that profile. Invalid isolation fails instead of falling back.
 
+For a writable source or onedir folder, place `portable.flag` beside the launcher
+or executable. Settings remain in that folder's `settings.json`; configuration,
+data, cache and logs use its `config`, `data`, `cache` and `logs` subdirectories.
+Workers and a pinned mutation-service runtime inherit the original folder, even
+when their code runs elsewhere. Missing, invalid or escaping portable paths fail
+instead of creating a native profile. `--profile-root` (or
+`IMAGESORTER_PROFILE_ROOT`) takes precedence and keeps the separate explicit
+profile layout; it does not migrate existing portable settings. The internal
+`IMAGESORTER_PORTABLE_ROOT` environment value carries this identity between
+processes and should not be set to a relative path or a symbolic link.
+
+This path contract is not a claim of full USB isolation on every platform.
+Native packaged acceptance, AppImage/macOS bundle launch locations, native
+library caches and macOS socket placement require separate qualification.
+
 ## Keyboard controls
 
 | Action | Default key |

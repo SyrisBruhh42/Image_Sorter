@@ -5,6 +5,7 @@ import sys
 import tempfile
 import uuid
 import warnings
+from collections.abc import MutableMapping
 from pathlib import Path
 
 
@@ -39,19 +40,39 @@ def get_resource_dir() -> Path:
     return Path(__file__).resolve().parent / "resources"
 
 
-def is_portable_mode() -> bool:
-    """
-    Checks if the application is running in portable mode.
+def get_portable_root() -> Path | None:
+    """Resolve the portable storage identity, independent of a worker's code path.
 
-    Portable mode is activated ONLY if 'portable.flag' exists
-    adjacent to the executable or main script root directory.
-
-    Returns:
-        bool: True if portable mode is active, False otherwise.
+    The launcher discovers portable.flag; descendants inherit its canonical root.
+    An invalid inherited identity must never select a different/native profile.
+    An explicit profile takes precedence and retains its separate path layout.
     """
     if os.environ.get("IMAGESORTER_PROFILE_ROOT"):
-        return False
-    return (get_app_dir() / "portable.flag").exists()
+        return None
+    if "IMAGESORTER_PORTABLE_ROOT" in os.environ:
+        root = Path(os.environ["IMAGESORTER_PORTABLE_ROOT"])
+        try:
+            if not root.is_absolute() or root.resolve(strict=True) != root or not root.is_dir():
+                raise OSError("Portable profile root must be an existing canonical directory")
+        except (OSError, RuntimeError) as error:
+            raise OSError(f"Portable profile identity is unavailable: {root}") from error
+        return root
+    root = get_app_dir()
+    return root if (root / "portable.flag").exists() else None
+
+
+def is_portable_mode() -> bool:
+    """Whether portable.flag or an inherited portable storage identity is active."""
+    return get_portable_root() is not None
+
+
+def inherit_profile_environment(environment: MutableMapping[str, str]) -> None:
+    """Pin the current portable root in a copy of this process's environment."""
+    root = get_portable_root()
+    if root is not None:
+        environment["IMAGESORTER_PORTABLE_ROOT"] = str(root)
+    else:
+        environment.pop("IMAGESORTER_PORTABLE_ROOT", None)
 
 
 def _get_valid_env_path(var_name: str) -> Path | None:
@@ -90,8 +111,8 @@ def _isolated_profile() -> tuple[Path, str] | None:
     """Return the selected storage boundary without changing its layout."""
     if explicit_profile := os.environ.get("IMAGESORTER_PROFILE_ROOT"):
         return Path(explicit_profile), "Explicit"
-    if is_portable_mode():
-        return get_app_dir(), "Portable"
+    if root := get_portable_root():
+        return root, "Portable"
     return None
 
 
@@ -160,9 +181,8 @@ def get_config_dir() -> Path:
     """
     if profile := os.environ.get("IMAGESORTER_PROFILE_ROOT"):
         return _ensure_dir_or_fallback(Path(profile) / "config" / "ImageSorter", "config")
-    app_dir = get_app_dir()
-    if is_portable_mode():
-        config_dir = app_dir / "config"
+    if portable_root := get_portable_root():
+        config_dir = portable_root / "config"
     elif sys.platform.startswith("win"):
         appdata = os.environ.get("APPDATA")
         if appdata and os.path.isabs(appdata):
@@ -191,9 +211,8 @@ def get_data_dir() -> Path:
     """
     if profile := os.environ.get("IMAGESORTER_PROFILE_ROOT"):
         return _ensure_dir_or_fallback(Path(profile) / "data" / "ImageSorter", "data")
-    app_dir = get_app_dir()
-    if is_portable_mode():
-        data_dir = app_dir / "data"
+    if portable_root := get_portable_root():
+        data_dir = portable_root / "data"
     elif sys.platform.startswith("win"):
         local_appdata = os.environ.get("LOCALAPPDATA")
         if local_appdata and os.path.isabs(local_appdata):
@@ -222,9 +241,8 @@ def get_cache_dir() -> Path:
     """
     if profile := os.environ.get("IMAGESORTER_PROFILE_ROOT"):
         return _ensure_dir_or_fallback(Path(profile) / "cache" / "ImageSorter", "cache")
-    app_dir = get_app_dir()
-    if is_portable_mode():
-        cache_dir = app_dir / "cache"
+    if portable_root := get_portable_root():
+        cache_dir = portable_root / "cache"
     elif sys.platform.startswith("win"):
         local_appdata = os.environ.get("LOCALAPPDATA")
         if local_appdata and os.path.isabs(local_appdata):
@@ -253,9 +271,8 @@ def get_logs_dir() -> Path:
     """
     if profile := os.environ.get("IMAGESORTER_PROFILE_ROOT"):
         return _ensure_dir_or_fallback(Path(profile) / "state" / "ImageSorter" / "logs", "logs")
-    app_dir = get_app_dir()
-    if is_portable_mode():
-        logs_dir = app_dir / "logs"
+    if portable_root := get_portable_root():
+        logs_dir = portable_root / "logs"
     elif sys.platform.startswith("win"):
         local_appdata = os.environ.get("LOCALAPPDATA")
         if local_appdata and os.path.isabs(local_appdata):
@@ -282,8 +299,8 @@ def get_settings_path() -> Path:
     Returns:
         Path: Path to settings.json.
     """
-    if is_portable_mode():
-        app_dir = _ensure_dir_or_fallback(get_app_dir(), "config")
+    if portable_root := get_portable_root():
+        app_dir = _ensure_dir_or_fallback(portable_root, "config")
         settings_path = app_dir / "settings.json"
         _validate_profile_path(settings_path, (app_dir, "Portable"))
         return settings_path

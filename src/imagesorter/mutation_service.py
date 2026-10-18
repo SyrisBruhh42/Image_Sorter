@@ -63,7 +63,7 @@ def runtime_inventory(source: Path, executable_name: str, internal: Path) -> dic
 def _pin_runtime() -> None:
     if not getattr(sys, "frozen", False):
         return
-    from .paths import get_data_dir
+    from .paths import get_data_dir, inherit_profile_environment
     from .profile_lock import ProfileLock
     source = Path(sys.executable).resolve().parent
     root = get_data_dir() / "runtime"
@@ -99,6 +99,7 @@ def _pin_runtime() -> None:
                 shutil.rmtree(staging)
     executable = target / Path(sys.executable).name
     environment = os.environ.copy()
+    inherit_profile_environment(environment)
     environment["PYINSTALLER_RESET_ENVIRONMENT"] = "1"
     # The persistent runtime must bootstrap its own bundled library directory.
     environment.pop("LD_LIBRARY_PATH", None)

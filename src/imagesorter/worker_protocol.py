@@ -9,6 +9,8 @@ import stat
 import sys
 from pathlib import Path
 
+from .paths import inherit_profile_environment
+
 PROTOCOL_VERSION = 1
 MAX_MESSAGE_BYTES = 1024 * 1024
 
@@ -34,8 +36,14 @@ def worker_command(role: str) -> list[str]:
         return [sys.executable, f"--{role}"]
     return [sys.executable, "-m", "imagesorter.bootstrap", f"--{role}"]
 
-def worker_environment() -> dict[str, str]:
-    env = os.environ.copy()
+def worker_environment(base_environment: dict[str, str] | None = None) -> dict[str, str]:
+    """Keep launch identity and the known source tree after module/cwd changes.
+
+    Internal component workers can supply an already-cleaned helper environment;
+    only this application's source path is restored, never ambient PYTHONPATH.
+    """
+    env = (os.environ if base_environment is None else base_environment).copy()
+    inherit_profile_environment(env)
     if not getattr(sys, "frozen", False):
         source = Path(__file__).resolve().parent.parent
         if (source.parent / "pyproject.toml").is_file():

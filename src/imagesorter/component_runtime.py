@@ -20,7 +20,9 @@ from .component_manager import (
     clean_helper_environment,
 )
 from .model_assets import LABELS_SHA256, MODEL_SHA256
+from .paths import inherit_profile_environment
 from .reader_sandbox import ReaderIsolationError, validate_reader_isolation
+from .worker_protocol import worker_command, worker_environment
 
 MAX_HEADER = 65536
 MAX_PAYLOAD = 500 * 1024 * 1024
@@ -96,9 +98,7 @@ def _validate_batch(metadata: dict, payload: bytes, requested: list[int]) -> Non
 
 
 def component_job_command(arguments: list[str]) -> list[str]:
-    if getattr(sys, "frozen", False):
-        return [sys.executable, "--component-job", *arguments]
-    return [sys.executable, "-m", "imagesorter.component_jobs", *arguments]
+    return [*worker_command("component-job"), *arguments]
 
 
 def _policy_request(descriptor: dict) -> dict:
@@ -135,16 +135,21 @@ def _snapshot(source: Path, directory: Path) -> Path:
     return target
 
 
-def _run(command: list[str], request: dict, *, cwd: Path, timeout: float) -> tuple[dict, bytes]:
+def _run(command: list[str], request: dict, *, cwd: Path, timeout: float,
+         internal_worker: bool = False) -> tuple[dict, bytes]:
     request_id = request.setdefault("request_id", uuid.uuid4().hex)
     request.setdefault("protocol_version", 1)
     encoded = json.dumps(request).encode() + b"\n"
     if len(encoded) > MAX_HEADER:
         raise ComponentError("Helper request exceeds header limit")
     payload_limit = MAX_BATCH_BYTES if request.get("action") == "decode_frames" else MAX_PAYLOAD
+    environment = clean_helper_environment()
+    inherit_profile_environment(environment)
+    if internal_worker:
+        environment = worker_environment(environment)
     with tempfile.TemporaryFile(dir=cwd) as output, tempfile.TemporaryFile(dir=cwd) as error:
         process = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=output, stderr=error,
-                                   cwd=cwd, env=clean_helper_environment())
+                                   cwd=cwd, env=environment)
         try:
             deadline = time.monotonic() + timeout
             first = True
@@ -315,7 +320,7 @@ def infer_component(filepath: str, model_dir: str, *, hardware: bool = True,
         if sys.platform.startswith("linux"):
             cpu_request.update(reader_policy_version=1, min_landlock_abi=3)
         result, _ = _run(component_job_command(["helper", "--component-id", "core.cpu"]),
-                         cpu_request, cwd=work, timeout=90)
+                         cpu_request, cwd=work, timeout=90, internal_worker=True)
         result["component_version"] = "base"
         return _inference_receipt(result, resolved_model, manager, fallback, model_version=model_version)
 

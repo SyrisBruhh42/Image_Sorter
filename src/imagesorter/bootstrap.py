@@ -1,4 +1,4 @@
-"""Resolve the explicit profile and worker role before application imports."""
+"""Resolve profile identity and worker role before application imports."""
 from __future__ import annotations
 
 import os
@@ -33,6 +33,8 @@ def entry(argv: list[str] | None = None) -> int:
         del args[index:index + 2]
     elif os.environ.get("IMAGESORTER_PROFILE_ROOT"):
         configure_profile(os.environ["IMAGESORTER_PROFILE_ROOT"])
+    from .paths import inherit_profile_environment
+    inherit_profile_environment(os.environ)
     for flag, module in (("--reader-job", "reader_job"), ("--mutation-service", "mutation_service"), ("--component-job", "component_jobs"), ("--native-fixture-job", "native_scenarios")):
         if flag in args[1:]:
             import importlib
