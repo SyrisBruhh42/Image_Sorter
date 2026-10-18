@@ -2,9 +2,9 @@
 from __future__ import annotations
 
 import os
-from contextlib import ExitStack
 import tempfile
 import unittest
+from contextlib import ExitStack
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
