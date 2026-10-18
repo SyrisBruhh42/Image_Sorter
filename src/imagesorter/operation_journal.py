@@ -521,6 +521,38 @@ class OperationJournal:
 
     @staticmethod
     def _pid_is_running(pid: int | None) -> bool:
+        if os.name == "nt":
+            # Windows os.kill(pid, 0) terminates the process. Inspect only its
+            # signaled state; do not request termination or adjust privileges.
+            if pid is None or pid == 0:
+                return False
+            if type(pid) is not int or not 0 < pid <= 0xFFFFFFFF:
+                return True  # Unknown identity must never wrap to another PID.
+            try:
+                import ctypes
+                from ctypes import wintypes
+
+                kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+                open_process = kernel.OpenProcess
+                open_process.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
+                open_process.restype = wintypes.HANDLE
+                wait = kernel.WaitForSingleObject
+                wait.argtypes = (wintypes.HANDLE, wintypes.DWORD)
+                wait.restype = wintypes.DWORD
+                close = kernel.CloseHandle
+                close.argtypes = (wintypes.HANDLE,)
+                close.restype = wintypes.BOOL
+                handle = open_process(0x00100000, False, pid)  # SYNCHRONIZE only.
+                if not handle:
+                    return True  # Includes inaccessible or no-longer-openable PIDs.
+                try:
+                    result = wait(handle, 0)  # Zero timeout never blocks the GUI.
+                finally:
+                    closed = close(handle)
+                return result != 0 or not closed  # Only WAIT_OBJECT_0 proves exit.
+            except (AttributeError, OSError, OverflowError, ValueError):
+                # Permission/query/cleanup failure is not proof an owner died.
+                return True
         if not pid or pid <= 0:
             return False
         try:
