@@ -459,7 +459,6 @@ def test_exif_preserves_more_than_thirty_long_existing_keywords(tmp_path):
 
 
 def test_failed_metadata_rollback_preserves_original_backup(tmp_path, monkeypatch):
-    from imagesorter import metadata_io
     image = tmp_path / "photo.jpg"
     Image.new("RGB", (10, 10), "red").save(image)
     original = image.read_bytes()
@@ -468,13 +467,11 @@ def test_failed_metadata_rollback_preserves_original_backup(tmp_path, monkeypatc
     def failed_restore(source, destination):
         if "exif-backup" in str(source):
             raise OSError("Backup restore denied")
+        if str(source).endswith("sidecar-stage"):
+            raise OSError("Sidecar publication failed after image commit")
         return replace(source, destination)
 
-    def failed_sidecar(*_args):
-        raise OSError("Sidecar write failed")
-
     monkeypatch.setattr(os, "replace", failed_restore)
-    monkeypatch.setattr(metadata_io, "_atomic_write_text", failed_sidecar)
     with pytest.raises(MetadataRecoveryError) as error:
         write_metadata(str(image), ["tag"], True, True)
     assert error.value.artifacts
@@ -824,3 +821,257 @@ def test_explicit_recovery_restores_crashed_move_and_preserves_receipts(environm
     assert not list(target.glob("*.jpg*"))
     assert journal.get_entry(task["operation_id"])["resolved_by"] == recovery["operation_id"]
     assert engine.execute(recovery) == result
+
+
+@pytest.mark.parametrize("failure", ["all_links", "source_links", "destination_links", "destination_sync",
+                                     "profile_sync", "missing_xattr", "unsupported_xattr", "stage_attributes"])
+def test_preflight_refuses_before_any_original_claim(environment, monkeypatch, failure):
+    image, target, journal, engine = environment
+    sidecar = Path(str(image) + ".txt")
+    sidecar.write_bytes(b"original companion")
+    os.setxattr(image, "user.preflight", b"valuable accessible metadata")
+    before = {str(path): safe.fingerprint(str(path)) for path in (image, sidecar)}
+    claims = []
+    link, sync, attributes = os.link, safe.sync_directory, safe.apply_attributes
+    with monkeypatch.context() as patch:
+        patch.setattr(safe, "claim_source", lambda *args: claims.append(args))
+        if failure.endswith("links"):
+            def fail_link(source, destination, **options):
+                parent = Path(destination).parent
+                if failure == "all_links" or parent == (image.parent if failure == "source_links" else target):
+                    raise OSError(errno.ENOTSUP, "Fixture missing hardlink prerequisite")
+                return link(source, destination, **options)
+            patch.setattr(os, "link", fail_link)
+        elif failure.endswith("sync"):
+            unavailable = target if failure == "destination_sync" else Path(journal.db_path).parent
+            def fail_sync(path):
+                if Path(path) == unavailable:
+                    raise OSError(errno.EINVAL, "Fixture missing directory sync prerequisite")
+                return sync(path)
+            patch.setattr(safe, "sync_directory", fail_sync)
+        elif failure == "missing_xattr":
+            patch.delattr(os, "listxattr")
+        elif failure == "unsupported_xattr":
+            patch.setattr(os, "listxattr", lambda *_: (_ for _ in ()).throw(OSError(errno.ENOTSUP, "No observation")))
+        else:
+            def fail_attributes(path, expected):
+                if Path(path).name == image.name:
+                    raise OSError(errno.ENOTSUP, "Fixture source-specific attribute refusal")
+                return attributes(path, expected)
+            patch.setattr(safe, "apply_attributes", fail_attributes)
+        result = engine.execute(request("move", image, target))
+    assert result["state"] == OperationState.FAILED, result
+    assert not claims and not (target / image.name).exists()
+    assert before == {str(path): safe.fingerprint(str(path)) for path in (image, sidecar)}
+    assert not list(image.parent.glob(".imagesorter-*-recovery-*"))
+
+
+def test_preflight_copy_does_not_require_source_parent_mutation(environment, monkeypatch):
+    image, target, _journal, engine = environment
+    probe = safe.probe_directory
+    observed = []
+    def checked(parent, **options):
+        observed.append(parent)
+        assert Path(parent) != image.parent
+        return probe(parent, **options)
+    monkeypatch.setattr(safe, "probe_directory", checked)
+    copied = engine.execute(request("copy", image, target))
+    assert copied["state"] == OperationState.COMPLETED
+    assert str(target) in observed and image.exists()
+
+
+@pytest.mark.parametrize("action", ["undo_move", "undo_copy", "system_trash", "metadata"])
+def test_preflight_covers_undo_trash_and_metadata_before_claim(environment, monkeypatch, action):
+    image, target, _journal, engine = environment
+    if action != "system_trash":
+        parent = engine.execute(request("copy" if action != "undo_move" else "move", image, target))
+        assert parent["state"] == OperationState.COMPLETED
+        current = Path(parent["destination_path"])
+        task = (request("metadata", current, tags=["tag"], parent_operation_id=parent["operation_id"],
+                        expected_sha256=parent["undo_token"]["provenance"]["sha256"], write_exif=False, write_sidecar=True)
+                if action == "metadata" else request(action, current, undo_token=parent["undo_token"]))
+    else:
+        current = image
+        task = request("trash", image)
+    original = safe.fingerprint(str(current))
+    calls = []
+    def refuse(*_args, **_kwargs):
+        raise safe.PrerequisiteError("Unsupported fixture parent")
+    monkeypatch.setattr(safe, "probe_directory", refuse)
+    monkeypatch.setattr(safe, "claim_source", lambda *_: calls.append("claim"))
+    engine.trash_backend = lambda *_: calls.append("trash")
+    result = engine.execute(task)
+    assert result["state"] == OperationState.FAILED and not calls
+    assert safe.fingerprint(str(current)) == original
+
+
+def test_preflight_recovery_refusal_cannot_enter_automatic_rollback(environment, monkeypatch):
+    image, target, journal, engine = environment
+    claim = safe.claim_source
+    def crash(source, destination, expected):
+        claim(source, destination, expected)
+        raise SimulatedCrash()
+    task = request("move", image, target)
+    with monkeypatch.context() as patch:
+        patch.setattr(safe, "claim_source", crash)
+        with pytest.raises(SimulatedCrash):engine.execute(task)
+    journal.reconcile_interrupted_operations(force=True)
+    entry = journal.get_entry(task["operation_id"])
+    before = {str(p): p.read_bytes() for d in (image.parent, target) for p in d.rglob("*") if p.is_file()}
+    def refuse(*_args, **_kwargs):raise safe.PrerequisiteError("Unsupported fixture recovery parent")
+    monkeypatch.setattr(safe, "probe_directory", refuse)
+    result = engine.execute(request("recover", image, target_operation_id=task["operation_id"]))
+    assert result["state"] == OperationState.FAILED
+    assert before == {str(p): p.read_bytes() for d in (image.parent, target) for p in d.rglob("*") if p.is_file()}
+    assert journal.get_entry(task["operation_id"]) == entry and not image.exists()
+
+
+def test_preflight_retention_refusal_keeps_all_claims(environment, monkeypatch):
+    image, target, journal, engine = environment
+    moved = engine.execute(request("move", image, target))
+    entry = journal.get_entry(moved["operation_id"])
+    paths = [Path(item["claim"]) for item in entry["manifest"]["files"]]
+    before = [safe.fingerprint(str(p)) for p in paths]
+    def refuse(*_args, **_kwargs):raise safe.PrerequisiteError("Unsupported cleanup parent")
+    monkeypatch.setattr(safe, "probe_directory", refuse)
+    with pytest.raises(safe.PrerequisiteError):engine.cleanup_retained(moved["operation_id"], now=time.time() + 31 * 86400)
+    assert before == [safe.fingerprint(str(p)) for p in paths]
+
+
+def test_preflight_private_directory_permission_readback(tmp_path, monkeypatch):
+    real, chmod = safe.tempfile.mkdtemp, os.chmod
+    def unsafe(*args, **kwargs):
+        path = real(*args, **kwargs)
+        chmod(path, 0o777)
+        return path
+    monkeypatch.setattr(safe.tempfile, "mkdtemp", unsafe)
+    monkeypatch.setattr(os, "chmod", lambda *_args, **_kwargs: None)
+    with pytest.raises(safe.PrerequisiteError, match="permissions"):
+        safe.private_directory(str(tmp_path), ".owned-test-")
+    retained = list(tmp_path.glob(".owned-test-*"))
+    assert len(retained) == 1 and stat.S_IMODE(retained[0].stat().st_mode) == 0o777
+
+
+def test_preflight_probe_cleanup_retains_unknown_entry(tmp_path, monkeypatch):
+    rmdir = os.rmdir
+    foreign = []
+    def refuse(path, *args, **kwargs):
+        if Path(path).name.startswith(".imagesorter-prerequisite-"):
+            extra = Path(path) / "foreign-note"
+            extra.write_bytes(b"do not remove")
+            foreign.append(extra)
+        return rmdir(path, *args, **kwargs)
+    monkeypatch.setattr(os, "rmdir", refuse)
+    with pytest.raises(safe.PrerequisiteError, match="retained probe"):
+        safe.probe_directory(str(tmp_path))
+    assert len(foreign) == 1 and foreign[0].read_bytes() == b"do not remove"
+
+
+def test_preflight_parent_identity_rechecked_before_claim(environment, monkeypatch):
+    image, target, journal, engine = environment
+    prepare = engine._prepare_attributes
+    def changed(manifest):
+        prepare(manifest)
+        # Simulate a changed parent identity after preparation, before claims.
+        manifest["prerequisites"][0]["ino"] += 1
+    monkeypatch.setattr(engine, "_prepare_attributes", changed)
+    claims = []
+    monkeypatch.setattr(safe, "claim_source", lambda *_: claims.append(True))
+    result = engine.execute(request("move", image, target))
+    assert result["state"] == OperationState.FAILED and not claims and image.exists()
+    assert not any(item.get("claimed") for item in journal.get_entry(result["operation_id"])["manifest"]["files"])
+
+
+@pytest.mark.parametrize("failure", ["parent", "sidecar_attributes"])
+def test_preflight_direct_metadata_refuses_without_replacing_originals(tmp_path, monkeypatch, failure):
+    image = tmp_path / "photo.jpg"
+    Image.new("RGB", (10, 10), "red").save(image)
+    sidecar = Path(str(image) + ".txt");sidecar.write_bytes(b"human notes")
+    before = {str(p): safe.fingerprint(str(p)) for p in (image, sidecar)}
+    if failure == "parent":
+        def refuse(*_args, **_kwargs):raise safe.PrerequisiteError("Unsupported metadata parent")
+        monkeypatch.setattr(safe, "probe_directory", refuse)
+    else:
+        attributes = safe.apply_attributes
+        def refuse(path, expected):
+            if Path(path).name == "sidecar-stage":raise OSError("Attribute roundtrip unavailable")
+            return attributes(path, expected)
+        monkeypatch.setattr(safe, "apply_attributes", refuse)
+    with pytest.raises(OSError):write_metadata(str(image), ["new"], True, True)
+    assert before == {str(p): safe.fingerprint(str(p)) for p in (image, sidecar)}
+
+
+def test_preflight_direct_metadata_preserves_observed_attributes(tmp_path):
+    image = tmp_path / "photo.jpg";Image.new("RGB", (10, 10), "red").save(image)
+    sidecar = Path(str(image) + ".txt");sidecar.write_bytes(b"human notes")
+    for p in (image, sidecar):
+        p.chmod(0o640);os.utime(p, ns=(1234567890123456789, 1234567890123456789))
+        os.setxattr(p, "user.fixture", b"metadata retained")
+    before = {str(p): safe.fingerprint(str(p)) for p in (image, sidecar)}
+    write_metadata(str(image), ["new"], True, True)
+    for p in (image, sidecar):
+        after = safe.fingerprint(str(p))
+        assert {k: after[k] for k in ("mode", "mtime_ns", "xattrs")} == {k: before[str(p)][k] for k in ("mode", "mtime_ns", "xattrs")}
+    assert sidecar.read_text() == "human notes, new"
+
+
+def test_preflight_journal_private_mode_readback(tmp_path, monkeypatch):
+    path = tmp_path / "journal.db";path.write_bytes(b"");path.chmod(0o644)
+    monkeypatch.setattr(os, "fchmod", lambda *_: None)
+    with pytest.raises(safe.PrerequisiteError, match="journal private"):
+        OperationJournal(str(path))
+    assert path.read_bytes() == b"" and stat.S_IMODE(path.stat().st_mode) == 0o644
+
+
+@pytest.mark.parametrize("mode,synchronous", [("delete", 2), ("wal", 1), (None, 2)])
+def test_preflight_journal_checks_actual_durability_mode(tmp_path, monkeypatch, mode, synchronous):
+    from imagesorter import operation_journal
+    calls = []
+    class Connection:
+        def execute(self, sql):
+            calls.append(sql)
+            self.value = (mode,) if "journal_mode" in sql else (synchronous,)
+            return self
+        def fetchone(self):return self.value
+        def close(self):calls.append("closed")
+    monkeypatch.setattr(operation_journal.sqlite3, "connect", lambda *_args, **_kwargs: Connection())
+    journal = OperationJournal.__new__(OperationJournal);journal.db_path = str(tmp_path / "journal.db")
+    with pytest.raises(safe.PrerequisiteError):journal._get_connection()
+    assert calls[-1] == "closed"
+    assert not (tmp_path / "journal.db").exists()
+
+
+@pytest.mark.parametrize("failure", ["create", "file_sync", "rename", "occupied_link", "cleanup"])
+def test_preflight_probe_primitive_failure_retains_only_disposable_bytes(tmp_path, monkeypatch, failure):
+    source = tmp_path / "user-image";source.write_bytes(b"original private user bytes")
+    before = safe.fingerprint(str(source))
+    open_file, fsync, rename, link, unlink = os.open, os.fsync, os.rename, os.link, os.unlink
+    if failure == "create":
+        def blocked(path, *args, **kwargs):
+            if Path(path).name == "probe":raise PermissionError("Fixture create unavailable")
+            return open_file(path, *args, **kwargs)
+        monkeypatch.setattr(os, "open", blocked)
+    elif failure == "file_sync":
+        def blocked(fd):
+            if stat.S_ISREG(os.fstat(fd).st_mode):raise OSError(errno.EINVAL, "Fixture file sync unavailable")
+            return fsync(fd)
+        monkeypatch.setattr(os, "fsync", blocked)
+    elif failure == "rename":
+        def blocked(a, b, *args, **kwargs):
+            if Path(a).name == "probe":raise OSError(errno.EXDEV, "Fixture rename unavailable")
+            return rename(a, b, *args, **kwargs)
+        monkeypatch.setattr(os, "rename", blocked)
+    elif failure == "occupied_link":
+        def blocked(a, b, *args, **kwargs):
+            if os.path.lexists(b):return None  # A broken no-replace implementation.
+            return link(a, b, *args, **kwargs)
+        monkeypatch.setattr(os, "link", blocked)
+    else:
+        def blocked(path, *args, **kwargs):
+            if Path(path).name == "publication-cleanup":raise PermissionError("Fixture cleanup unavailable")
+            return unlink(path, *args, **kwargs)
+        monkeypatch.setattr(os, "unlink", blocked)
+    with pytest.raises(safe.PrerequisiteError):safe.probe_directory(str(tmp_path))
+    assert safe.fingerprint(str(source)) == before
+    remaining = [p for p in tmp_path.rglob("*") if p.is_file() and p != source]
+    assert all(p.read_bytes() in (b"", b"Image Sorter disposable filesystem prerequisite\n") for p in remaining)

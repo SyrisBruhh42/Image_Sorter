@@ -24,6 +24,10 @@ class OperationCancelled(Exception):
     pass
 
 
+class PrerequisiteError(OSError):
+    """A required primitive was not established before original-file claims."""
+
+
 def sync_directory(path: str) -> None:
     """Fail closed if directory durability cannot be established."""
     fd = os.open(path, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0))
@@ -38,22 +42,20 @@ def _stable(st: os.stat_result) -> tuple[int, ...]:
 
 
 def _read_xattrs(fd: int) -> dict[str, str]:
-    if not hasattr(os, "listxattr"):
-        return {}
+    if not all(callable(getattr(os, name, None)) for name in ("listxattr", "getxattr")):
+        raise PrerequisiteError("Extended-attribute observation is unavailable; metadata is unknown")
     try:
         return {name: base64.b64encode(os.getxattr(fd, name)).decode("ascii")
                 for name in sorted(os.listxattr(fd))}
     except OSError as exc:
         if exc.errno in (errno.ENOTSUP, errno.EOPNOTSUPP):
-            return {}
+            raise PrerequisiteError("Extended-attribute observation is unsupported; metadata is unknown") from exc
         raise
 
 
 def _set_xattrs(fd: int, expected: dict[str, str]) -> None:
-    if not hasattr(os, "setxattr"):
-        if expected:
-            raise OSError("Destination cannot preserve source extended attributes/ACLs")
-        return
+    if not all(callable(getattr(os, name, None)) for name in ("setxattr", "removexattr")):
+        raise PrerequisiteError("Extended-attribute preservation is unavailable")
     try:
         for name in set(_read_xattrs(fd)) - set(expected):
             os.removexattr(fd, name)
@@ -133,9 +135,87 @@ def private_directory(parent: str, prefix: str) -> str:
     if not os.path.isdir(parent) or os.path.islink(parent):
         raise ValueError(f"Directory missing or symbolic: {parent}")
     path = tempfile.mkdtemp(prefix=prefix, dir=parent)
-    os.chmod(path, 0o700)
-    sync_directory(parent)
+    try:
+        os.chmod(path, 0o700)
+        st = os.stat(path, follow_symlinks=False)
+        if not stat.S_ISDIR(st.st_mode) or stat.S_IMODE(st.st_mode) != 0o700 or st.st_uid != os.getuid():
+            raise PrerequisiteError("Private directory permissions or ownership did not round-trip")
+        sync_directory(path)
+        sync_directory(parent)
+    except Exception as exc:
+        # No user data has been put here. Retain an uncertain created name;
+        # cleanup cannot be inferred from a successful mkdir/chmod call.
+        raise PrerequisiteError(f"Private directory prerequisite failed; retained {path}: {exc}") from exc
     return path
+
+
+def probe_directory(parent: str, *, require_links: bool = True) -> dict[str, Any]:
+    """Test this operation's actual parent using only owned, constant bytes.
+
+    A successful probe observes kernel calls, not power-loss durability or
+    future availability. It does not qualify per-inode flags or other owners.
+    The caller still verifies original provenance and rechecks at commit.
+    """
+    parent = os.path.abspath(parent)
+    before = os.stat(parent, follow_symlinks=False)
+    if not stat.S_ISDIR(before.st_mode):
+        raise PrerequisiteError("Mutation parent is not a real directory")
+    directory = private_directory(parent, ".imagesorter-prerequisite-")
+    identity = os.stat(directory, follow_symlinks=False)
+    first = os.path.join(directory, "probe")
+    moved = os.path.join(directory, "renamed")
+    public = directory + "-publication"
+    quarantine = os.path.join(directory, "publication-cleanup")
+    expected: dict[str, Any] | None = None
+    try:
+        fd = os.open(first, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600)
+        try:
+            observed = os.fstat(fd)
+            if not stat.S_ISREG(observed.st_mode) or observed.st_nlink != 1 or observed.st_uid != os.getuid():
+                raise PrerequisiteError("Private file identity prerequisite failed")
+            os.fchmod(fd, 0o600)
+            if stat.S_IMODE(os.fstat(fd).st_mode) != 0o600:
+                raise PrerequisiteError("Private file permissions did not round-trip")
+            payload = b"Image Sorter disposable filesystem prerequisite\n"
+            if os.write(fd, payload) != len(payload):
+                raise PrerequisiteError("Prerequisite probe short write")
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+        expected = fingerprint(first)
+        os.rename(first, moved)
+        sync_directory(directory)
+        verify(moved, expected)
+        if require_links:
+            os.link(moved, public, follow_symlinks=False)
+            sync_directory(parent)
+            verify(public, expected)
+            try:
+                os.link(moved, public, follow_symlinks=False)
+            except FileExistsError:
+                pass
+            else:
+                raise PrerequisiteError("No-replace publication did not refuse an occupied name")
+            verify(public, expected)
+            # This public name is ours, but a pathname check is not an
+            # inode-conditional unlink. Claim and validate before cleanup.
+            unlink_owned(public, expected, quarantine=quarantine)
+        after = os.stat(parent, follow_symlinks=False)
+        if (before.st_dev, before.st_ino) != (after.st_dev, after.st_ino):
+            raise PrerequisiteError("Mutation parent identity changed during preflight")
+        observed = os.stat(directory, follow_symlinks=False)
+        if (identity.st_dev, identity.st_ino) != (observed.st_dev, observed.st_ino):
+            raise PrerequisiteError("Prerequisite directory identity changed")
+        unlink_owned(moved, expected)
+        # An unexpected entry prevents removal; never recursively clean it.
+        os.rmdir(directory)
+        sync_directory(parent)
+        return {"parent": parent, "dev": after.st_dev, "ino": after.st_ino,
+                "links_required": require_links, "status": "SUPPORTED_OBSERVED_FOR_THIS_OPERATION"}
+    except Exception as exc:
+        # An unsupported primitive or uncertain cleanup never authorizes an
+        # original-file claim. Keep every remaining probe entry inspectable.
+        raise PrerequisiteError(f"Filesystem prerequisite failed in {parent}; inspect retained probe {directory}: {exc}") from exc
 
 
 def ensure_capacity(parent: str, staging_bytes: int) -> None:

@@ -512,3 +512,22 @@ def test_unsupported_service_entry_refuses_before_runtime_pin_or_profile_artifac
     pin.assert_not_called()
     assert not journal.parent.exists()
     assert sorted(str(p.relative_to(tmp_path)) for p in tmp_path.rglob("*")) == before
+
+
+def test_held_platform_never_runs_filesystem_probes(tmp_path, monkeypatch, unsupported):
+    from imagesorter import file_safety
+    def forbidden(*_args, **_kwargs):
+        pytest.fail("Unsupported native platform must refuse before Linux filesystem probes")
+    monkeypatch.setattr(file_safety, "probe_directory", forbidden)
+    journal = OperationJournal(str(tmp_path / "history.db"))
+    try:
+        engine = OperationEngine(journal)
+        result = engine.execute({'operation_id': 'held-probe', 'action': 'copy',
+                                 'source_path': str(tmp_path / 'source'), 'destination_path': str(tmp_path)})
+        assert result['state'] == 'failed' and result['error'] == unsupported
+        with pytest.raises(RuntimeError, match=re.escape(unsupported)):
+            write_metadata(str(tmp_path / 'source'), ['tag'], False, True)
+        with pytest.raises(RuntimeError, match=re.escape(unsupported)):
+            engine.cleanup_retained('held-probe')
+    finally:
+        journal.close()

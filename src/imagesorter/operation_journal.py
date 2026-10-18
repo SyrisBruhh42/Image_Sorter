@@ -9,7 +9,9 @@ import time
 import uuid
 from typing import Any
 
+from . import file_safety as safe
 from .paths import get_data_dir
+from .platform_capabilities import mutation_unavailable_reason
 
 
 class _ClosingConnection(sqlite3.Connection):
@@ -48,6 +50,12 @@ class OperationJournal:
         self._lock = threading.Lock()
         if os.path.islink(self.db_path):
             raise ValueError("Operation journal cannot be a symbolic link")
+        # Held native platforms may still inspect history; they cannot start
+        # mutation probes. Supported Linux mutation storage must prove privacy
+        # and synchronization before schema changes or original-file work.
+        mutation_storage = mutation_unavailable_reason() is None
+        if mutation_storage:
+            safe.probe_directory(os.path.dirname(os.path.abspath(self.db_path)), require_links=False)
         fd = os.open(self.db_path, os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0), 0o600)
         try:
             observed = os.fstat(fd)
@@ -57,6 +65,8 @@ class OperationJournal:
                 raise PermissionError("Operation journal belongs to another user")
             if hasattr(os, "fchmod"):
                 os.fchmod(fd, 0o600)
+            if mutation_storage and stat.S_IMODE(os.fstat(fd).st_mode) != 0o600:
+                raise safe.PrerequisiteError("Operation journal private permissions did not round-trip")
         finally:
             os.close(fd)
         self._init_db()
@@ -77,9 +87,18 @@ class OperationJournal:
     def _get_connection(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self.db_path, timeout=30.0, factory=_ClosingConnection)
         conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA journal_mode=WAL;")
-        conn.execute("PRAGMA synchronous=FULL;")
-        return conn
+        try:
+            mode = conn.execute("PRAGMA journal_mode=WAL;").fetchone()
+            if not mode or str(mode[0]).lower() != "wal":
+                raise safe.PrerequisiteError("Operation journal requires observed WAL mode")
+            conn.execute("PRAGMA synchronous=FULL;")
+            synchronous = conn.execute("PRAGMA synchronous;").fetchone()
+            if not synchronous or synchronous[0] != 2:
+                raise safe.PrerequisiteError("Operation journal requires observed FULL synchronization")
+            return conn
+        except BaseException:
+            conn.close()
+            raise
 
     def _init_db(self) -> None:
         """Create the schema and migrate journals written by older releases."""

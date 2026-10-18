@@ -144,3 +144,54 @@ The Linux fixture and offscreen checks do not establish physical USB, native
 desktop, mounted AppImage or native Windows/macOS acceptance. AI tagging,
 animated images, RAW/HEIF and duplicate handling remain part of the full product
 scope.
+
+## Filesystem prerequisites before source claims
+
+The Linux mutation backend now checks each operation's actual participating
+parents before renaming an original. Linux or USB transport alone does not
+establish filesystem support. Move, configured trash, Undo, metadata, explicit
+recovery and explicit retention cleanup use the same prerequisite boundary.
+Copy checks its destination and journal parent without requiring writes in the
+read-only source parent. No filesystem capability result is cached between
+requests or inferred from another directory on the same device.
+
+Only constant disposable bytes enter the initial probe. It checks exclusive
+creation, observed owner/private modes, file and directory synchronization,
+rename, hardlink publication, and refusal to replace an occupied name. Every
+required parent is observed; identities are rechecked after preparation and
+before source claims. Actual image/sidecar staging and exact visible-attribute,
+mode and nanosecond timestamp roundtrips complete before original claims.
+The direct metadata helper likewise prepares the whole file set in a verified
+private directory before replacing originals. Its existing rollback backup
+retention remains mandatory if restoration fails.
+
+Missing extended-attribute APIs, unsupported enumeration, failed reads and a
+successful empty enumeration are distinct. Only the last establishes an empty
+set of attributes visible to this process. Unknown metadata causes refusal;
+it is never silently exported as an empty set. SQLite connections must report
+actual WAL activation and FULL synchronization; requesting those settings alone
+is insufficient. Existing journal files must round-trip their private mode.
+Windows/macOS restrictions still precede every Linux mutation probe; inspecting
+existing history does not authorize mutations on either platform.
+
+A predictable prerequisite failure leaves original names, inodes and bytes in
+place. Later races, permission changes or device failure can still interrupt a
+transaction after its first claim; existing verified rollback and recovery
+rules remain in force. Recovery preflight runs before the new request takes
+ownership of any old manifest, so refusal cannot trigger automatic rollback of
+previously retained material. Retention cleanup remains explicitly requested
+and refuses unsupported storage before deleting retained originals.
+
+Successful probes remove only their verified owned entries. An unknown entry,
+changed identity, failed cleanup or synchronization leaves the remaining probe
+inspectable at the reported local path and refuses the operation. There is no
+recursive cleanup, startup deletion of probes, filesystem reformatting, silent
+metadata reduction, or retry through a weaker backend.
+
+These are observations of current kernel calls, not power-loss or device-flush
+proof. They do not qualify exFAT, NFS/SMB/FUSE, every USB filesystem, another
+owner's inode policy, inaccessible security namespaces, ownership/group changes,
+immutable flags, multi-host locking, unplug/remount behavior or malicious
+concurrent directory replacement. Visible Linux xattrs/ACL representation,
+mode and mtime are the observed metadata scope. Physical removable-media tests
+and qualified Windows/macOS mutation backends remain separate release gates.
