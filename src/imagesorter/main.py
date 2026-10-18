@@ -51,6 +51,8 @@ def main(argv: list[str] | None = None) -> int:
         print("Usage: imagesorter [options] [file_or_directory ...]\n\nOptions:\n  -h, --help  Show this help message and exit")
         return 0
 
+    from .bootstrap import configure_runtime_environment
+    isolated_profile = configure_runtime_environment()
     configure_linux_platform()
     if "--diagnostic-receipt" in args:
         index = args.index("--diagnostic-receipt")
@@ -70,16 +72,19 @@ def main(argv: list[str] | None = None) -> int:
     from .launch_requests import parse_launch_paths
     from .paths import get_resource_dir
     from .settings_manager import SettingsManager
-    if MainViewer is None:
-        from .ui_main import MainViewer
-
     try:
+        from PyQt6.QtCore import Qt
         from PyQt6.QtGui import QIcon
         from PyQt6.QtWidgets import QApplication
 
+        if isolated_profile:
+            QApplication.setAttribute(Qt.ApplicationAttribute.AA_DisableShaderDiskCache)
         app = QApplication.instance()
         if app is None:
             app = QApplication(args)
+
+        if MainViewer is None:
+            from .ui_main import MainViewer
 
         app.setApplicationName("Image Sorter")
         app.setOrganizationName("SyrisBruhh42")

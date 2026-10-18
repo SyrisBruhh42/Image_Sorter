@@ -10,7 +10,6 @@ from PyQt6.QtWidgets import (
     QComboBox,
     QDialog,
     QDoubleSpinBox,
-    QFileDialog,
     QFormLayout,
     QHBoxLayout,
     QHeaderView,
@@ -30,6 +29,7 @@ from PyQt6.QtWidgets import (
 
 if TYPE_CHECKING:
     from .ai_tagger import ModelDownloader
+from .file_dialogs import FileDialog as QFileDialog
 from .logger import logger
 from .settings_manager import (
     RESERVED_HOTKEYS,

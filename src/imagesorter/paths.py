@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import stat
 import sys
 import tempfile
 import uuid
@@ -40,6 +41,62 @@ def get_resource_dir() -> Path:
     return Path(__file__).resolve().parent / "resources"
 
 
+def _package_path(value: str, label: str, *, directory: bool) -> Path:
+    """Reject unavailable or redirected package metadata before profile selection."""
+    path = Path(value)
+    try:
+        if not path.is_absolute() or path.resolve(strict=True) != path:
+            raise OSError("Expected an existing canonical absolute path")
+        mode = path.stat().st_mode
+        if not (stat.S_ISDIR(mode) if directory else stat.S_ISREG(mode)):
+            raise OSError("Package path has the wrong file type")
+    except (OSError, RuntimeError, ValueError) as error:
+        raise OSError(f"Invalid {label} package identity: {value!r}") from error
+    return path
+
+
+def get_package_storage_root() -> Path:
+    """Locate a package-adjacent portable.flag without changing the code root.
+
+    AppImage runtime metadata selects the external artifact's directory; an
+    extracted AppRun supplies its AppDir. A macOS bundle uses its containing
+    directory. These paths are discovery locations, not an enabled profile.
+    Metadata checks establish layout consistency, not package authenticity.
+    """
+    if not getattr(sys, "frozen", False):
+        return get_app_dir()
+    executable = Path(sys.executable)
+    if sys.platform.startswith("linux") and ("APPIMAGE" in os.environ or "APPDIR" in os.environ):
+        if "APPDIR" not in os.environ:
+            raise OSError("Invalid AppImage package identity: APPDIR is missing")
+        appdir = _package_path(os.environ["APPDIR"], "APPDIR", directory=True)
+        launcher = _package_path(str(appdir / "AppRun"), "AppRun", directory=False)
+        binary = _package_path(str(executable), "executable", directory=False)
+        if binary != appdir / "usr" / "bin" / "ImageSorter" or not os.access(launcher, os.X_OK):
+            raise OSError("Invalid APPDIR package identity: executable or AppRun does not match its layout")
+        if "APPIMAGE" not in os.environ:
+            return appdir
+        artifact = _package_path(os.environ["APPIMAGE"], "APPIMAGE", directory=False)
+        # A supplied ordinary file must not redirect the selected profile.
+        # Full artifact authentication remains the separate release gate.
+        fd = os.open(artifact, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0))
+        try:
+            if not stat.S_ISREG(os.fstat(fd).st_mode):
+                raise OSError("Invalid APPIMAGE package identity: artifact is not a regular file")
+            header = os.read(fd, 11)
+        finally:
+            os.close(fd)
+        if header[:4] != b"\x7fELF" or header[8:11] != b"AI\x02" or artifact.is_relative_to(appdir):
+            raise OSError("Invalid APPIMAGE package identity: expected an external type2 AppImage")
+        return artifact.parent
+    if (sys.platform == "darwin" and executable.parent.name == "MacOS"
+            and executable.parent.parent.name == "Contents"
+            and executable.parent.parent.parent.suffix == ".app"):
+        binary = _package_path(str(executable), "macOS executable", directory=False)
+        return binary.parent.parent.parent.parent
+    return get_app_dir()
+
+
 def get_portable_root() -> Path | None:
     """Resolve the portable storage identity, independent of a worker's code path.
 
@@ -57,8 +114,15 @@ def get_portable_root() -> Path | None:
         except (OSError, RuntimeError) as error:
             raise OSError(f"Portable profile identity is unavailable: {root}") from error
         return root
-    root = get_app_dir()
-    return root if (root / "portable.flag").exists() else None
+    root = get_package_storage_root()
+    marker = root / "portable.flag"
+    try:
+        marker_mode = marker.lstat().st_mode
+    except FileNotFoundError:
+        return None
+    if not stat.S_ISREG(marker_mode):
+        raise OSError(f"Portable profile marker must be a regular non-symlink file: {marker}")
+    return root
 
 
 def is_portable_mode() -> bool:

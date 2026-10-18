@@ -66,6 +66,85 @@ def test_appdir_preparation(tmp_path):
     assert ".isp" not in desktop_content
 
 
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="AppRun is a Linux package launcher")
+@pytest.mark.parametrize("selection", ["extracted", "appimage", "native", "explicit", "inherited", "invalid"])
+def test_generated_apprun_preserves_storage_identity(tmp_path, selection):
+    """Run the generated launcher with a disposable frozen-layout Python probe."""
+    root = tmp_path / "fixture source"
+    icon = root / "src/imagesorter/resources/imagesorter.png"
+    icon.parent.mkdir(parents=True)
+    icon.write_bytes(b"icon fixture")
+    dist = tmp_path / "USB with spaces"
+    executable = dist / "ImageSorter/ImageSorter"
+    executable.parent.mkdir(parents=True)
+    executable.write_text(f"#!{sys.executable}\n" + """
+import json, os, sys
+from pathlib import Path
+sys.frozen = True
+sys.executable = str(Path(__file__).resolve())
+from imagesorter import paths
+print(json.dumps({"root": str(paths.get_portable_root()), "settings": str(paths.get_settings_path()),
+                  "appdir": os.environ.get("APPDIR"), "origin": paths.__file__,
+                  "explicit": os.environ.get("IMAGESORTER_PROFILE_ROOT"),
+                  "inherited": os.environ.get("IMAGESORTER_PORTABLE_ROOT"), "args": sys.argv[1:]}))
+""")
+    executable.chmod(0o700)
+    build.generate_freedesktop_artifacts(dist)
+    appdir = build.prepare_appdir(dist, root)
+    environment = os.environ.copy()
+    for key in ("APPDIR", "APPIMAGE", "IMAGESORTER_PROFILE_ROOT", "IMAGESORTER_PORTABLE_ROOT"):
+        environment.pop(key, None)
+    source = Path(__file__).resolve().parents[1] / "src"
+    environment.update(PYTHONPATH=str(source), PYTHONDONTWRITEBYTECODE="1")
+    host = tmp_path / "native state"
+    for category in ("CONFIG", "DATA", "CACHE", "STATE"):
+        environment[f"XDG_{category}_HOME"] = str(host / category.lower())
+    expected_root = appdir
+    if selection != "native":
+        (appdir / "portable.flag").touch()
+    if selection == "appimage":
+        artifact = dist / "Image Sorter.AppImage"
+        artifact.write_bytes(b"\x7fELF\x02\x01\x01\x00AI\x02fixture")
+        environment.update(APPIMAGE=str(artifact), APPDIR=str(appdir))
+        (dist / "portable.flag").touch()
+        expected_root = dist
+    elif selection in {"explicit", "inherited"}:
+        selected = tmp_path / "selected profile"
+        selected.mkdir()
+        key = "IMAGESORTER_PROFILE_ROOT" if selection == "explicit" else "IMAGESORTER_PORTABLE_ROOT"
+        environment[key] = str(selected)
+        # Existing identity wins even when inherited package metadata is stale.
+        environment.update(APPDIR="stale-mount", APPIMAGE="stale-artifact")
+        expected_root = selected
+    elif selection == "invalid":
+        environment["APPDIR"] = "invalid-mount"
+    cwd = tmp_path / "unrelated cwd"
+    cwd.mkdir()
+    result = subprocess.run([str(appdir / "AppRun"), "image with spaces.png"], cwd=cwd,
+                            env=environment, text=True, capture_output=True, timeout=15)
+    if selection == "invalid":
+        assert result.returncode != 0 and "package identity" in result.stderr
+        assert not host.exists()
+        return
+    assert result.returncode == 0, result.stderr
+    observed = json.loads(result.stdout)
+    assert Path(observed["origin"]).resolve() == source / "imagesorter/paths.py"
+    assert observed["args"] == ["image with spaces.png"]
+    assert observed["explicit"] == environment.get("IMAGESORTER_PROFILE_ROOT")
+    assert observed["inherited"] == environment.get("IMAGESORTER_PORTABLE_ROOT")
+    if selection == "native":
+        assert observed["root"] == "None"
+        assert observed["settings"] == str(host / "config/ImageSorter/settings.json")
+    elif selection == "explicit":
+        assert observed["root"] == "None"
+        assert observed["settings"] == str(expected_root / "config/ImageSorter/settings.json")
+    else:
+        assert observed["root"] == str(expected_root)
+        assert observed["settings"] == str(expected_root / "settings.json")
+    if selection != "native":
+        assert not host.exists()
+
+
 def test_unverified_appimagetool_is_rejected(tmp_path):
     tool = tmp_path / "appimagetool"
     tool.write_bytes(b"not the pinned upstream binary")
@@ -164,37 +243,69 @@ def test_pyinstaller_executable_smoke(tmp_path):
     exe_path = root_dir / "dist" / "ImageSorter" / exe_name
     assert exe_path.exists(), f"Executable not found at {exe_path}"
 
-    env = os.environ.copy()
-    env["QT_QPA_PLATFORM"] = "offscreen"
     from PIL import Image
-    source = tmp_path / "readiness.png"
-    Image.new("RGB", (160, 100), (33, 88, 144)).save(source)
-    profile = tmp_path / "profile"
-    receipt = profile / "state" / "readiness.json"
-    before = hashlib.sha256(source.read_bytes()).hexdigest()
-    command = [str(exe_path), "--profile-root", str(profile), "--diagnostic-receipt", str(receipt),
-               "--acceptance-exit-after-ready", str(source)]
-    proc = subprocess.Popen(command, cwd=tmp_path, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env)
-    try:
-        _stdout, stderr = proc.communicate(timeout=30)
-    except subprocess.TimeoutExpired:
-        # No writer is force-killed: this process is only the disposable GUI.
-        proc.terminate()
+    image_path = tmp_path / "readiness.png"
+    Image.new("RGB", (160, 100), (33, 88, 144)).save(image_path)
+    before = hashlib.sha256(image_path.read_bytes()).hexdigest()
+    launches = [("explicit", exe_path, tmp_path / "explicit-profile")]
+    launches.append(("portable-onedir", exe_path, exe_path.parent))
+    if sys.platform.startswith("linux"):
+        appdir = build.prepare_appdir(root_dir / "dist", root_dir)
+        launches.append(("portable-appdir", appdir / "AppRun", appdir))
+
+    for mode, launcher, profile in launches:
+        env = os.environ.copy()
+        for key in ("IMAGESORTER_PROFILE_ROOT", "IMAGESORTER_PORTABLE_ROOT", "APPIMAGE", "APPDIR"):
+            env.pop(key, None)
+        host = tmp_path / f"host-{mode}"
+        host.mkdir()
+        env.update(QT_QPA_PLATFORM="offscreen", HOME=str(host), USERPROFILE=str(host))
+        for key in ("XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME", "XDG_STATE_HOME",
+                    "APPDATA", "LOCALAPPDATA", "TMPDIR", "TMP", "TEMP"):
+            location = host / key
+            location.mkdir()
+            env[key] = str(location)
+        sentinel = host / "XDG_CONFIG_HOME/QtProject.conf"
+        sentinel.write_text("[sentinel]\nvalue=unchanged\n")
+        host_before = {str(p.relative_to(host)): p.read_bytes() for p in host.rglob("*") if p.is_file()}
+        receipt = profile / "state" / "readiness.json"
+        command = [str(launcher)]
+        if mode == "explicit":
+            command += ["--profile-root", str(profile)]
+        else:
+            (profile / "portable.flag").touch()
+        command += ["--diagnostic-receipt", str(receipt), "--acceptance-exit-after-ready", str(image_path)]
+        proc = subprocess.Popen(command, cwd=tmp_path, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env)
         try:
-            proc.communicate(timeout=6)
+            stdout, stderr = proc.communicate(timeout=30)
         except subprocess.TimeoutExpired:
-            proc.kill()
-            proc.communicate(timeout=3)
-        pytest.fail("Frozen application never reported readiness and graceful close within 30 seconds")
-    assert proc.returncode == 0, stderr
-    observed = json.loads(receipt.read_text())
-    ready = next(item for item in observed["events"] if item["event"] == "image_presented")
-    closed = next(item for item in observed["events"] if item["event"] == "gui_shutdown")
-    assert ready["backend"] == "offscreen"
-    assert ready["filepath"] == str(source)
-    assert (ready["width"], ready["height"]) == (160, 100)
-    assert Path(ready["module_origin"]).is_relative_to(exe_path.parent)
-    assert ready["build_identity"]["source_sha"]
-    assert closed["monotonic"] >= ready["monotonic"]
-    assert closed["elapsed_ms"] <= 6000
-    assert hashlib.sha256(source.read_bytes()).hexdigest() == before
+            # No writer is force-killed: this process is only the disposable GUI.
+            proc.terminate()
+            try:
+                proc.communicate(timeout=6)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.communicate(timeout=3)
+            pytest.fail(f"Frozen {mode} never reported readiness and graceful close within 30 seconds")
+        (tmp_path / f"packaging-{mode}.stdout.log").write_text(stdout)
+        (tmp_path / f"packaging-{mode}.stderr.log").write_text(stderr)
+        assert proc.returncode == 0, f"{mode}: {stderr}"
+        observed = json.loads(receipt.read_text())
+        ready = next(item for item in observed["events"] if item["event"] == "image_presented")
+        closed = next(item for item in observed["events"] if item["event"] == "gui_shutdown")
+        assert ready["backend"] == "offscreen"
+        assert ready["filepath"] == str(image_path)
+        assert (ready["width"], ready["height"]) == (160, 100)
+        code_root = launcher.parent / "usr/bin" if mode == "portable-appdir" else exe_path.parent
+        assert Path(ready["module_origin"]).is_relative_to(code_root)
+        assert ready["build_identity"] == identity
+        assert closed["monotonic"] >= ready["monotonic"]
+        assert closed["elapsed_ms"] <= 6000
+        assert hashlib.sha256(image_path.read_bytes()).hexdigest() == before
+        host_after = {str(p.relative_to(host)): p.read_bytes() for p in host.rglob("*") if p.is_file()}
+        assert host_after == host_before, f"{mode} wrote host-profile files"
+        if mode != "explicit":
+            assert (profile / "config").is_dir()
+            assert (profile / "cache/temporary").is_dir()
+            if code_root != profile:
+                assert not (code_root / "config").exists()
