@@ -5,7 +5,7 @@ import json
 import os
 import signal
 
-from PyQt6.QtCore import QProcess, QTimer
+from PyQt6.QtCore import QProcess, QProcessEnvironment, QTimer
 from PyQt6.QtWidgets import (
     QComboBox,
     QFileDialog,
@@ -21,6 +21,7 @@ from PyQt6.QtWidgets import (
 
 from .component_manager import DOWNLOAD_UNAVAILABLE, ComponentManager
 from .component_runtime import component_job_command
+from .worker_protocol import worker_environment
 
 MAX_STATUS_BUFFER_BYTES = 65536
 MAX_STATUS_LINE_CHARACTERS = 1500
@@ -170,8 +171,17 @@ class ComponentsPanel(QWidget):
         """Launch disposable background process for component operations."""
         if self.process is not None:
             return
+        try:
+            environment = worker_environment()
+        except OSError as exc:
+            self.status_label.setText(f"Component profile requires attention: {exc}")
+            return
         self.pending_output = b""
         self.process = QProcess(self)
+        process_environment = QProcessEnvironment()
+        for name, value in environment.items():
+            process_environment.insert(name, value)
+        self.process.setProcessEnvironment(process_environment)
         if os.name == "posix" and hasattr(QProcess, "UnixProcessParameters"):
             parameters = QProcess.UnixProcessParameters()
             parameters.flags = QProcess.UnixProcessFlag.CreateNewSession
