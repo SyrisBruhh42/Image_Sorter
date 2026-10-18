@@ -20,9 +20,18 @@ else:
     from portable_package import MANIFEST, digest, inventory, native_target
 
 
+def _unredirected_location(value):
+    """Check named entries before resolving; this is not a concurrent-write sandbox."""
+    path = Path(value).absolute()
+    for entry in (path, *path.parents):
+        if entry.is_symlink() or getattr(entry, 'is_junction', lambda: False)():
+            raise ValueError(f'Package and output locations must not use symlinks or junctions: {entry}')
+    return path.resolve()
+
+
 def verify_package(package, expected_identity):
-    package = Path(package)
-    if package.is_symlink() or not package.is_dir():
+    package = _unredirected_location(package)
+    if not package.is_dir():
         raise ValueError('Package must be a regular directory')
     record = json.loads((package / MANIFEST).read_text(encoding='utf-8'))
     if record.get('schema_version') != 1 or record.get('source_identity') != expected_identity:
@@ -45,7 +54,7 @@ def verify_package(package, expected_identity):
 
 
 def qualify(package, output, expected_identity, *, backend='offscreen', timeout=40):
-    package, output = Path(package).resolve(), Path(output).resolve()
+    package, output = _unredirected_location(package), _unredirected_location(output)
     if output.exists() or output.is_relative_to(package):
         raise ValueError('Qualification requires a fresh output directory outside the package')
     record = verify_package(package, expected_identity)

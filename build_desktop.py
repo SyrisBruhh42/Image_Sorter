@@ -311,6 +311,7 @@ def build_executable(
 
     ensure_icon_assets(root_dir)
     environment = os.environ.copy()
+    environment['IMAGESORTER_BUILD_PORTABLE'] = '1' if portable else '0'
     if sys.platform == 'darwin':
         # PyInstaller's local ad-hoc signature must succeed. This uses no
         # Developer ID credentials and does not establish notarization.

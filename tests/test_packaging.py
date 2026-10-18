@@ -248,7 +248,12 @@ def test_pyinstaller_executable_smoke(tmp_path):
     image_path = tmp_path / "readiness.png"
     Image.new("RGB", (160, 100), (33, 88, 144)).save(image_path)
     before = hashlib.sha256(image_path.read_bytes()).hexdigest()
-    launches = [("explicit", exe_path, tmp_path / "explicit-profile")]
+    launches = []
+    if sys.platform.startswith('linux'):
+        # Linux windowed binaries report the refusal on stderr. Native Windows
+        # and macOS error-dialog behavior needs its separate interactive gate.
+        launches.append(('missing-marker', exe_path, runtime))
+    launches.append(("explicit", exe_path, tmp_path / "explicit-profile"))
     portable_root = runtime.parent if sys.platform == 'darwin' else runtime
     launches.append(("portable-bundle" if sys.platform == 'darwin' else "portable-onedir", exe_path, portable_root))
     if sys.platform.startswith("linux"):
@@ -274,7 +279,7 @@ def test_pyinstaller_executable_smoke(tmp_path):
         command = [str(launcher)]
         if mode == "explicit":
             command += ["--profile-root", str(profile)]
-        else:
+        elif mode != 'missing-marker':
             (profile / "portable.flag").touch()
         command += ["--diagnostic-receipt", str(receipt), "--acceptance-exit-after-ready", str(image_path)]
         proc = subprocess.Popen(command, cwd=tmp_path, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env)
@@ -291,6 +296,12 @@ def test_pyinstaller_executable_smoke(tmp_path):
             pytest.fail(f"Frozen {mode} never reported readiness and graceful close within 30 seconds")
         (tmp_path / f"packaging-{mode}.stdout.log").write_text(stdout)
         (tmp_path / f"packaging-{mode}.stderr.log").write_text(stderr)
+        if mode == 'missing-marker':
+            assert proc.returncode != 0 and 'Portable build requires' in stderr
+            assert not receipt.exists()
+            assert not (profile / 'config').exists()
+            assert {str(p.relative_to(host)): p.read_bytes() for p in host.rglob('*') if p.is_file()} == host_before
+            continue
         assert proc.returncode == 0, f"{mode}: {stderr}"
         observed = json.loads(receipt.read_text())
         ready = next(item for item in observed["events"] if item["event"] == "image_presented")

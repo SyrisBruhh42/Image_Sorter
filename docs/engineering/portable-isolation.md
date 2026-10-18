@@ -89,6 +89,16 @@ its marker outside `Contents`; its ad-hoc signature must succeed, without
 credentials or a claim of notarization. Native Windows/macOS execution is still
 required to validate those recipes.
 
+The portable build embeds `hooks/rthook_portable_profile.py` before application
+imports. Its process-local policy makes a missing marker an error instead of
+selecting native paths; no removable policy file or environment variable is
+needed to enforce it. Explicit and validated inherited profiles retain priority.
+This also refuses a macOS bundle relocated without its external marker; it does
+not try to detect translocation or bypass Gatekeeper. Ordinary builds/source
+launches are unaffected. The real Linux frozen test covers missing-marker
+refusal before host-profile writes, followed by explicit and portable success.
+Windows/macOS refusal-dialog behavior remains a native interactive gate.
+
 `scripts/qualify_portable_package.py` verifies a pristine package against an
 independently supplied build identity, copies it into a new evidence directory,
 then launches before and after moving the folder. It retains actual decoded
@@ -97,6 +107,9 @@ hashes and disposable host-file comparisons. It refuses a mismatched OS or
 architecture. Native shell launch, registry/OS-managed state, network observation
 and actual removable-media behavior are explicit separate gates. Linux tests
 that construct macOS/Windows layouts and archives are source-level simulations.
+Named package/output paths and existing ancestors are checked for symlinks and
+junctions before canonicalization, creation or launch. Concurrent replacement
+by the same user is outside this trusted developer-tool boundary.
 
 Windows and macOS both refuse mutations centrally before admission, metadata
 writes, runtime pinning or retention cleanup. Existing history and uncertain

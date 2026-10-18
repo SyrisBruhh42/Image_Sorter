@@ -105,7 +105,8 @@ a = Analysis(
     ],
     hookspath=[str(_root_dir / 'hooks')],
     hooksconfig={},
-    runtime_hooks=[],
+    runtime_hooks=[str(_root_dir / 'hooks' / 'rthook_portable_profile.py')]
+        if os.environ.get('IMAGESORTER_BUILD_PORTABLE') == '1' else [],
     excludes=[],
     win_no_prefer_redirects=False,
     win_private_assemblies=False,

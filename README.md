@@ -224,6 +224,14 @@ not need a Python installation. Existing output folders are refused to protect
 saved profiles; build again in a fresh checkout/output tree. These are local
 qualification artifacts, subject to the license and release gates below.
 
+A `--portable` build embeds a requirement for that external marker. If the
+marker is missing or unavailable, startup refuses to select a host profile.
+An explicit `--profile-root` or validated inherited profile still takes priority.
+Keep the whole folder together: macOS may relocate a downloaded `.app` during
+launch, making adjacent files unavailable. This policy refuses that case without
+guessing the original location or changing operating-system security settings.
+Ordinary builds and source launches retain their existing profile selection.
+
 The generated folder includes a file manifest and a short launch guide. Run a
 native frozen smoke against it with a new disposable evidence folder:
 
@@ -238,6 +246,9 @@ The default offscreen check compares disposable host-profile files; it does
 not inspect the Windows registry, all OS-managed caches, physical USB behavior,
 native shell launch, signing prompts or file-operation durability. The CI recipe
 now includes frozen Windows/macOS checks, but a recipe is not a successful run.
+The named package and fresh output paths, including existing ancestors, must
+not be symlinks or junctions. These checks prevent accidental redirection; they
+do not provide a sandbox against concurrent same-user filesystem replacement.
 
 Ubuntu 24.04 may require `libfuse2t64` to mount an AppImage. Extraction is the
 FUSE-free fallback:
