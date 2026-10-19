@@ -1075,3 +1075,56 @@ def test_preflight_probe_primitive_failure_retains_only_disposable_bytes(tmp_pat
     assert safe.fingerprint(str(source)) == before
     remaining = [p for p in tmp_path.rglob("*") if p.is_file() and p != source]
     assert all(p.read_bytes() in (b"", b"Image Sorter disposable filesystem prerequisite\n") for p in remaining)
+
+
+def test_native_attribute_descriptor_is_saved_before_restore(tmp_path, monkeypatch):
+    # Deliberately synthetic descriptor: this tests journal propagation, not ABI.
+    engine = OperationEngine.__new__(OperationEngine)
+    descriptor = {"backend": "synthetic-darwin-propagation", "acl": "recorded"}
+    original = {"mode": 0o640, "mtime_ns": 123, "xattrs": {}, "native_metadata": descriptor}
+    manifest = {"files": [{"stage": str(tmp_path / "stage"), "stage_provenance": {}, "original_provenance": original}]}
+    records = []
+    monkeypatch.setattr(engine, "_save", lambda value: records.append(copy.deepcopy(value)))
+    monkeypatch.setattr(engine, "_verify_parents", lambda value: None)
+    monkeypatch.setattr(safe, "verify", lambda *args: {})
+    def apply(path, expected):
+        assert records[0]["phase"] == "preparing_attributes"
+        assert records[0]["files"][0]["attribute_target"] == original
+        assert expected["native_metadata"] == descriptor
+        return expected
+    monkeypatch.setattr(safe, "apply_attributes", apply)
+    engine._prepare_attributes(manifest)
+    assert manifest["files"][0]["stage_provenance"]["native_metadata"] == descriptor
+
+
+@pytest.mark.parametrize("has_provenance", [False, True])
+def test_native_incomplete_stage_survives_process_restart(tmp_path, has_provenance):
+    import json
+    directory = tmp_path / "stage"
+    directory.mkdir(mode=0o700)
+    stage = directory / "image"
+    record = tmp_path / "recovery.json"
+    # Child dies after its private stage write. Recovery has the durable intent,
+    # either before copy returned or before native attribute restoration returned.
+    code = '''import json, os, sys
+from pathlib import Path
+from imagesorter import file_safety as safe
+stage, record, has_provenance = sys.argv[1:]
+Path(stage).write_bytes(b"private partial native stage")
+provenance = safe.fingerprint(stage)
+provenance["native_metadata"] = {"backend": "synthetic-native-original"}
+item = {"stage": stage, "original_provenance": provenance, "attribute_target": {"native_metadata": {"backend": "synthetic-native-target"}}}
+if has_provenance == "True": item["stage_provenance"] = provenance
+st = os.stat(Path(stage).parent)
+manifest = {"files": [item], "directories": [{"role": "stage", "path": str(Path(stage).parent), "dev": st.st_dev, "ino": st.st_ino}]}
+with open(record, "w") as f:
+ json.dump(manifest, f); f.flush(); os.fsync(f.fileno())
+os._exit(23)
+'''
+    import sys
+    result = subprocess.run([sys.executable, "-B", "-c", code, str(stage), str(record), str(has_provenance)], timeout=30)
+    assert result.returncode == 23
+    engine = OperationEngine.__new__(OperationEngine)
+    warnings = engine._cleanup_stages(json.loads(record.read_text()))
+    assert warnings and stage.read_bytes() == b"private partial native stage"
+    assert any("native" in warning.lower() for warning in warnings)

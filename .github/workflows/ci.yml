@@ -117,6 +117,41 @@ jobs:
             native_tests+=(tests/test_native_socket_address.py tests/test_native_socket_lifecycle.py)
           fi
           python -m pytest "${native_tests[@]}"
+      - name: Darwin metadata native fixtures and SDK contract (mutation remains held)
+        if: runner.os == 'macOS'
+        env:
+          QT_QPA_PLATFORM: offscreen
+          IMAGESORTER_PROFILE_ROOT: ${{ runner.temp }}/imagesorter-darwin-metadata-profile
+          IMAGESORTER_DARWIN_METADATA_RECEIPT: ${{ runner.temp }}/darwin-metadata-receipt.json
+        run: |
+          python -m pytest tests/test_darwin_metadata.py -ra --junitxml="${{ runner.temp }}/darwin-metadata-tests.xml"
+          python - <<'PYTHON'
+          import json, os
+          from pathlib import Path
+          receipt = json.loads(Path(os.environ["IMAGESORTER_DARWIN_METADATA_RECEIPT"]).read_text())
+          assert receipt["status"] == "PASS_NATIVE_METADATA_FIXTURE_ONLY"
+          assert receipt["source_unchanged"] and receipt["native_descriptor_equal"]
+          assert receipt["product_mutation_admission"] == "HELD"
+          import xml.etree.ElementTree as ET
+          tree = ET.parse("${{ runner.temp }}/darwin-metadata-tests.xml")
+          cases = tree.findall(".//testcase")
+          required = {
+              "test_native_sdk_contract", "test_native_full_metadata_private_stage_and_restore",
+              "test_native_inherited_acl_private_directory_refused", "test_native_immutable_source_refused_before_read",
+              "test_native_restore_failure_retains_original_and_stage", "test_native_public_attribute_restore_is_not_enabled",
+          }
+          assert required <= {case.attrib["name"] for case in cases}, "Required native case missing"
+          assert not tree.findall(".//skipped"), "Native qualification cannot pass by skipping cases"
+          PYTHON
+      - name: Preserve Darwin metadata qualification evidence
+        if: always() && runner.os == 'macOS'
+        uses: actions/upload-artifact@v4
+        with:
+          name: darwin-metadata-qualification
+          path: |
+            ${{ runner.temp }}/darwin-metadata-receipt.json
+            ${{ runner.temp }}/darwin-metadata-tests.xml
+          if-no-files-found: error
       - name: Native portable archive structure and refusal checks
         env:
           QT_QPA_PLATFORM: offscreen
